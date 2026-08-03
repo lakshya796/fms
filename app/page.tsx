@@ -19,7 +19,7 @@ const workflows = [
   { name: "Driver settlements", detail: "Advances & trip expenses", value: "₹1.84L due", accent: "green" },
 ];
 
-const modules = {
+const modules: Record<string, { eyebrow: string; title: string; action: string; stats: string[][]; columns: string[]; rows: string[][] }> = {
   Customers: {
     eyebrow: "CUSTOMER MASTER", title: "Customers & KYC", action: "+ Add customer",
     stats: [["Active customers", "128", "+8 this month"], ["KYC pending", "3", "Needs attention"], ["Credit exposure", "₹18.4L", "Across 11 customers"]],
@@ -56,7 +56,7 @@ const modules = {
     columns: ["Invoice", "Customer", "Invoice date", "Amount", "Payment status"],
     rows: [["INV-2026-0842", "Tata Consumer", "02 Aug 2026", "₹2,48,600", "Payment due"], ["INV-2026-0838", "Asian Paints", "30 Jul 2026", "₹1,86,250", "Paid"], ["INV-2026-0831", "V-Guard", "26 Jul 2026", "₹3,12,400", "Overdue"], ["INV-2026-0824", "Havells India", "18 Jul 2026", "₹2,74,800", "Part paid"]]
   }
-} as const;
+};
 
 const featureGroups = [
   ["01", "Transport operations", "Consignments, job slips, dispatch, LR/bilty, ePOD, arrivals, routes, allocation, tracking, alerts and trip closure"],
@@ -80,7 +80,7 @@ function FeatureHub({ onAction }: { onAction: (message: string) => void }) {
   return <div className="module-page feature-page"><div className="module-title"><div><p className="eyebrow">COMPLETE TRANSPORT ERP</p><h2>One platform. Every fleet workflow.</h2><p>High-level capability map for modern Indian fleet owners and transporters.</p></div><button className="primary module-action" onClick={() => onAction("Capability brief exported")}>⇩ Export brief</button></div><div className="feature-grid">{featureGroups.map(group => <button className="feature-card" key={group[0]} onClick={() => onAction(`${group[1]} module opened`)}><span>{group[0]}</span><div><strong>{group[1]}</strong><p>{group[2]}</p></div><b>→</b></button>)}</div></div>;
 }
 
-function ModuleView({ name, onAction }: { name: Exclude<keyof typeof modules, "Overview">; onAction: (message: string) => void }) {
+function ModuleView({ name, onAction }: { name: string; onAction: (message: string) => void }) {
   const data = modules[name];
   const [query, setQuery] = useState("");
   const visibleRows = data.rows.filter(row => row.join(" ").toLowerCase().includes(query.toLowerCase()));
