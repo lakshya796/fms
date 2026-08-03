@@ -3,10 +3,13 @@ from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
+from rest_framework.permissions import AllowAny
+from rest_framework.decorators import permission_classes
 from .models import Customer, Driver, Vehicle, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement
 from .serializers import CustomerSerializer, DriverSerializer, VehicleSerializer, LorryReceiptSerializer, TripSerializer, TrackingEventSerializer, InvoiceSerializer, SettlementSerializer
 
 @api_view(["GET"])
+@permission_classes([AllowAny])
 def health(request):
     return Response({"status": "ok", "service": "phloz-fms-api", "time": timezone.now()})
 
