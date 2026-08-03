@@ -93,9 +93,38 @@ function ModuleView({ name, onAction }: { name: string; onAction: (message: stri
   </div>;
 }
 
+
+const actionMeta: Record<string, { eyebrow: string; title: string; button: string }> = {
+  lr: { eyebrow: "CONSIGNMENT BOOKING", title: "Generate digital LR", button: "Generate LR" },
+  trip: { eyebrow: "DISPATCH PLANNING", title: "Create trip sheet", button: "Create trip sheet" },
+  invoice: { eyebrow: "FREIGHT BILLING", title: "Generate customer invoice", button: "Generate invoice" },
+  tracking: { eyebrow: "LIVE GPS", title: "Vehicle tracking", button: "Refresh location" },
+};
+
+function ActionPanel({ type, onClose, onDone }: { type: string; onClose: () => void; onDone: (message: string) => void }) {
+  const [complete, setComplete] = useState(false);
+  const [vehicle, setVehicle] = useState("MH 04 JU 9182");
+  const meta = actionMeta[type];
+  const submit = (e: React.FormEvent) => { e.preventDefault(); setComplete(true); };
+  return <div className="modal-backdrop" onMouseDown={onClose}><section className={"action-panel " + (type === "tracking" ? "map-panel" : "")} onMouseDown={e => e.stopPropagation()}>
+    <div className="panel-head"><div><p className="eyebrow">{meta.eyebrow}</p><h2>{meta.title}</h2></div><button className="panel-close" onClick={onClose}>×</button></div>
+    {type === "tracking" ? <div className="tracking-layout">
+      <div className="mock-map"><div className="map-road r1"/><div className="map-road r2"/><div className="map-road r3"/><span className="city mumbai">Mumbai</span><span className="city pune">Pune</span><span className="map-pin start">●</span><span className="map-pin vehicle">▰</span><span className="map-pin finish">●</span><div className="map-progress"/></div>
+      <div className="vehicle-list"><label>Track vehicle<select value={vehicle} onChange={e => setVehicle(e.target.value)}><option>MH 04 JU 9182</option><option>KA 51 MN 6814</option><option>HR 55 AN 4021</option></select></label><div className="tracking-stat"><span>Status</span><strong>{vehicle === "KA 51 MN 6814" ? "Delayed · 2h 10m" : "Moving"}</strong></div><div className="tracking-grid"><div><span>Speed</span><strong>54 km/h</strong></div><div><span>ETA</span><strong>16:40</strong></div><div><span>Last update</span><strong>Just now</strong></div><div><span>Trip progress</span><strong>68%</strong></div></div><div className="event-feed"><strong>Automated trip events</strong><p><i/>Talegaon geofence crossed <span>14:18</span></p><p><i/>Vehicle resumed movement <span>13:52</span></p><p><i/>Khalapur toll crossed <span>12:46</span></p></div><button className="primary full-button" onClick={() => onDone("GPS location refreshed")}>{meta.button}</button></div>
+    </div> : complete ? <div className="success-state"><span>✓</span><h3>{type === "lr" ? "LR-240845 generated" : type === "trip" ? "TS-2845 created" : "INV-2026-0847 generated"}</h3><p>{type === "lr" ? "Digital LR is ready to print or share with the driver." : type === "trip" ? "Vehicle and driver are allocated. The trip is ready for dispatch." : "Invoice for ₹42,800 is ready to send to Tata Consumer Products."}</p><div className="document-preview"><b>phloz</b><strong>{type === "lr" ? "LORRY RECEIPT" : type === "trip" ? "TRIP SHEET" : "TAX INVOICE"}</strong><small>{type === "lr" ? "LR-240845 · Mumbai → Pune" : type === "trip" ? "TS-2845 · MH 04 JU 9182" : "INV-2026-0847 · ₹42,800"}</small></div><div className="success-actions"><button className="secondary" onClick={() => onDone("Document downloaded")}>⇩ Download PDF</button><button className="primary" onClick={() => onDone("Document shared on WhatsApp")}>Share via WhatsApp</button></div></div> :
+      <form className="action-form" onSubmit={submit}>
+        {type === "lr" && <><div className="form-grid"><label>Customer<select><option>Tata Consumer Products</option><option>Asian Paints Ltd</option></select></label><label>Booking date<input type="date" defaultValue="2026-08-03"/></label><label>Consignor<input defaultValue="Tata Consumer, Mumbai"/></label><label>Consignee<input defaultValue="D-Mart Warehouse, Pune"/></label><label>Material<input defaultValue="Packaged food products"/></label><label>Weight<input defaultValue="12,400 kg"/></label></div><label>Special instructions<textarea defaultValue="Handle with care · Delivery before 5 PM"/></label></>}
+        {type === "trip" && <><div className="form-grid"><label>Route<select><option>Mumbai → Pune</option><option>Delhi → Jaipur</option></select></label><label>Linked LR<select><option>LR-240845</option><option>LR-240831</option></select></label><label>Vehicle<select><option>MH 04 JU 9182 · Available</option><option>MH 12 PQ 4407 · Available</option></select></label><label>Driver<select><option>Ramesh Yadav · Available</option><option>Manoj Singh · Available</option></select></label><label>Trip advance<input defaultValue="₹12,000"/></label><label>Planned departure<input type="time" defaultValue="14:30"/></label></div><div className="cost-strip"><span>Estimated distance <b>149 km</b></span><span>Estimated cost <b>₹31,600</b></span><span>Expected margin <b>26.2%</b></span></div></>}
+        {type === "invoice" && <><div className="form-grid"><label>Customer<select><option>Tata Consumer Products</option><option>Asian Paints Ltd</option></select></label><label>Completed trip<select><option>TRP-2836 · POD received</option><option>TRP-2831 · POD received</option></select></label><label>Freight amount<input defaultValue="₹38,500"/></label><label>Additional charges<input defaultValue="₹1,200"/></label><label>GST<input defaultValue="₹3,100"/></label><label>Payment terms<select><option>30 days</option><option>15 days</option><option>45 days</option></select></label></div><div className="invoice-total"><span>Invoice total</span><strong>₹42,800</strong><small>Freight + toll + GST</small></div></>}
+        <div className="form-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" type="submit">{meta.button}</button></div>
+      </form>}
+  </section></div>;
+}
+
 export default function Home() {
   const [active, setActive] = useState("Overview");
   const [toast, setToast] = useState("");
+  const [action, setAction] = useState("");
 
   const show = (message: string) => {
     setToast(message);
@@ -124,10 +153,10 @@ export default function Home() {
       <section className="content">
         <header className="topbar">
           <div><p className="eyebrow">MONDAY, 3 AUGUST</p><h1>{active === "Overview" ? "Good afternoon, Arjun" : active}</h1></div>
-          <div className="top-actions"><button className="icon-button" aria-label="Search">⌕</button><button className="icon-button notification" aria-label="Notifications">♢</button><button className="primary" onClick={() => show("New LR booking opened")}>＋ New LR booking</button></div>
+          <div className="top-actions"><button className="icon-button" aria-label="Search">⌕</button><button className="icon-button notification" aria-label="Notifications">♢</button><button className="primary" onClick={() => setAction("lr")}>＋ New LR booking</button></div>
         </header>
 
-        {active === "Overview" ? <div className="page-grid">
+        {active === "Overview" ? <div className="page-grid"><section className="quick-actions"><div><p className="eyebrow">QUICK ACTIONS</p><h2>Run daily fleet operations</h2></div><button onClick={() => setAction("lr")}><span>▤</span><b>Generate LR</b><small>Book consignment</small></button><button onClick={() => setAction("trip")}><span>▦</span><b>Create trip sheet</b><small>Allocate vehicle & driver</small></button><button onClick={() => setAction("invoice")}><span>₹</span><b>Generate invoice</b><small>Bill a completed trip</small></button><button onClick={() => setAction("tracking")}><span>⌖</span><b>Track vehicles</b><small>View live GPS map</small></button></section>
           <section className="hero-card">
             <div><span className="live-pill"><i /> LIVE FLEET</span><h2>32 of 41 vehicles<br />are on the road</h2><p>78% fleet utilisation · 4 trips need attention</p><button className="text-button" onClick={() => show("Live operations opened")}>View live operations <span>→</span></button></div>
             <div className="fleet-visual" aria-label="Fleet utilisation 78 percent"><div className="ring"><strong>78%</strong><span>utilised</span></div><div className="route-line"><span className="pin one" /><span className="truck">▰</span><span className="pin two" /></div></div>
@@ -153,8 +182,13 @@ export default function Home() {
             <div className="section-heading"><div><p className="eyebrow">ACTIVE MOVEMENT</p><h2>Recent trips</h2></div><button className="link-button" onClick={() => show("All trips opened")}>View all trips →</button></div>
             <div className="table-wrap"><table><thead><tr><th>Trip & route</th><th>Vehicle</th><th>Driver</th><th>Status</th><th>ETA / POD</th><th>Revenue</th></tr></thead><tbody>{trips.map(t => <tr key={t.id}><td><strong>{t.id}</strong><small>{t.route}</small></td><td>{t.truck}</td><td>{t.driver}</td><td><span className={`status ${t.status.toLowerCase().replace(" ","-")}`}>{t.status}</span></td><td>{t.eta}</td><td><strong>{t.revenue}</strong></td></tr>)}</tbody></table></div>
           </section>
-        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : <ModuleView name={active as keyof typeof modules} onAction={show} />}
+        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : <ModuleView name={active as keyof typeof modules} onAction={(message) => {
+          if (message.includes("Book LR")) setAction("lr");
+          else if (message.includes("Generate invoice")) setAction("invoice");
+          else show(message);
+        }} />}
       </section>
+      {action && <ActionPanel type={action} onClose={() => setAction("")} onDone={(message) => { show(message); if (action !== "tracking") setAction(""); }} />}
       {toast && <div className="toast">✓ {toast}</div>}
     </main>
   );
