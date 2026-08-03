@@ -17,7 +17,7 @@ services:
     build: ./backend
     restart: unless-stopped
     env_file: .env.fms
-    command: sh -c "python manage.py migrate && gunicorn phloz_fms.wsgi:application --bind 0.0.0.0:8000 --workers 3"
+    command: sh -c "python manage.py makemigrations fleet --noinput && python manage.py migrate && gunicorn phloz_fms.wsgi:application --bind 0.0.0.0:8000 --workers 3"
     ports:
       - "127.0.0.1:8010:8000"
     depends_on:
