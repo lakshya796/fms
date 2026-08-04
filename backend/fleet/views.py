@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.db.models import Sum
 from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import action, api_view
@@ -7,6 +8,23 @@ from rest_framework.permissions import AllowAny
 from rest_framework.decorators import permission_classes
 from .models import Customer, Driver, Vehicle, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement, SalesQuote
 from .serializers import CustomerSerializer, DriverSerializer, VehicleSerializer, LorryReceiptSerializer, TripSerializer, TrackingEventSerializer, InvoiceSerializer, SettlementSerializer, SalesQuoteSerializer
+
+@api_view(["GET"])
+def dashboard(request):
+    recent = Trip.objects.select_related("vehicle", "driver").order_by("-created_at")[:6]
+    return Response({
+        "customers": Customer.objects.count(),
+        "kyc_pending": Customer.objects.filter(kyc_status="pending").count(),
+        "vehicles": Vehicle.objects.count(),
+        "vehicles_on_trip": Vehicle.objects.filter(status="on_trip").count(),
+        "available_vehicles": Vehicle.objects.filter(status="available").count(),
+        "active_trips": Trip.objects.exclude(status="closed").count(),
+        "lorry_receipts": LorryReceipt.objects.count(),
+        "open_invoices": Invoice.objects.exclude(status="paid").count(),
+        "invoice_total": Invoice.objects.aggregate(value=Sum("total_amount"))["value"] or 0,
+        "pending_settlements": Settlement.objects.filter(status="pending").aggregate(value=Sum("net_payable"))["value"] or 0,
+        "recent_trips": TripSerializer(recent, many=True).data,
+    })
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
