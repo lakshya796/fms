@@ -127,3 +127,5 @@ h1 { margin:0; font-size:24px; letter-spacing:-.7px; }
 .track-footer{display:block;text-align:center;margin-top:22px;color:#98a09c;font-size:9px}
 @media(max-width:1100px){.rate-layout{grid-template-columns:1fr}.dispatch-board{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:760px){.dispatch-board{grid-template-columns:1fr}.split-row{grid-template-columns:110px 1fr 80px}.nav-group-label{font-size:0;margin:8px 0 2px}}
+.action-form select[multiple]{min-height:104px;padding:6px}
+.action-form select[multiple] option{padding:5px 6px;border-radius:5px}

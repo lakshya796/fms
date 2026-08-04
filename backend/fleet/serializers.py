@@ -22,7 +22,10 @@ class TripSerializer(serializers.ModelSerializer):
     vehicle_number = serializers.CharField(source="vehicle.registration_number", read_only=True)
     driver_name = serializers.CharField(source="driver.name", read_only=True)
     tracking_events = TrackingEventSerializer(many=True, read_only=True)
-    class Meta: model = Trip; fields = "__all__"
+    class Meta:
+        model = Trip; fields = "__all__"
+        # A trip sheet is often opened before consignments are attached to it.
+        extra_kwargs = {"lorry_receipts": {"required": False, "allow_empty": True}}
 class InvoiceSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     class Meta: model = Invoice; fields = "__all__"

@@ -303,3 +303,48 @@ class PaginationTests(BaseFleetOpsTest):
         self.assertEqual(len(full.data["results"]), 60)
         capped = self.client.get("/api/v1/vendors/", {"page_size": 5000})
         self.assertEqual(len(capped.data["results"]), 60)         # cap applies, request still succeeds
+
+
+class LegacyModuleCreationTests(BaseFleetOpsTest):
+    """The console create forms once posted hardcoded foreign keys such as `customer: 1`,
+    which fail on any database where that row does not exist. These cover the real payloads."""
+
+    def test_trip_can_be_opened_before_consignments_are_attached(self):
+        response = self.client.post("/api/v1/trips/", {
+            "number": "TRP-0001", "vehicle": self.vehicle.id, "driver": self.driver.id,
+            "origin": "Bhiwandi", "destination": "Chakan",
+            "planned_departure": "2026-08-05T14:30:00Z", "estimated_cost": 31600}, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["lorry_receipts"], [])
+
+    def test_trip_accepts_consignments_when_supplied(self):
+        receipt = self.client.post("/api/v1/lorry-receipts/", {
+            "number": "LR-0001", "customer": self.customer.id, "consignor": "Tata", "consignee": "D-Mart",
+            "origin": "Bhiwandi", "destination": "Chakan", "material": "Food", "weight_kg": 12400}, format="json")
+        self.assertEqual(receipt.status_code, 201, receipt.data)
+        response = self.client.post("/api/v1/trips/", {
+            "number": "TRP-0002", "vehicle": self.vehicle.id, "driver": self.driver.id,
+            "origin": "Bhiwandi", "destination": "Chakan", "planned_departure": "2026-08-05T14:30:00Z",
+            "lorry_receipts": [receipt.data["id"]]}, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["lorry_receipts"], [receipt.data["id"]])
+
+    def test_customer_keeps_the_gstin_the_operator_typed(self):
+        response = self.client.post("/api/v1/customers/", {
+            "name": "Asian Paints Ltd", "gstin": "27AAACA3622K1ZV", "pan": "AAACA3622K"}, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["gstin"], "27AAACA3622K1ZV")
+
+    def test_vehicle_keeps_the_registration_the_operator_typed(self):
+        response = self.client.post("/api/v1/vehicles/", {
+            "registration_number": "MH 12 PQ 4407", "vehicle_type": "22 ft SXL", "capacity_kg": 9000}, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["registration_number"], "MH 12 PQ 4407")
+
+    def test_service_area_and_zone_can_be_created_on_an_empty_database(self):
+        area = self.client.post("/api/v1/service-areas/", {"name": "North India", "code": "NORTH"}, format="json")
+        self.assertEqual(area.status_code, 201, area.data)
+        zone = self.client.post("/api/v1/zones/", {
+            "service_area": area.data["id"], "name": "Delhi NCR",
+            "center_latitude": "28.613900", "center_longitude": "77.209000", "radius_km": 60}, format="json")
+        self.assertEqual(zone.status_code, 201, zone.data)
