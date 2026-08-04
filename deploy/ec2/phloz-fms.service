@@ -1,0 +1,17 @@
+[Unit]
+Description=Phloz Fleet Management API
+After=network.target
+
+[Service]
+User=ec2-user
+Group=ec2-user
+WorkingDirectory=/opt/phloz/fms/current
+EnvironmentFile=/opt/phloz/fms/shared/fms.env
+ExecStart=/opt/phloz/fms/venv/bin/gunicorn phloz_fms.wsgi:application --bind 127.0.0.1:8010 --workers 2 --timeout 60 --access-logfile - --error-logfile -
+Restart=always
+RestartSec=5
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
