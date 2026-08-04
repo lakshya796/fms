@@ -19,6 +19,15 @@ behaviour (GST/RCM, e-way bill, FASTag, RTO paperwork, driver bhatta).
 - `app/` — Next.js console (`/` workspace, `/track` public consignment tracking)
 - `backend/` — Django REST API (`/api/v1/`), see [backend/README.md](backend/README.md)
 
+## Deploying the API
+
+```bash
+cp .env.fms.example .env.fms   # then fill in secrets
+docker compose --env-file .env.fms -f docker-compose.fms.yml up -d --build
+```
+
+Full deployment notes, including the Nginx proxy, are in [backend/README.md](backend/README.md).
+
 ## Running locally
 
 ```bash

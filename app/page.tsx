@@ -8,7 +8,7 @@ const navGroups: { label: string; items: [string, string][] }[] = [
   { label: "TRANSPORT", items: [["Dispatch", "▦"], ["Orders", "◈"], ["Tracking", "⌖"], ["Operations", "▤"]] },
   { label: "COMMERCIAL", items: [["Customers", "◇"], ["Sales", "↗"], ["Rates", "⚖"], ["Invoices", "▥"]] },
   { label: "FLEET", items: [["Fleet", "▱"], ["Fleets", "▩"], ["Drivers", "♙"], ["Maintenance", "⚒"], ["Compliance", "▣"], ["Fuel", "⛽"], ["Issues", "⚠"]] },
-  { label: "NETWORK", items: [["Vendors", "⌸"], ["Places", "⌂"], ["Zones", "◍"]] },
+  { label: "NETWORK", items: [["Vendors", "⌸"], ["Places", "⌂"], ["Service areas", "◫"], ["Zones", "◍"]] },
   { label: "FINANCE", items: [["Expenses", "▤"], ["Settlements", "₹"]] },
   { label: "PLATFORM", items: [["Modules", "⊞"]] },
 ];
@@ -39,8 +39,13 @@ const modules: Record<string, { eyebrow: string; title: string; action: string; 
     blurb: "Saved warehouses, plants, hubs, fuel stations and customer sites with geo-coordinates.",
     columns: ["Place", "Type", "City", "Pincode", "Status"],
   },
+  "Service areas": {
+    eyebrow: "OPERATING REGIONS", title: "Service areas", action: "+ Add service area", actionType: "servicearea",
+    blurb: "The regions you operate in. Zones, rate cards and places all hang off a service area.",
+    columns: ["Service area", "Code", "States covered", "Zones", "Status"],
+  },
   Zones: {
-    eyebrow: "GEOFENCING", title: "Service areas & zones", action: "+ Add zone", actionType: "zone",
+    eyebrow: "GEOFENCING", title: "Zones & geofences", action: "+ Add zone", actionType: "zone",
     blurb: "Circular geofences used for allocation, rate cards and arrival detection.",
     columns: ["Zone", "Service area", "Centre", "Radius", "Type"],
   },
@@ -145,24 +150,17 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
 }
 
 const actionMeta: Record<string, { eyebrow: string; title: string; button: string }> = {
-  lr: { eyebrow: "CONSIGNMENT BOOKING", title: "Generate digital LR", button: "Generate LR" },
-  trip: { eyebrow: "DISPATCH PLANNING", title: "Create trip sheet", button: "Create trip sheet" },
-  invoice: { eyebrow: "FREIGHT BILLING", title: "Generate customer invoice", button: "Generate invoice" },
   tracking: { eyebrow: "LIVE GPS", title: "Vehicle tracking", button: "Refresh location" },
-  customer: { eyebrow: "CUSTOMER KYC", title: "Add customer", button: "Save customer" },
-  quote: { eyebrow: "SALES", title: "Create quotation", button: "Save quotation" },
-  vehicle: { eyebrow: "FLEET MASTER", title: "Add vehicle", button: "Save vehicle" },
-  settlement: { eyebrow: "DRIVER ACCOUNTS", title: "Create settlement", button: "Save settlement" },
-  maintenance: { eyebrow: "FLEET MAINTENANCE", title: "Create work order", button: "Save work order" },
 };
 
-type FormField = { name: string; label: string; type?: "text" | "number" | "date" | "select" | "textarea"; options?: [string, string][]; source?: string; value?: string; required?: boolean };
+type FormField = { name: string; label: string; type?: "text" | "number" | "date" | "datetime" | "select" | "textarea"; options?: [string, string][]; source?: string; value?: string; required?: boolean; multiple?: boolean };
 type FormSpec = { eyebrow: string; title: string; button: string; endpoint: string; fields: FormField[]; reference: (values: Record<string, string>, created: any) => string };
 
 const sourceLabel: Record<string, (record: any) => string> = {
   "customers/": r => r.name, "vehicles/": r => r.registration_number, "drivers/": r => r.name,
   "places/": r => `${r.name} · ${r.city}`, "service-areas/": r => r.name, "service-rates/": r => r.name,
   "fleets/": r => r.name, "trips/": r => r.number, "vendors/": r => r.name, "orders/": r => r.number,
+  "lorry-receipts/": r => `${r.number} · ${r.origin} → ${r.destination}`,
 };
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -183,6 +181,71 @@ const recordForms: Record<string, FormSpec> = {
       { name: "state", label: "State" },
       { name: "payment_terms_days", label: "Payment terms (days)", type: "number", value: "30" },
       { name: "tds_percent", label: "TDS %", type: "number", value: "2" },
+    ],
+  },
+  servicearea: {
+    eyebrow: "OPERATING REGIONS", title: "Add service area", button: "Save service area", endpoint: "service-areas/",
+    reference: values => values.name,
+    fields: [
+      { name: "name", label: "Service area name", required: true },
+      { name: "code", label: "Code", required: true },
+      { name: "states", label: "States covered", value: "Maharashtra, Gujarat" },
+      { name: "description", label: "Description" },
+      { name: "status", label: "Status", type: "select", options: [["active", "Active"], ["inactive", "Inactive"]] },
+    ],
+  },
+  rate: {
+    eyebrow: "RATE MANAGEMENT", title: "Create rate card", button: "Save rate card", endpoint: "service-rates/",
+    reference: values => values.name,
+    fields: [
+      { name: "name", label: "Rate card name", required: true },
+      { name: "code", label: "Code", required: true },
+      { name: "service_area", label: "Service area", type: "select", source: "service-areas/" },
+      { name: "customer", label: "Customer (optional)", type: "select", source: "customers/" },
+      { name: "vehicle_type", label: "Vehicle type", value: "32 ft MXL container" },
+      { name: "rate_type", label: "Charged on", type: "select", options: [["per_km", "Per km"], ["per_ton_km", "Per ton per km"], ["per_kg", "Per kg"], ["per_trip", "Fixed per trip"], ["per_hour", "Per hour"]] },
+      { name: "base_charge", label: "Base charge (₹)", type: "number", value: "2500" },
+      { name: "per_km_rate", label: "Per km (₹)", type: "number", value: "48" },
+      { name: "per_ton_km_rate", label: "Per ton-km (₹)", type: "number", value: "6.50" },
+      { name: "per_kg_rate", label: "Per kg (₹)", type: "number", value: "0" },
+      { name: "per_hour_rate", label: "Per hour (₹)", type: "number", value: "0" },
+      { name: "minimum_charge", label: "Minimum charge (₹)", type: "number", value: "8000" },
+      { name: "loading_charge", label: "Loading (₹)", type: "number", value: "1800" },
+      { name: "unloading_charge", label: "Unloading (₹)", type: "number", value: "1500" },
+      { name: "halting_charge_per_day", label: "Halting per day (₹)", type: "number", value: "2500" },
+      { name: "fuel_surcharge_percent", label: "Fuel surcharge %", type: "number", value: "3.5" },
+      { name: "gst_percent", label: "GST %", type: "select", options: [["5", "5% (GTA without ITC)"], ["12", "12% (with ITC)"], ["18", "18%"], ["0", "Exempt"]] },
+      { name: "reverse_charge", label: "GST under reverse charge", type: "select", options: [["false", "No, we charge GST"], ["true", "Yes, consignee pays under RCM"]] },
+      { name: "effective_from", label: "Effective from", type: "date" },
+      { name: "effective_to", label: "Effective to", type: "date" },
+    ],
+  },
+  driver: {
+    eyebrow: "DRIVER MASTER", title: "Add driver", button: "Save driver", endpoint: "drivers/",
+    reference: values => values.name,
+    fields: [
+      { name: "name", label: "Driver name", required: true },
+      { name: "phone", label: "Phone", required: true },
+      { name: "licence_number", label: "Licence number", required: true },
+      { name: "licence_expiry", label: "Licence valid until", type: "date" },
+      { name: "status", label: "Status", type: "select", options: [["available", "Available"], ["on_trip", "On trip"], ["leave", "On leave"], ["inactive", "Inactive"]] },
+      { name: "home_city", label: "Home city" },
+      { name: "date_of_joining", label: "Date of joining", type: "date" },
+      { name: "monthly_salary", label: "Monthly salary (₹)", type: "number", value: "22000" },
+      { name: "daily_allowance", label: "Daily bhatta (₹)", type: "number", value: "600" },
+      { name: "aadhaar_number", label: "Aadhaar number" },
+    ],
+  },
+  schedule: {
+    eyebrow: "PREVENTIVE MAINTENANCE", title: "Add service schedule", button: "Save schedule", endpoint: "maintenance-schedules/",
+    reference: values => values.task,
+    fields: [
+      { name: "vehicle", label: "Vehicle", type: "select", source: "vehicles/", required: true },
+      { name: "task", label: "Service task", value: "Engine oil and filter change", required: true },
+      { name: "interval_km", label: "Every (km)", type: "number", value: "20000" },
+      { name: "interval_days", label: "Or every (days)", type: "number", value: "180" },
+      { name: "last_service_km", label: "Last service odometer", type: "number" },
+      { name: "last_service_date", label: "Last service date", type: "date" },
     ],
   },
   place: {
@@ -281,6 +344,129 @@ const recordForms: Record<string, FormSpec> = {
       { name: "reminder_days", label: "Remind before (days)", type: "number", value: "30" },
     ],
   },
+  customer: {
+    eyebrow: "CUSTOMER KYC", title: "Add customer", button: "Save customer", endpoint: "customers/",
+    reference: values => values.name,
+    fields: [
+      { name: "name", label: "Customer name", required: true },
+      { name: "gstin", label: "GSTIN", required: true },
+      { name: "pan", label: "PAN" },
+      { name: "phone", label: "Phone" },
+      { name: "email", label: "Email" },
+      { name: "credit_limit", label: "Credit limit (₹)", type: "number", value: "500000" },
+      { name: "kyc_status", label: "KYC status", type: "select", options: [["pending", "Pending verification"], ["verified", "Verified"], ["rejected", "Rejected"]] },
+      { name: "billing_address", label: "Billing address", type: "textarea" },
+    ],
+  },
+  vehicle: {
+    eyebrow: "FLEET MASTER", title: "Add vehicle", button: "Save vehicle", endpoint: "vehicles/",
+    reference: values => values.registration_number,
+    fields: [
+      { name: "registration_number", label: "Registration number", required: true },
+      { name: "vehicle_type", label: "Vehicle type", value: "32 ft MXL container", required: true },
+      { name: "make_model", label: "Make and model" },
+      { name: "capacity_kg", label: "Capacity (kg)", type: "number", value: "16000" },
+      { name: "ownership", label: "Ownership", type: "select", options: [["owned", "Owned"], ["attached", "Attached / vendor"], ["leased", "Leased"]] },
+      { name: "status", label: "Status", type: "select", options: [["available", "Available"], ["on_trip", "On trip"], ["maintenance", "In workshop"], ["inactive", "Inactive"]] },
+      { name: "fuel_type", label: "Fuel", type: "select", options: [["diesel", "Diesel"], ["cng", "CNG"], ["lng", "LNG"], ["electric", "Electric"]] },
+      { name: "current_odometer_km", label: "Odometer (km)", type: "number", value: "0" },
+      { name: "fastag_id", label: "FASTag ID" },
+      { name: "gps_device_id", label: "GPS device ID" },
+      { name: "chassis_number", label: "Chassis number" },
+      { name: "engine_number", label: "Engine number" },
+      { name: "insurance_expiry", label: "Insurance valid until", type: "date" },
+      { name: "permit_expiry", label: "Permit valid until", type: "date" },
+    ],
+  },
+  quote: {
+    eyebrow: "SALES", title: "Create quotation", button: "Save quotation", endpoint: "quotes/",
+    reference: (_values, created) => created?.number || "Quotation",
+    fields: [
+      { name: "number", label: "Quotation number", value: "QTN-" + Date.now().toString().slice(-5), required: true },
+      { name: "customer", label: "Customer", type: "select", source: "customers/", required: true },
+      { name: "origin", label: "Origin", required: true },
+      { name: "destination", label: "Destination", required: true },
+      { name: "freight_amount", label: "Freight (₹)", type: "number", required: true },
+      { name: "valid_until", label: "Valid until", type: "date", required: true },
+      { name: "status", label: "Stage", type: "select", options: [["draft", "Draft"], ["sent", "Sent"], ["negotiation", "Negotiation"], ["accepted", "Accepted"], ["lost", "Lost"]] },
+    ],
+  },
+  lr: {
+    eyebrow: "CONSIGNMENT BOOKING", title: "Book a lorry receipt", button: "Generate LR", endpoint: "lorry-receipts/",
+    reference: (_values, created) => created?.number || "LR",
+    fields: [
+      { name: "number", label: "LR number", value: "LR-" + Date.now().toString().slice(-6), required: true },
+      { name: "customer", label: "Customer", type: "select", source: "customers/", required: true },
+      { name: "consignor", label: "Consignor", required: true },
+      { name: "consignee", label: "Consignee", required: true },
+      { name: "origin", label: "Origin", required: true },
+      { name: "destination", label: "Destination", required: true },
+      { name: "material", label: "Material", required: true },
+      { name: "weight_kg", label: "Weight (kg)", type: "number", required: true },
+      { name: "packages", label: "Packages", type: "number", value: "1" },
+      { name: "eway_bill_number", label: "E-way bill number" },
+      { name: "freight_amount", label: "Freight (₹)", type: "number" },
+      { name: "status", label: "Status", type: "select", options: [["booked", "Booked"], ["dispatched", "Dispatched"], ["delivered", "Delivered"]] },
+    ],
+  },
+  trip: {
+    eyebrow: "DISPATCH PLANNING", title: "Create trip sheet", button: "Create trip sheet", endpoint: "trips/",
+    reference: (_values, created) => created?.number || "Trip",
+    fields: [
+      { name: "number", label: "Trip number", value: "TRP-" + Date.now().toString().slice(-5), required: true },
+      { name: "vehicle", label: "Vehicle", type: "select", source: "vehicles/", required: true },
+      { name: "driver", label: "Driver", type: "select", source: "drivers/", required: true },
+      { name: "lorry_receipts", label: "Consignments (LRs) on this trip", type: "select", source: "lorry-receipts/", multiple: true },
+      { name: "origin", label: "Origin", required: true },
+      { name: "destination", label: "Destination", required: true },
+      { name: "planned_departure", label: "Planned departure", type: "datetime", required: true },
+      { name: "advance_amount", label: "Trip advance (₹)", type: "number", value: "0" },
+      { name: "estimated_cost", label: "Estimated cost (₹)", type: "number", value: "0" },
+      { name: "status", label: "Status", type: "select", options: [["planned", "Planned"], ["dispatched", "Dispatched"], ["in_transit", "In transit"], ["closed", "Closed"]] },
+    ],
+  },
+  invoice: {
+    eyebrow: "FREIGHT BILLING", title: "Generate customer invoice", button: "Generate invoice", endpoint: "invoices/",
+    reference: (_values, created) => created?.number || "Invoice",
+    fields: [
+      { name: "number", label: "Invoice number", value: "INV-" + Date.now().toString().slice(-6), required: true },
+      { name: "customer", label: "Customer", type: "select", source: "customers/", required: true },
+      { name: "trip", label: "Trip", type: "select", source: "trips/", required: true },
+      { name: "freight_amount", label: "Freight (₹)", type: "number", required: true },
+      { name: "additional_charges", label: "Additional charges (₹)", type: "number", value: "0" },
+      { name: "tax_amount", label: "GST (₹)", type: "number", value: "0" },
+      { name: "total_amount", label: "Invoice total (₹)", type: "number", required: true },
+      { name: "due_date", label: "Due date", type: "date", required: true },
+      { name: "status", label: "Status", type: "select", options: [["draft", "Draft"], ["issued", "Issued"], ["paid", "Paid"], ["overdue", "Overdue"]] },
+    ],
+  },
+  settlement: {
+    eyebrow: "DRIVER ACCOUNTS", title: "Create driver settlement", button: "Save settlement", endpoint: "settlements/",
+    reference: values => `Settlement for ₹${values.net_payable || 0}`,
+    fields: [
+      { name: "driver", label: "Driver", type: "select", source: "drivers/", required: true },
+      { name: "trip", label: "Trip", type: "select", source: "trips/", required: true },
+      { name: "advance_amount", label: "Advance paid (₹)", type: "number", value: "0" },
+      { name: "approved_expenses", label: "Approved expenses (₹)", type: "number", value: "0" },
+      { name: "net_payable", label: "Net payable (₹)", type: "number", value: "0" },
+      { name: "status", label: "Status", type: "select", options: [["pending", "Pending"], ["approved", "Approved"], ["paid", "Paid"]] },
+    ],
+  },
+  maintenance: {
+    eyebrow: "FLEET MAINTENANCE", title: "Create work order", button: "Save work order", endpoint: "maintenance/",
+    reference: (_values, created) => created?.number || "Work order",
+    fields: [
+      { name: "number", label: "Work order number", value: "WO-" + Date.now().toString().slice(-5), required: true },
+      { name: "vehicle", label: "Vehicle", type: "select", source: "vehicles/", required: true },
+      { name: "title", label: "Work description", value: "Preventive service", required: true },
+      { name: "category", label: "Category", type: "select", options: [["preventive", "Preventive"], ["breakdown", "Breakdown"], ["accident", "Accident repair"], ["tyre", "Tyre"], ["bodywork", "Bodywork"]] },
+      { name: "scheduled_date", label: "Scheduled date", type: "date", required: true },
+      { name: "odometer_km", label: "Odometer (km)", type: "number", value: "0" },
+      { name: "estimated_cost", label: "Estimated cost (₹)", type: "number", value: "0" },
+      { name: "vendor", label: "Workshop / vendor" },
+      { name: "status", label: "Status", type: "select", options: [["open", "Open"], ["in_progress", "In progress"], ["completed", "Completed"]] },
+    ],
+  },
   order: {
     eyebrow: "FLEETOPS BOOKING", title: "Create consignment order", button: "Create order", endpoint: "orders/",
     reference: (_values, created) => created?.tracking_number || "Order",
@@ -310,9 +496,8 @@ function RecordForm({ spec, onClose, onSaved }: { spec: FormSpec; onClose: () =>
   useEffect(() => {
     const sources = Array.from(new Set(spec.fields.map(field => field.source).filter(Boolean) as string[]));
     sources.forEach(source => {
-      fmsRequest<any>(source).then(payload => {
-        const records = Array.isArray(payload) ? payload : payload.results || [];
-        setOptions(current => ({ ...current, [source]: records }));
+      fmsRequest<any>(wholeSet(source)).then(payload => {
+        setOptions(current => ({ ...current, [source]: asList(payload) }));
       }).catch(() => undefined);
     });
   }, [spec]);
@@ -324,6 +509,12 @@ function RecordForm({ spec, onClose, onSaved }: { spec: FormSpec; onClose: () =>
     const values: Record<string, string> = {};
     const payload: Record<string, unknown> = {};
     for (const field of spec.fields) {
+      if (field.multiple) {
+        const chosen = form.getAll(field.name).map(entry => Number(entry)).filter(entry => !Number.isNaN(entry));
+        values[field.name] = chosen.join(",");
+        if (chosen.length) payload[field.name] = chosen;
+        continue;
+      }
       const raw = String(form.get(field.name) ?? "").trim();
       values[field.name] = raw;
       if (raw === "") continue;
@@ -339,12 +530,12 @@ function RecordForm({ spec, onClose, onSaved }: { spec: FormSpec; onClose: () =>
 
   return <form className="action-form" onSubmit={submit}>
     <div className="form-grid">{spec.fields.filter(field => field.type !== "textarea").map(field => <label key={field.name}>{field.label}
-      {field.source ? <select name={field.name} required={field.required} defaultValue="">
-        <option value="">{(options[field.source] || []).length ? "Select…" : "Loading…"}</option>
+      {field.source ? <select name={field.name} required={field.required} multiple={field.multiple} defaultValue={field.multiple ? [] : ""}>
+        {!field.multiple && <option value="">{(options[field.source] || []).length ? "Select…" : "Loading…"}</option>}
         {(options[field.source] || []).map(record => <option key={record.id} value={record.id}>{sourceLabel[field.source!] ? sourceLabel[field.source!](record) : record.name}</option>)}
       </select>
       : field.type === "select" ? <select name={field.name} defaultValue={field.value || (field.options || [["", ""]])[0][0]}>{(field.options || []).map(option => <option key={option[0]} value={option[0]}>{option[1]}</option>)}</select>
-      : <input name={field.name} type={field.type === "number" ? "number" : field.type === "date" ? "date" : "text"} step={field.type === "number" ? "any" : undefined} defaultValue={field.value || ""} required={field.required} />}
+      : <input name={field.name} type={field.type === "number" ? "number" : field.type === "date" ? "date" : field.type === "datetime" ? "datetime-local" : "text"} step={field.type === "number" ? "any" : undefined} defaultValue={field.value || ""} required={field.required} />}
     </label>)}</div>
     {spec.fields.filter(field => field.type === "textarea").map(field => <label key={field.name}>{field.label}<textarea name={field.name} defaultValue={field.value || ""} /></label>)}
     {error && <div className="form-error">{error}</div>}
@@ -354,85 +545,30 @@ function RecordForm({ spec, onClose, onSaved }: { spec: FormSpec; onClose: () =>
 
 function ActionPanel({ type, onClose, onDone, onCreated }: { type: string; onClose: () => void; onDone: (message: string) => void; onCreated: () => void }) {
   const [complete, setComplete] = useState(false);
-  const [vehicle, setVehicle] = useState("MH 04 JU 9182");
   const [reference, setReference] = useState("");
-  const [error, setError] = useState("");
-  const [working, setWorking] = useState(false);
+  const [vehicle, setVehicle] = useState("");
   const [liveTrip, setLiveTrip] = useState<any>(null);
   const spec = recordForms[type];
   const meta = actionMeta[type] || spec;
   useEffect(() => {
     if (type !== "tracking") return;
     fmsRequest<any>("trips/").then(payload => {
-      const records = Array.isArray(payload) ? payload : payload.results || [];
-      const trip = records[0] || null;
+      const trip = asList(payload)[0] || null;
       setLiveTrip(trip);
       if (trip?.vehicle_number) setVehicle(trip.vehicle_number);
     }).catch(() => undefined);
   }, [type]);
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault(); setWorking(true); setError("");
-    const form = new FormData(e.currentTarget as HTMLFormElement);
-    const value = (name: string, fallback: string) => String(form.get(name) || fallback);
-    try {
-      if (type === "lr") {
-        const number = "LR-" + Date.now().toString().slice(-6);
-        await fmsRequest("lorry-receipts/", { method: "POST", body: JSON.stringify({ number, customer: 1, consignor: value("consignor", "Tata Consumer, Mumbai"), consignee: value("consignee", "D-Mart Warehouse, Pune"), origin: value("origin", "Mumbai"), destination: value("destination", "Pune"), material: value("material", "Packaged food products"), weight_kg: value("weight", "12400"), packages: Number(value("packages", "480")), eway_bill_number: value("eway_bill", "271234567890"), freight_amount: value("freight", "42800"), status: "booked" }) });
-        setReference(number);
-      } else if (type === "trip") {
-        const number = "TRP-" + Date.now().toString().slice(-5);
-        await fmsRequest("trips/", { method: "POST", body: JSON.stringify({ number, vehicle: 1, driver: 1, lorry_receipts: [1], origin: value("origin", "Mumbai"), destination: value("destination", "Pune"), planned_departure: new Date(Date.now() + 7200000).toISOString(), advance_amount: value("advance", "12000"), estimated_cost: value("estimated_cost", "31600"), status: "planned" }) });
-        setReference(number);
-      } else if (type === "customer") {
-        const gstin = "27ABCDE" + Date.now().toString().slice(-4) + "F1Z5";
-        await fmsRequest("customers/", { method: "POST", body: JSON.stringify({ name: value("customer_name", "New Transport Customer"), gstin, pan: value("pan", "ABCDE1234F"), phone: value("phone", "+91 98765 44001"), email: value("email", "operations@customer.example"), billing_address: value("address", "Mumbai, Maharashtra"), credit_limit: value("credit_limit", "500000"), kyc_status: value("kyc_status", "pending") }) });
-        setReference(gstin);
-      } else if (type === "quote") {
-        const number = "QTN-" + Date.now().toString().slice(-5);
-        const valid = new Date(Date.now() + 15 * 86400000).toISOString().slice(0, 10);
-        await fmsRequest("quotes/", { method: "POST", body: JSON.stringify({ number, customer: 1, origin: value("origin", "Mumbai"), destination: value("destination", "Pune"), freight_amount: value("freight", "42800"), valid_until: valid, status: "sent" }) });
-        setReference(number);
-      } else if (type === "vehicle") {
-        const registration = "MH 04 DEMO " + Date.now().toString().slice(-3);
-        await fmsRequest("vehicles/", { method: "POST", body: JSON.stringify({ registration_number: value("registration", registration), vehicle_type: value("vehicle_type", "32 ft MXL"), capacity_kg: Number(value("capacity", "16000")), ownership: value("ownership", "owned"), status: "available", gps_device_id: "GPS-" + Date.now().toString().slice(-6) }) });
-        setReference(registration);
-      } else if (type === "settlement") {
-        await fmsRequest("settlements/", { method: "POST", body: JSON.stringify({ trip: 1, driver: 1, advance_amount: value("advance", "12000"), approved_expenses: value("expenses", "18450"), net_payable: String(Number(value("expenses", "18450")) - Number(value("advance", "12000"))), status: "pending" }) });
-        setReference("Driver settlement");
-      } else if (type === "maintenance") {
-        const number = "WO-" + Date.now().toString().slice(-5);
-        await fmsRequest("maintenance/", { method: "POST", body: JSON.stringify({ number, vehicle: 1, title: value("title", "Preventive service"), category: value("category", "preventive"), scheduled_date: value("scheduled_date", new Date().toISOString().slice(0,10)), odometer_km: Number(value("odometer", "6842")), estimated_cost: value("estimated_cost", "12500"), vendor: value("vendor", "Authorised Workshop"), status: "open" }) });
-        setReference(number);
-      } else if (type === "invoice") {
-        const number = "INV-" + Date.now().toString().slice(-6);
-        const due = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
-        await fmsRequest("invoices/", { method: "POST", body: JSON.stringify({ number, customer: 1, trip: 1, freight_amount: value("freight", "38500"), additional_charges: value("additional", "1200"), tax_amount: value("tax", "3100"), total_amount: String(Number(value("freight", "38500")) + Number(value("additional", "1200")) + Number(value("tax", "3100"))), due_date: due, status: "issued" }) });
-        setReference(number);
-      }
-      setComplete(true); onCreated();
-    } catch (e) { setError(e instanceof Error ? e.message : "Unable to save record"); }
-    finally { setWorking(false); }
-  };
-  return <div className="modal-backdrop" onMouseDown={onClose}><section className={"action-panel " + (type === "tracking" ? "map-panel" : "")} onMouseDown={e => e.stopPropagation()}>
+  if (!meta) return null;
+
+  return <div className="modal-backdrop" onMouseDown={onClose}><section className={"action-panel " + (type === "tracking" ? "map-panel" : "")} onMouseDown={event => event.stopPropagation()}>
     <div className="panel-head"><div><p className="eyebrow">{meta.eyebrow}</p><h2>{meta.title}</h2></div><button className="panel-close" onClick={onClose}>×</button></div>
     {type === "tracking" ? <div className="tracking-layout">
       <div className="mock-map"><div className="map-road r1"/><div className="map-road r2"/><div className="map-road r3"/><span className="city mumbai">Mumbai</span><span className="city pune">Pune</span><span className="map-pin start">●</span><span className="map-pin vehicle">▰</span><span className="map-pin finish">●</span><div className="map-progress"/></div>
-      <div className="vehicle-list"><label>Track vehicle<select value={vehicle} onChange={e => setVehicle(e.target.value)}><option>{liveTrip?.vehicle_number || "No assigned vehicle"}</option></select></label><div className="tracking-stat"><span>Status</span><strong>{liveTrip?.status?.replaceAll("_", " ") || "Loading live trip…"}</strong></div><div className="tracking-grid"><div><span>Speed</span><strong>{liveTrip?.tracking_events?.[0]?.speed_kph || 0} km/h</strong></div><div><span>Route</span><strong>{liveTrip ? liveTrip.origin + " → " + liveTrip.destination : "—"}</strong></div><div><span>Last update</span><strong>{liveTrip?.tracking_events?.[0]?.recorded_at ? new Date(liveTrip.tracking_events[0].recorded_at).toLocaleTimeString("en-IN") : "No GPS ping"}</strong></div><div><span>Trip</span><strong>{liveTrip?.number || "—"}</strong></div></div><div className="event-feed"><strong>Live trip events</strong>{(liveTrip?.tracking_events || []).slice(0, 4).map((event: any) => <p key={event.id}><i/>{event.description || event.event_type}<span>{new Date(event.recorded_at).toLocaleTimeString("en-IN")}</span></p>)}{liveTrip && !liveTrip.tracking_events?.length && <p>No GPS events received yet</p>}</div><button className="primary full-button" onClick={() => { setLiveTrip(null); fmsRequest<any>("trips/").then(payload => setLiveTrip((Array.isArray(payload) ? payload : payload.results || [])[0] || null)); onDone("GPS location refreshed"); }}>{meta.button}</button></div>
-    </div> : complete ? (spec ? <div className="success-state"><span>✓</span><h3>{reference}</h3><p>Saved to the live fleet database. The module list has been refreshed.</p><div className="success-actions"><button className="secondary" onClick={onClose}>Close</button><button className="primary" onClick={() => { setComplete(false); setReference(""); }}>Add another</button></div></div> : <div className="success-state"><span>✓</span><h3>{reference} {type === "trip" ? "created" : "generated"}</h3><p>{type === "lr" ? "Digital LR is ready to print or share with the driver." : type === "trip" ? "Vehicle and driver are allocated. The trip is ready for dispatch." : "Invoice for ₹42,800 is ready to send to Tata Consumer Products."}</p><div className="document-preview"><b>phloz</b><strong>{type === "lr" ? "LORRY RECEIPT" : type === "trip" ? "TRIP SHEET" : "TAX INVOICE"}</strong><small>{type === "lr" ? "LR-240845 · Mumbai → Pune" : type === "trip" ? "TS-2845 · MH 04 JU 9182" : "INV-2026-0847 · ₹42,800"}</small></div><div className="success-actions"><button className="secondary" onClick={() => onDone("Document downloaded")}>⇩ Download PDF</button><button className="primary" onClick={() => onDone("Document shared on WhatsApp")}>Share via WhatsApp</button></div></div>) : spec ? <RecordForm spec={spec} onClose={onClose} onSaved={(newReference) => { setReference(newReference); setComplete(true); onCreated(); }} /> :
-      <form className="action-form" onSubmit={submit}>
-        {type === "customer" && <div className="form-grid"><label>Customer name<input name="customer_name" defaultValue="New Transport Customer" required/></label><label>Email<input name="email" defaultValue="operations@customer.example"/></label><label>PAN<input name="pan" defaultValue="ABCDE1234F"/></label><label>Credit limit<input name="credit_limit" type="number" defaultValue="500000"/></label><label>Phone<input name="phone" defaultValue="+91 98765 44001"/></label><label>KYC status<select name="kyc_status"><option value="pending">Pending verification</option><option value="verified">Verified</option></select></label></div>}
-        {type === "quote" && <div className="form-grid"><label>Customer<select><option>Tata Consumer Products</option></select></label><label>Origin<input name="origin" defaultValue="Mumbai"/></label><label>Destination<input name="destination" defaultValue="Pune"/></label><label>Freight<input name="freight" type="number" defaultValue="42800"/></label></div>}
-        {type === "vehicle" && <div className="form-grid"><label>Registration<input name="registration" placeholder="MH 04 AB 1234" required/></label><label>Vehicle type<select name="vehicle_type"><option>32 ft MXL</option><option>22 ft SXL</option></select></label><label>Capacity (kg)<input name="capacity" type="number" defaultValue="16000"/></label><label>Ownership<select name="ownership"><option value="owned">Owned fleet</option><option value="vendor">Vendor</option></select></label></div>}
-        {type === "settlement" && <><div className="form-grid"><label>Driver<select><option>Ramesh Yadav</option></select></label><label>Trip<select><option>TRP-2841</option></select></label><label>Advance<input name="advance" type="number" defaultValue="12000"/></label><label>Approved expenses<input name="expenses" type="number" defaultValue="18450"/></label></div><div className="invoice-total"><span>Net payable</span><strong>₹6,450</strong><small>Expenses less advance</small></div></>}
-        {type === "maintenance" && <div className="form-grid"><label>Work description<input name="title" defaultValue="Preventive service"/></label><label>Category<select name="category"><option value="preventive">Preventive</option><option value="breakdown">Breakdown</option></select></label><label>Scheduled date<input name="scheduled_date" type="date" defaultValue={new Date().toISOString().slice(0,10)}/></label><label>Odometer (km)<input name="odometer" type="number" defaultValue="6842"/></label><label>Estimated cost<input name="estimated_cost" type="number" defaultValue="12500"/></label><label>Workshop/vendor<input name="vendor" defaultValue="Authorised Workshop"/></label></div>}
-        {type === "lr" && <><div className="form-grid"><label>Customer<select><option>Tata Consumer Products</option><option>Asian Paints Ltd</option></select></label><label>Booking date<input type="date" defaultValue="2026-08-03"/></label><label>Consignor<input name="consignor" defaultValue="Tata Consumer, Mumbai"/></label><label>Consignee<input name="consignee" defaultValue="D-Mart Warehouse, Pune"/></label><label>Origin<input name="origin" defaultValue="Mumbai"/></label><label>Destination<input name="destination" defaultValue="Pune"/></label><label>Material<input name="material" defaultValue="Packaged food products"/></label><label>Weight (kg)<input name="weight" type="number" defaultValue="12400"/></label><label>Packages<input name="packages" type="number" defaultValue="480"/></label><label>E-way bill<input name="eway_bill" defaultValue="271234567890"/></label><label>Freight<input name="freight" type="number" defaultValue="42800"/></label></div><label>Special instructions<textarea defaultValue="Handle with care · Delivery before 5 PM"/></label></>}
-        {type === "trip" && <><div className="form-grid"><label>Route<select><option>Mumbai → Pune</option><option>Delhi → Jaipur</option></select></label><label>Linked LR<select><option>LR-240845</option><option>LR-240831</option></select></label><label>Vehicle<select><option>MH 04 JU 9182 · Available</option><option>MH 12 PQ 4407 · Available</option></select></label><label>Driver<select><option>Ramesh Yadav · Available</option><option>Manoj Singh · Available</option></select></label><label>Trip advance<input name="advance" type="number" defaultValue="12000"/></label><label>Estimated cost<input name="estimated_cost" type="number" defaultValue="31600"/></label><label>Planned departure<input type="time" defaultValue="14:30"/></label></div><div className="cost-strip"><span>Estimated distance <b>149 km</b></span><span>Estimated cost <b>₹31,600</b></span><span>Expected margin <b>26.2%</b></span></div></>}
-        {type === "invoice" && <><div className="form-grid"><label>Customer<select><option>Tata Consumer Products</option><option>Asian Paints Ltd</option></select></label><label>Completed trip<select><option>TRP-2836 · POD received</option><option>TRP-2831 · POD received</option></select></label><label>Freight amount<input name="freight" type="number" defaultValue="38500"/></label><label>Additional charges<input name="additional" type="number" defaultValue="1200"/></label><label>GST<input name="tax" type="number" defaultValue="3100"/></label><label>Payment terms<select><option>30 days</option><option>15 days</option><option>45 days</option></select></label></div><div className="invoice-total"><span>Invoice total</span><strong>₹42,800</strong><small>Freight + toll + GST</small></div></>}
-        {error && <div className="form-error">{error}</div>}<div className="form-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" type="submit" disabled={working}>{working ? "Saving…" : meta.button}</button></div>
-      </form>}
+      <div className="vehicle-list"><label>Track vehicle<select value={vehicle} onChange={event => setVehicle(event.target.value)}><option>{liveTrip?.vehicle_number || "No assigned vehicle"}</option></select></label><div className="tracking-stat"><span>Status</span><strong>{liveTrip?.status?.replaceAll("_", " ") || "Loading live trip…"}</strong></div><div className="tracking-grid"><div><span>Speed</span><strong>{liveTrip?.tracking_events?.[0]?.speed_kph || 0} km/h</strong></div><div><span>Route</span><strong>{liveTrip ? liveTrip.origin + " → " + liveTrip.destination : "—"}</strong></div><div><span>Last update</span><strong>{liveTrip?.tracking_events?.[0]?.recorded_at ? new Date(liveTrip.tracking_events[0].recorded_at).toLocaleTimeString("en-IN") : "No GPS ping"}</strong></div><div><span>Trip</span><strong>{liveTrip?.number || "—"}</strong></div></div><div className="event-feed"><strong>Live trip events</strong>{(liveTrip?.tracking_events || []).slice(0, 4).map((event: any) => <p key={event.id}><i/>{event.description || event.event_type}<span>{new Date(event.recorded_at).toLocaleTimeString("en-IN")}</span></p>)}{liveTrip && !liveTrip.tracking_events?.length && <p>No GPS events received yet</p>}</div><button className="primary full-button" onClick={() => { setLiveTrip(null); fmsRequest<any>("trips/").then(payload => setLiveTrip(asList(payload)[0] || null)); onDone("GPS location refreshed"); }}>{meta.button}</button></div>
+    </div> : complete ? <div className="success-state"><span>✓</span><h3>{reference}</h3><p>Saved to the live fleet database. The module list has been refreshed.</p><div className="success-actions"><button className="secondary" onClick={onClose}>Close</button><button className="primary" onClick={() => { setComplete(false); setReference(""); }}>Add another</button></div></div>
+      : <RecordForm spec={spec} onClose={onClose} onSaved={newReference => { setReference(newReference); setComplete(true); onCreated(); }} />}
   </section></div>;
 }
-
 
 const liveModules: Record<string, { endpoint: string; map: (record: any) => string[] }> = {
   Customers: { endpoint: "customers/", map: r => [r.name, r.gstin, "₹" + Number(r.credit_limit).toLocaleString("en-IN"), r.email || "—", r.kyc_status] },
@@ -443,6 +579,7 @@ const liveModules: Record<string, { endpoint: string; map: (record: any) => stri
   Invoices: { endpoint: "invoices/", map: r => [r.number, r.customer_name, r.due_date, "₹" + Number(r.total_amount).toLocaleString("en-IN"), r.status] },
   Vendors: { endpoint: "vendors/", map: r => [r.name, r.vendor_type, r.city || "—", r.gstin || "—", r.status] },
   Places: { endpoint: "places/", map: r => [r.name, r.place_type, r.city, r.pincode || "—", r.status] },
+  "Service areas": { endpoint: "service-areas/", map: r => [r.name, r.code, r.states || "—", String(r.zone_count ?? 0), r.status] },
   Zones: { endpoint: "zones/", map: r => [r.name, r.service_area_name, Number(r.center_latitude).toFixed(3) + ", " + Number(r.center_longitude).toFixed(3), r.radius_km + " km", r.zone_type] },
   Fleets: { endpoint: "fleets/", map: r => [r.name, r.service_area_name || "—", String(r.vehicle_count), String(r.driver_count), r.status] },
   Fuel: { endpoint: "fuel-entries/", map: r => [r.vehicle_number, r.entry_date, Number(r.volume_litres).toFixed(2) + " L", Number(r.mileage_kmpl) ? Number(r.mileage_kmpl).toFixed(2) + " km/l" : "—", r.payment_method] },
@@ -454,15 +591,17 @@ function ModuleView({ name, onAction, reloadKey, openAction }: { name: string; o
   const data = modules[name];
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<string[][]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [selectedRow, setSelectedRow] = useState<string[] | null>(null);
   useEffect(() => {
     let active = true; setLoading(true); setLoadError("");
-    fmsRequest<any>(liveModules[name].endpoint).then(payload => {
+    fmsRequest<any>(wholeSet(liveModules[name].endpoint)).then(payload => {
       if (!active) return;
-      const records = Array.isArray(payload) ? payload : payload.results || [];
+      const records = asList(payload);
       setRows(records.map(liveModules[name].map));
+      setTotal(asCount(payload, records));
     }).catch(error => { if (active) setLoadError(error instanceof Error ? error.message : "Unable to load records"); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
@@ -470,7 +609,7 @@ function ModuleView({ name, onAction, reloadKey, openAction }: { name: string; o
   const visibleRows = rows.filter(row => row.join(" ").toLowerCase().includes(query.toLowerCase()));
   return <div className="module-page">
     <div className="module-title"><div><p className="eyebrow">{data.eyebrow}</p><h2>{data.title}</h2><p>{data.blurb || "Live records from the Phloz fleet database."}</p></div><button className="primary module-action" onClick={() => data.actionType ? openAction(data.actionType) : onAction(data.action.replace("+ ", "") + " opened")}>{data.action}</button></div>
-    <div className="module-stats"><div className="module-stat"><span>Total records</span><strong>{loading ? "—" : rows.length}</strong><small>Stored in the live database</small></div><div className="module-stat"><span>Data source</span><strong>Live</strong><small>EC2 fleet API</small></div><div className="module-stat"><span>Last synchronised</span><strong>Now</strong><small>Refreshes after every save</small></div></div>
+    <div className="module-stats"><div className="module-stat"><span>Total records</span><strong>{loading ? "—" : total}</strong><small>{!loading && total > rows.length ? `Showing the first ${rows.length}` : "Stored in the live database"}</small></div><div className="module-stat"><span>Data source</span><strong>Live</strong><small>EC2 fleet API</small></div><div className="module-stat"><span>Last synchronised</span><strong>Now</strong><small>Refreshes after every save</small></div></div>
     <section className="module-table-card"><div className="module-toolbar"><div><strong>All {name.toLowerCase()}</strong><span>{loading ? "Loading live records…" : visibleRows.length + " live records"}</span></div><div className="toolbar-actions"><input aria-label={"Search " + name} placeholder={"Search " + name.toLowerCase() + "..."} value={query} onChange={e => setQuery(e.target.value)} /><button onClick={() => onAction("Live data refreshed")}>↻ Refresh</button><button onClick={() => onAction("Report exported")}>⇩ Export</button></div></div>
       {loadError ? <div className="data-state error">{loadError}</div> : loading ? <div className="data-state">Loading records from EC2…</div> : visibleRows.length === 0 ? <div className="data-state">No records found. Use the action button to create one.</div> :
       <div className="table-wrap"><table><thead><tr>{data.columns.map(col => <th key={col}>{col}</th>)}<th>Action</th></tr></thead><tbody>{visibleRows.map((row, i) => <tr key={row[0] + i}>{row.map((cell, j) => <td key={j}>{j === 0 ? <strong>{cell}</strong> : j === row.length - 1 ? <span className={"status " + cell.toLowerCase().replaceAll(" ", "-")}>{cell}</span> : cell}</td>)}<td><button className="row-action" onClick={() => setSelectedRow(row)}>View →</button></td></tr>)}</tbody></table></div>}
@@ -494,9 +633,9 @@ function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string;
   const endpoint = name === "Dispatch" || name === "Tracking" ? "trips/" : name === "Drivers" ? "drivers/" : name === "Maintenance" ? "maintenance/" : "analytics/fleet/";
   const load = () => {
     setLoading(true);
-    fmsRequest<any>(endpoint).then(payload => {
+    fmsRequest<any>(name === "Analytics" ? endpoint : wholeSet(endpoint)).then(payload => {
       if (name === "Analytics") setDashboard(payload);
-      else setRecords(Array.isArray(payload) ? payload : payload.results || []);
+      else setRecords(asList(payload));
     }).finally(() => setLoading(false));
   };
   useEffect(load, [name, reloadKey]);
@@ -507,7 +646,7 @@ function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string;
   if (name === "Dispatch") return <div className="module-page"><div className="module-title"><div><p className="eyebrow">FLEET-OPS DISPATCH</p><h2>Dispatch command board</h2><p>Plan, assign and progress trips through a visual workflow.</p></div><button className="primary module-action" onClick={() => openAction("trip")}>＋ Create trip</button></div>
     <div className="dispatch-board">{["planned","dispatched","in_transit","closed"].map(status => <section className="dispatch-column" key={status}><header><strong>{status.replaceAll("_"," ")}</strong><span>{records.filter(r => r.status === status).length}</span></header>{records.filter(r => r.status === status).map(trip => <article className="dispatch-card" key={trip.id}><b>{trip.number}</b><p>{trip.origin} → {trip.destination}</p><small>{trip.vehicle_number} · {trip.driver_name}</small><div>{status === "planned" && <button onClick={() => tripAction(trip,"dispatch")}>Dispatch</button>}{status !== "closed" && status !== "planned" && <button onClick={() => tripAction(trip,"close")}>Close trip</button>}</div></article>)}{!loading && !records.some(r => r.status === status) && <div className="empty-column">No trips</div>}</section>)}</div></div>;
   if (name === "Tracking") { const trip=records[0]; const event=trip?.tracking_events?.[0]; return <div className="module-page"><div className="module-title"><div><p className="eyebrow">LIVE FLEET MAP</p><h2>Track fleet operations</h2><p>GPS positions, routes, geofences and automated trip events.</p></div><button className="primary module-action" onClick={load}>↻ Refresh GPS</button></div><div className="full-map-layout"><div className="operations-map"><div className="map-road r1"/><div className="map-road r2"/><div className="map-road r3"/><span className="city mumbai">Mumbai</span><span className="city pune">Pune</span><span className="map-pin start">●</span><span className="map-pin vehicle">▰</span><span className="map-pin finish">●</span><div className="map-progress"/></div><aside className="map-details"><p className="eyebrow">SELECTED TRIP</p><h3>{trip?.number || "No active trip"}</h3><p>{trip ? trip.origin + " → " + trip.destination : "Create a trip to begin tracking"}</p><div className="tracking-grid"><div><span>Vehicle</span><strong>{trip?.vehicle_number || "—"}</strong></div><div><span>Driver</span><strong>{trip?.driver_name || "—"}</strong></div><div><span>Speed</span><strong>{event?.speed_kph || 0} km/h</strong></div><div><span>Status</span><strong>{trip?.status?.replaceAll("_"," ") || "—"}</strong></div></div><div className="event-feed"><strong>Latest events</strong>{(trip?.tracking_events || []).map((e:any)=><p key={e.id}><i/>{e.description || e.event_type}<span>{new Date(e.recorded_at).toLocaleTimeString("en-IN")}</span></p>)}</div></aside></div></div>; }
-  if (name === "Drivers") return <div className="module-page"><div className="module-title"><div><p className="eyebrow">DRIVER OPERATIONS</p><h2>Drivers & availability</h2><p>Licences, shifts, current status and last known location.</p></div></div><section className="module-table-card"><div className="table-wrap"><table><thead><tr><th>Driver</th><th>Phone</th><th>Licence</th><th>Expiry</th><th>Status</th></tr></thead><tbody>{records.map(r=><tr key={r.id}><td><strong>{r.name}</strong></td><td>{r.phone}</td><td>{r.licence_number}</td><td>{r.licence_expiry || "—"}</td><td><span className={"status "+r.status}>{r.status}</span></td></tr>)}</tbody></table></div></section></div>;
+  if (name === "Drivers") return <div className="module-page"><div className="module-title"><div><p className="eyebrow">DRIVER OPERATIONS</p><h2>Drivers & availability</h2><p>Licences, shifts, current status and last known location.</p></div><button className="primary module-action" onClick={() => openAction("driver")}>＋ Add driver</button></div><section className="module-table-card"><div className="table-wrap"><table><thead><tr><th>Driver</th><th>Phone</th><th>Licence</th><th>Expiry</th><th>Status</th></tr></thead><tbody>{records.map(r=><tr key={r.id}><td><strong>{r.name}</strong></td><td>{r.phone}</td><td>{r.licence_number}</td><td>{r.licence_expiry || "—"}</td><td><span className={"status "+r.status}>{r.status}</span></td></tr>)}</tbody></table></div></section></div>;
   if (name === "Maintenance") return <div className="module-page"><div className="module-title"><div><p className="eyebrow">FLEET MAINTENANCE</p><h2>Work orders & schedules</h2><p>Preventive servicing, breakdowns and vehicle downtime.</p></div><button className="primary module-action" onClick={() => openAction("maintenance")}>＋ New work order</button></div><section className="module-table-card"><div className="table-wrap"><table><thead><tr><th>Work order</th><th>Vehicle</th><th>Work</th><th>Scheduled</th><th>Cost</th><th>Status</th></tr></thead><tbody>{records.map(r=><tr key={r.id}><td><strong>{r.number}</strong></td><td>{r.vehicle_number}</td><td>{r.title}</td><td>{r.scheduled_date}</td><td>₹{Number(r.estimated_cost).toLocaleString("en-IN")}</td><td><span className={"status "+r.status}>{r.status}</span></td></tr>)}</tbody></table></div></section></div>;
   const cards: [string, any, string][] = [
     ["Fleet utilisation", (dashboard?.utilisation_percent ?? 0) + "%", `${dashboard?.vehicles_on_trip ?? 0} of ${dashboard?.fleet_size ?? 0} trucks on road`],
@@ -532,6 +671,10 @@ function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string;
 }
 
 const asList = (payload: any): any[] => (Array.isArray(payload) ? payload : payload?.results || []);
+// DRF paginates at 50 by default, so `results.length` is a page size, not a total.
+const asCount = (payload: any, records: any[]): number => (typeof payload?.count === "number" ? payload.count : records.length);
+// Board and watchlist screens render a whole working set, so they ask for a larger page.
+const wholeSet = (endpoint: string) => endpoint + (endpoint.includes("?") ? "&" : "?") + "page_size=500";
 const rupees = (value: any) => "₹" + Number(value || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 });
 const orderColumns: [string, string][] = [["created", "Booked"], ["assigned", "Allocated"], ["dispatched", "Dispatched"], ["in_transit", "In transit"], ["completed", "Delivered"]];
 
@@ -540,6 +683,7 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
   const [drivers, setDrivers] = useState<any[]>([]);
   const [vehicles, setVehicles] = useState<any[]>([]);
   const [selected, setSelected] = useState<any>(null);
+  const [orderTotal, setOrderTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [driver, setDriver] = useState("");
@@ -547,12 +691,16 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
 
   const load = () => {
     setLoading(true);
-    fmsRequest<any>("orders/").then(payload => setOrders(asList(payload))).finally(() => setLoading(false));
+    fmsRequest<any>(wholeSet("orders/")).then(payload => {
+      const records = asList(payload);
+      setOrders(records);
+      setOrderTotal(asCount(payload, records));
+    }).finally(() => setLoading(false));
   };
   useEffect(load, [reloadKey]);
   useEffect(() => {
-    fmsRequest<any>("drivers/").then(payload => setDrivers(asList(payload))).catch(() => undefined);
-    fmsRequest<any>("vehicles/").then(payload => setVehicles(asList(payload))).catch(() => undefined);
+    fmsRequest<any>(wholeSet("drivers/")).then(payload => setDrivers(asList(payload))).catch(() => undefined);
+    fmsRequest<any>(wholeSet("vehicles/")).then(payload => setVehicles(asList(payload))).catch(() => undefined);
   }, []);
 
   const run = async (order: any, path: string, body?: Record<string, unknown>) => {
@@ -573,7 +721,7 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
   return <div className="module-page">
     <div className="module-title"><div><p className="eyebrow">FLEETOPS ORDERS</p><h2>Consignment orders</h2><p>Booking to ePOD, with waypoints, live activity feed and consignee tracking numbers.</p></div><button className="primary module-action" onClick={() => openAction("order")}>＋ New order</button></div>
     <div className="module-stats">
-      <div className="module-stat"><span>Total orders</span><strong>{loading ? "—" : orders.length}</strong><small>Across all statuses</small></div>
+      <div className="module-stat"><span>Total orders</span><strong>{loading ? "—" : orderTotal}</strong><small>Across all statuses</small></div>
       <div className="module-stat"><span>Active now</span><strong>{loading ? "—" : active.length}</strong><small>Booked, allocated or moving</small></div>
       <div className="module-stat"><span>Order value</span><strong>{rupees(totalValue)}</strong><small>Freight incl. GST</small></div>
     </div>
@@ -637,7 +785,7 @@ function RatesView({ reloadKey, onAction, openAction }: { reloadKey: number; onA
   const [quote, setQuote] = useState<any>(null);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
-  useEffect(() => { fmsRequest<any>("service-rates/").then(payload => setRates(asList(payload))).catch(() => undefined); }, [reloadKey]);
+  useEffect(() => { fmsRequest<any>(wholeSet("service-rates/")).then(payload => setRates(asList(payload))).catch(() => undefined); }, [reloadKey]);
 
   const estimate = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -657,7 +805,7 @@ function RatesView({ reloadKey, onAction, openAction }: { reloadKey: number; onA
   };
 
   return <div className="module-page">
-    <div className="module-title"><div><p className="eyebrow">RATE MANAGEMENT</p><h2>Rate cards & freight estimator</h2><p>Per km, per ton-km, per kg and fixed lane pricing with GST, RCM and fuel surcharge.</p></div><button className="primary module-action" onClick={() => openAction("quote")}>＋ New quotation</button></div>
+    <div className="module-title"><div><p className="eyebrow">RATE MANAGEMENT</p><h2>Rate cards & freight estimator</h2><p>Per km, per ton-km, per kg and fixed lane pricing with GST, RCM and fuel surcharge.</p></div><button className="primary module-action" onClick={() => openAction("rate")}>＋ New rate card</button></div>
     <div className="rate-layout">
       <section className="module-table-card">
         <div className="module-toolbar"><div><strong>Active rate cards</strong><span>{rates.length} cards</span></div></div>
@@ -696,8 +844,9 @@ function RatesView({ reloadKey, onAction, openAction }: { reloadKey: number; onA
   </div>;
 }
 
-function ComplianceView({ reloadKey, onAction, openAction }: { reloadKey: number; onAction: (message: string) => void; openAction: (type: string) => void }) {
+function ComplianceView({ reloadKey, openAction }: { reloadKey: number; openAction: (type: string) => void }) {
   const [documents, setDocuments] = useState<any[]>([]);
+  const [documentTotal, setDocumentTotal] = useState(0);
   const [expiring, setExpiring] = useState<any[]>([]);
   const [due, setDue] = useState<any[]>([]);
   const [horizon, setHorizon] = useState(30);
@@ -705,7 +854,11 @@ function ComplianceView({ reloadKey, onAction, openAction }: { reloadKey: number
   useEffect(() => {
     setLoading(true);
     Promise.all([
-      fmsRequest<any>("compliance-documents/").then(payload => setDocuments(asList(payload))).catch(() => undefined),
+      fmsRequest<any>(wholeSet("compliance-documents/")).then(payload => {
+        const records = asList(payload);
+        setDocuments(records);
+        setDocumentTotal(asCount(payload, records));
+      }).catch(() => undefined),
       fmsRequest<any>(`compliance-documents/expiring/?days=${horizon}`).then(payload => setExpiring(payload.documents || [])).catch(() => undefined),
       fmsRequest<any>("maintenance-schedules/due/").then(payload => setDue(payload.schedules || [])).catch(() => undefined),
     ]).finally(() => setLoading(false));
@@ -715,7 +868,7 @@ function ComplianceView({ reloadKey, onAction, openAction }: { reloadKey: number
   return <div className="module-page">
     <div className="module-title"><div><p className="eyebrow">STATUTORY COMPLIANCE</p><h2>Vehicle & driver documents</h2><p>RC, insurance, fitness, national permit, PUC, FASTag KYC and driving licences with renewal alerts.</p></div><button className="primary module-action" onClick={() => openAction("document")}>＋ Add document</button></div>
     <div className="module-stats">
-      <div className="module-stat"><span>Documents tracked</span><strong>{loading ? "—" : documents.length}</strong><small>Across vehicles and drivers</small></div>
+      <div className="module-stat"><span>Documents tracked</span><strong>{loading ? "—" : documentTotal}</strong><small>Across vehicles and drivers</small></div>
       <div className="module-stat alert"><span>Expired</span><strong>{loading ? "—" : expired.length}</strong><small>Vehicle must be taken off road</small></div>
       <div className="module-stat warn"><span>Due in {horizon} days</span><strong>{loading ? "—" : expiring.length - expired.length}</strong><small>Start the renewal now</small></div>
     </div>
@@ -734,7 +887,7 @@ function ComplianceView({ reloadKey, onAction, openAction }: { reloadKey: number
       {!loading && !expiring.length && <div className="data-state">Every document is valid beyond the selected window.</div>}
     </section>
     <section className="module-table-card compliance-second">
-      <div className="module-toolbar"><div><strong>Preventive maintenance due</strong><span>{due.length} schedules</span></div><button className="chip" onClick={() => onAction("Maintenance plan reviewed")}>Review plan</button></div>
+      <div className="module-toolbar"><div><strong>Preventive maintenance due</strong><span>{due.length} schedules</span></div><button className="chip" onClick={() => openAction("schedule")}>＋ Add service schedule</button></div>
       <div className="table-wrap"><table><thead><tr><th>Vehicle</th><th>Task</th><th>Next due km</th><th>Km remaining</th><th>Next due date</th></tr></thead>
         <tbody>{due.map(schedule => <tr key={schedule.id}>
           <td><strong>{schedule.vehicle_number}</strong></td><td>{schedule.task}</td>
@@ -823,7 +976,7 @@ export default function Home() {
             <div className="section-heading"><div><p className="eyebrow">ACTIVE MOVEMENT</p><h2>Recent trips</h2></div><button className="link-button" onClick={() => show("All trips opened")}>View all trips →</button></div>
             <div className="table-wrap"><table><thead><tr><th>Trip & route</th><th>Vehicle</th><th>Driver</th><th>Status</th><th>ETA / POD</th><th>Revenue</th></tr></thead><tbody>{(dashboard?.recent_trips || []).map((t: any) => <tr key={t.id}><td><strong>{t.number}</strong><small>{t.origin} → {t.destination}</small></td><td>{t.vehicle_number}</td><td>{t.driver_name}</td><td><span className={`status ${t.status.toLowerCase().replaceAll("_","-")}`}>{t.status.replaceAll("_"," ")}</span></td><td>{t.planned_departure ? new Date(t.planned_departure).toLocaleString("en-IN") : "—"}</td><td><strong>₹{Number(t.estimated_cost || 0).toLocaleString("en-IN")}</strong></td></tr>)}</tbody></table></div>
           </section>
-        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
+        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
       </section>
       {action && <ActionPanel type={action} onClose={() => setAction("")} onCreated={() => setDataVersion(v => v + 1)} onDone={(message) => { show(message); if (action !== "tracking") setAction(""); }} />}
       {toast && <div className="toast">✓ {toast}</div>}
