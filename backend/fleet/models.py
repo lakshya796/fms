@@ -59,3 +59,10 @@ class SalesQuote(Timestamped):
     origin=models.CharField(max_length=120); destination=models.CharField(max_length=120); freight_amount=models.DecimalField(max_digits=12,decimal_places=2)
     valid_until=models.DateField(); status=models.CharField(max_length=20,default="draft")
     def __str__(self): return self.number
+
+class MaintenanceWorkOrder(Timestamped):
+    number=models.CharField(max_length=30,unique=True); vehicle=models.ForeignKey(Vehicle,on_delete=models.PROTECT,related_name="work_orders")
+    title=models.CharField(max_length=180); category=models.CharField(max_length=40,default="preventive"); scheduled_date=models.DateField()
+    odometer_km=models.PositiveIntegerField(default=0); estimated_cost=models.DecimalField(max_digits=12,decimal_places=2,default=0)
+    vendor=models.CharField(max_length=180,blank=True); status=models.CharField(max_length=20,default="open")
+    def __str__(self): return self.number
