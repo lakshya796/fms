@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { fmsRequest, login } from "./lib/fms-api";
+import { UNAUTHORISED_EVENT, fmsRequest, login, logout } from "./lib/fms-api";
 
 const navGroups: { label: string; items: [string, string][] }[] = [
   { label: "WORKSPACE", items: [["Overview", "⌂"], ["Analytics", "◎"]] },
@@ -191,6 +191,9 @@ const sourceLabel: Record<string, (record: any) => string> = {
 };
 
 const today = () => new Date().toISOString().slice(0, 10);
+
+const initials = (name: string) =>
+  name.split(/[\s.@_-]+/).filter(Boolean).slice(0, 2).map(part => part[0]?.toUpperCase()).join("") || "?";
 
 // Declarative create forms for the Fleetbase inspired FleetOps records.
 const recordForms: Record<string, FormSpec> = {
@@ -769,11 +772,22 @@ function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string;
       load();
     } catch (e) { onAction(e instanceof Error ? e.message.slice(0, 90) : "Action failed"); }
   };
+  // A trip has no `in_transit` action of its own - the status is set directly, which is
+  // what the "in transit" column on this board needs in order to be reachable at all.
+  const setTripStatus = async (trip: any, status: string) => {
+    try {
+      await fmsRequest(`trips/${trip.id}/`, { method: "PATCH", body: JSON.stringify({ status }) });
+      onAction(`${trip.number} marked ${status.replaceAll("_", " ")}`);
+      setTripDetail(null);
+      load();
+    } catch (e) { onAction(e instanceof Error ? e.message.slice(0, 90) : "Action failed", "warn"); }
+  };
   const board = useDragBoard({
     "planned>dispatched": trip => tripAction(trip, "dispatch"),
+    "dispatched>in_transit": trip => setTripStatus(trip, "in_transit"),
     "dispatched>closed": trip => tripAction(trip, "close"),
     "in_transit>closed": trip => tripAction(trip, "close"),
-  }, onAction);
+  }, onAction, (trip, status) => setTripStatus(trip, status));
   if (name === "Dispatch") return <div className="module-page"><div className="module-title"><div><p className="eyebrow">FLEET-OPS DISPATCH</p><h2>Dispatch command board</h2><p>Drag a trip between columns to progress it, or click one to open the trip sheet.</p></div><button className="primary module-action" onClick={() => openAction("trip")}>＋ Create trip</button></div>
     <div className="dispatch-board">{["planned","dispatched","in_transit","closed"].map(status => <section {...board.columnProps(status)} key={status}>
       <header><strong>{status.replaceAll("_"," ")}</strong><span>{records.filter(r => r.status === status).length}</span></header>
@@ -781,6 +795,7 @@ function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string;
         <b>{trip.number}</b><p>{trip.origin} → {trip.destination}</p><small>{trip.vehicle_number} · {trip.driver_name}</small>
         <div onClick={event => event.stopPropagation()}>
           {status === "planned" && <button onClick={() => tripAction(trip,"dispatch")}>Dispatch</button>}
+          {status === "dispatched" && <button onClick={() => setTripStatus(trip,"in_transit")}>In transit</button>}
           {status !== "closed" && status !== "planned" && <button onClick={() => tripAction(trip,"close")}>Close trip</button>}
         </div>
       </article>)}
@@ -842,8 +857,12 @@ const orderColumns: [string, string][] = [["created", "Booked"], ["assigned", "A
 // `moves` maps "fromStatus>toStatus" to a handler, so an illegal drop simply says so
 // rather than silently doing the wrong thing.
 type CardMove = (card: any) => void | Promise<void>;
+type CardFallback = (card: any, toStatus: string) => void | Promise<void>;
 
-function useDragBoard(moves: Record<string, CardMove>, onRefuse: Notify) {
+// `moves` holds the transitions that do real work - capturing an ePOD, opening the
+// allocation panel, converting an indent. `fallback` handles everything else by simply
+// setting the status, so any column can be dropped on.
+function useDragBoard(moves: Record<string, CardMove>, onRefuse: Notify, fallback?: CardFallback) {
   const [dragging, setDragging] = useState<any>(null);
   const [over, setOver] = useState("");
   // A drag that ends where it started is a click, so suppress the click that follows.
@@ -884,11 +903,9 @@ function useDragBoard(moves: Record<string, CardMove>, onRefuse: Notify) {
       const status = columnAt(upEvent.clientX, upEvent.clientY);
       if (!status || status === card.status) return;
       const move = moves[`${card.status}>${status}`];
-      if (!move) {
-        onRefuse(`${card.number} cannot move from ${String(card.status).replaceAll("_", " ")} to ${status.replaceAll("_", " ")}`, "warn");
-        return;
-      }
-      move(card);
+      if (move) { move(card); return; }
+      if (fallback) { fallback(card, status); return; }
+      onRefuse(`${card.number} cannot move from ${String(card.status).replaceAll("_", " ")} to ${status.replaceAll("_", " ")}`, "warn");
     };
 
     window.addEventListener("pointermove", onMove);
@@ -909,7 +926,7 @@ function useDragBoard(moves: Record<string, CardMove>, onRefuse: Notify) {
     "data-status": status,
     className: "dispatch-column"
       + (over === status && dragging && dragging.status !== status
-          ? (moves[`${dragging.status}>${status}`] ? " drop-ok" : " drop-blocked") : ""),
+          ? (moves[`${dragging.status}>${status}`] || fallback ? " drop-ok" : " drop-blocked") : ""),
   });
 
   return { dragging, cardProps, columnProps };
@@ -991,7 +1008,9 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
     "dispatched>completed": order => run(order, "complete", { receiver_name: "Consignee", proof_type: "signature" }),
     "in_transit>completed": order => run(order, "complete", { receiver_name: "Consignee", proof_type: "signature" }),
     "assigned>created": order => run(order, "activity", { status: "created", code: "ALLOCATION_RELEASED", details: "Returned to the booking queue" }),
-  }, onAction);
+  }, onAction, (order, status) => run(order, "activity", {
+    status, code: "STATUS_CHANGED", details: `Moved to ${status.replaceAll("_", " ")} on the board`,
+  }));
 
   return <div className="module-page">
     <div className="module-title"><div><p className="eyebrow">FLEETOPS ORDERS</p><h2>Consignment orders</h2><p>Drag a card between columns to move it on, or click one to open the consignment.</p></div><button className="primary module-action" onClick={() => openAction("order")}>＋ New order</button></div>
@@ -1501,6 +1520,15 @@ function IndentsView({ reloadKey, onAction, openAction }: { reloadKey: number; o
     fmsRequest<any>(wholeSet("drivers/?status=available")).then(p => setDrivers(asList(p))).catch(() => undefined);
   }, [reloadKey]);
 
+  const setIndentStatus = async (indent: any, status: string) => {
+    setBusy(true);
+    try {
+      await fmsRequest(`indents/${indent.id}/`, { method: "PATCH", body: JSON.stringify({ status }) });
+      onAction(`${indent.number} moved to ${status.replaceAll("_", " ")}`);
+      setSelected(null); setDetail(null); load();
+    } catch (e) { onAction(e instanceof Error ? e.message.slice(0, 90) : "Could not move the indent", "warn"); }
+    finally { setBusy(false); }
+  };
   const run = async (indent: any, path: string, body?: Record<string, unknown>) => {
     setBusy(true);
     try {
@@ -1518,7 +1546,7 @@ function IndentsView({ reloadKey, onAction, openAction }: { reloadKey: number; o
     "allocated>converted": indent => run(indent, "convert"),
     "open>cancelled": indent => run(indent, "cancel", { reason: "Cancelled on the board" }),
     "allocated>cancelled": indent => run(indent, "cancel", { reason: "Cancelled on the board" }),
-  }, onAction);
+  }, onAction, (indent, status) => setIndentStatus(indent, status));
   return <div className="module-page">
     <div className="module-title"><div><p className="eyebrow">OPERATIONS FLOW</p><h2>Indents & allocation</h2><p>Drag a card between columns, or click one to open it. Demand is captured, allocated to a truck, then converted.</p></div><button className="primary module-action" onClick={() => openAction("indent")}>＋ Raise indent</button></div>
     <div className="dispatch-board">{columns.map(([status, label]) => {
@@ -1582,7 +1610,26 @@ export default function Home() {
   const [authenticated, setAuthenticated] = useState(false);
   const [dataVersion, setDataVersion] = useState(0);
   const [dashboard, setDashboard] = useState<any>(null);
+  const [me, setMe] = useState<any>(null);
   useEffect(() => { setAuthenticated(Boolean(sessionStorage.getItem("fms_token"))); }, []);
+  useEffect(() => {
+    const ended = () => { setAuthenticated(false); setMe(null); };
+    window.addEventListener(UNAUTHORISED_EVENT, ended);
+    return () => window.removeEventListener(UNAUTHORISED_EVENT, ended);
+  }, []);
+  useEffect(() => {
+    if (!authenticated) return;
+    fmsRequest<any>("iam/me/").then(setMe).catch(() => undefined);
+  }, [authenticated]);
+
+  const signOut = () => {
+    logout();
+    setAuthenticated(false);
+    setMe(null);
+    setActive("Overview");
+    setDashboard(null);
+    setAction("");
+  };
   useEffect(() => {
     if (!authenticated) return;
     fmsRequest<any>("dashboard/").then(setDashboard).catch(() => undefined);
@@ -1616,7 +1663,11 @@ export default function Home() {
         </nav>
         <div className="sidebar-footer">
           <button className="nav-item"><span className="nav-icon">⚙</span>Settings</button>
-          <div className="user"><span className="avatar">AK</span><div><strong>Arjun Kapoor</strong><small>Fleet owner</small></div><span>•••</span></div>
+          <div className="user">
+            <span className="avatar">{initials(me?.full_name || me?.username || "")}</span>
+            <div><strong>{me?.full_name || me?.username || "Signed in"}</strong><small>{me?.role || me?.designation || "Fleet operations"}</small></div>
+            <button className="sign-out" onClick={signOut} title="Sign out" aria-label="Sign out">⏻</button>
+          </div>
         </div>
       </aside>
 
