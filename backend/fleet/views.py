@@ -5,14 +5,17 @@ from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from rest_framework.decorators import permission_classes
-from .models import Customer, Driver, Vehicle, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement
-from .serializers import CustomerSerializer, DriverSerializer, VehicleSerializer, LorryReceiptSerializer, TripSerializer, TrackingEventSerializer, InvoiceSerializer, SettlementSerializer
+from .models import Customer, Driver, Vehicle, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement, SalesQuote
+from .serializers import CustomerSerializer, DriverSerializer, VehicleSerializer, LorryReceiptSerializer, TripSerializer, TrackingEventSerializer, InvoiceSerializer, SettlementSerializer, SalesQuoteSerializer
 
 @api_view(["GET"])
 @permission_classes([AllowAny])
 def health(request):
     return Response({"status": "ok", "service": "phloz-fms-api", "time": timezone.now()})
 
+class SalesQuoteViewSet(viewsets.ModelViewSet):
+    queryset = SalesQuote.objects.select_related("customer").all().order_by("-created_at")
+    serializer_class = SalesQuoteSerializer
 class CustomerViewSet(viewsets.ModelViewSet):
     queryset = Customer.objects.all().order_by("-created_at"); serializer_class = CustomerSerializer
 class DriverViewSet(viewsets.ModelViewSet):
