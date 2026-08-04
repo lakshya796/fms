@@ -1,6 +1,9 @@
 from rest_framework import serializers
-from .models import Customer, Driver, Vehicle, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement, SalesQuote
+from .models import Customer, Driver, Vehicle, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement, SalesQuote, MaintenanceWorkOrder
 
+class MaintenanceWorkOrderSerializer(serializers.ModelSerializer):
+    vehicle_number = serializers.CharField(source="vehicle.registration_number", read_only=True)
+    class Meta: model = MaintenanceWorkOrder; fields = "__all__"
 class SalesQuoteSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     class Meta: model = SalesQuote; fields = "__all__"
