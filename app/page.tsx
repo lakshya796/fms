@@ -24,7 +24,7 @@ const modules: Record<string, { eyebrow: string; title: string; action: string; 
   Customers: {
     eyebrow: "CUSTOMER MASTER", title: "Customers & KYC", action: "+ Add customer",
     stats: [["Active customers", "128", "+8 this month"], ["KYC pending", "3", "Needs attention"], ["Credit exposure", "₹18.4L", "Across 11 customers"]],
-    columns: ["Customer", "GSTIN", "Credit limit", "Outstanding", "KYC status"],
+    columns: ["Customer", "GSTIN", "Credit limit", "Email", "KYC status"],
     rows: [["Tata Consumer Products", "27AAACT2727Q1ZW", "₹8.0L", "₹2.4L", "Verified"], ["Asian Paints Ltd", "27AAACA3622K1ZV", "₹5.0L", "₹1.1L", "Verified"], ["V-Guard Industries", "32AAACV8098A1ZP", "₹3.5L", "₹84,000", "Pending"], ["Havells India", "07AAACH0351E1Z1", "₹6.0L", "₹0", "Verified"]]
   },
   Sales: {
@@ -36,19 +36,19 @@ const modules: Record<string, { eyebrow: string; title: string; action: string; 
   Operations: {
     eyebrow: "TRANSPORT OPERATIONS", title: "LR, manifests & trips", action: "+ Book LR",
     stats: [["LRs today", "24", "18 dispatched"], ["Active trips", "32", "4 need attention"], ["POD pending", "7", "₹3.2L billable"]],
-    columns: ["LR number", "Consignor → Consignee", "Trip sheet", "Vehicle", "Status"],
+    columns: ["LR number", "Consignor → Consignee", "Route", "E-way bill", "Status"],
     rows: [["LR-240831", "Tata Consumer → D-Mart Pune", "TS-2841", "MH 04 JU 9182", "In transit"], ["LR-240829", "Asian Paints → Jaipur Depot", "TS-2839", "HR 55 AN 4021", "Loading"], ["LR-240826", "V-Guard → Chennai DC", "TS-2834", "KA 51 MN 6814", "Delayed"], ["LR-240822", "Havells → Lucknow Hub", "TS-2831", "UP 32 KL 1098", "Delivered"]]
   },
   Fleet: {
     eyebrow: "OWN FLEET", title: "Vehicles & trip costing", action: "+ Add vehicle",
     stats: [["Fleet size", "41", "32 on road"], ["Cost per km", "₹28.40", "↓ ₹1.20 vs July"], ["Maintenance due", "5", "2 critical"]],
-    columns: ["Vehicle", "Type", "Driver", "Month running", "Cost / km"],
+    columns: ["Vehicle", "Type", "Ownership", "Capacity", "Status"],
     rows: [["MH 04 JU 9182", "32 ft MXL", "Ramesh Yadav", "6,842 km", "₹27.80"], ["HR 55 AN 4021", "22 ft SXL", "Sandeep Kumar", "5,106 km", "₹29.10"], ["KA 51 MN 6814", "32 ft MXL", "Vijay Raj", "7,214 km", "₹28.60"], ["GJ 01 KT 7730", "20 ft", "Irfan Sheikh", "4,832 km", "₹26.90"]]
   },
   Settlements: {
     eyebrow: "DRIVER ACCOUNTS", title: "Driver settlements", action: "+ New settlement",
     stats: [["Pending settlement", "₹1.84L", "Across 8 drivers"], ["Trip advances", "₹96,000", "11 open advances"], ["Settled this month", "₹7.2L", "42 settlements"]],
-    columns: ["Driver", "Trip sheet", "Advance", "Expenses", "Net payable"],
+    columns: ["Driver", "Trip sheet", "Advance", "Expenses", "Status"],
     rows: [["Ramesh Yadav", "TS-2841", "₹12,000", "₹18,450", "₹6,450 due"], ["Sandeep Kumar", "TS-2839", "₹10,000", "₹9,240", "₹760 recover"], ["Vijay Raj", "TS-2834", "₹15,000", "₹21,180", "₹6,180 due"], ["Irfan Sheikh", "TS-2836", "₹8,000", "₹11,620", "₹3,620 due"]]
   },
   Invoices: {
@@ -186,6 +186,10 @@ export default function Home() {
         </div> : active === "Modules" ? <FeatureHub onAction={show} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={(message) => {
           if (message.includes("Book LR")) setAction("lr");
           else if (message.includes("Generate invoice")) setAction("invoice");
+          else if (message.includes("Add customer")) setAction("customer");
+          else if (message.includes("New quotation")) setAction("quote");
+          else if (message.includes("Add vehicle")) setAction("vehicle");
+          else if (message.includes("New settlement")) setAction("settlement");
           else show(message);
         }} />}
       </section>
