@@ -71,3 +71,59 @@ h1 { margin:0; font-size:24px; letter-spacing:-.7px; }
 .record-backdrop{position:fixed;inset:0;background:rgba(9,17,13,.5);z-index:25;display:flex;justify-content:flex-end}.record-drawer{width:min(460px,94vw);height:100%;overflow:auto;background:#fff;padding:26px;box-shadow:-24px 0 60px #0003;animation:drawer-in .2s ease-out}.record-head{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1px solid var(--line);padding-bottom:20px}.record-head h2{font-size:22px;margin:0 0 10px}.record-fields{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:22px 0}.record-field{min-height:78px;padding:13px;border:1px solid var(--line);border-radius:11px;display:flex;flex-direction:column;gap:8px}.record-field span{font-size:9px;text-transform:uppercase;letter-spacing:.6px;color:#8b9590}.record-field strong{font-size:12px;line-height:1.45;overflow-wrap:anywhere}.record-timeline{border-top:1px solid var(--line);padding:22px 0}.record-timeline>div{display:flex;gap:10px;padding:10px 0}.record-timeline i{width:8px;height:8px;border-radius:50%;background:#77a590;margin-top:4px}.record-timeline span{display:flex;flex:1;flex-direction:column;gap:3px}.record-timeline strong{font-size:11px}.record-timeline small,.record-timeline time{font-size:9px;color:#8a938e}.record-actions{display:flex;gap:9px;border-top:1px solid var(--line);padding-top:18px}.record-actions button{height:42px;flex:1}.record-actions .secondary{width:auto}@keyframes drawer-in{from{transform:translateX(100%)}to{transform:translateX(0)}}@media(max-width:520px){.record-fields{grid-template-columns:1fr}.record-drawer{padding:20px}}
 
 .sidebar{overflow-y:auto}.sidebar-footer{padding-top:18px}.dispatch-board{display:grid;grid-template-columns:repeat(4,1fr);gap:13px;align-items:start}.dispatch-column{min-height:480px;background:#eef1ed;border:1px solid #e1e6e1;border-radius:14px;padding:11px}.dispatch-column>header{display:flex;justify-content:space-between;text-transform:capitalize;padding:6px 4px 13px;font-size:11px}.dispatch-column>header span{background:#fff;border-radius:10px;padding:2px 7px;font-size:9px}.dispatch-card{background:#fff;border:1px solid #e0e5e0;border-radius:11px;padding:13px;margin-bottom:9px;box-shadow:0 3px 10px #20352b0a}.dispatch-card b{font-size:11px}.dispatch-card p{font-size:10px;margin:8px 0;color:#45534c}.dispatch-card small{font-size:9px;color:#86908a}.dispatch-card div{margin-top:12px}.dispatch-card button{border:0;background:#e5f5b2;color:#284737;border-radius:7px;padding:7px 9px;font-size:9px;font-weight:750;cursor:pointer}.empty-column{padding:24px;text-align:center;color:#97a09b;font-size:10px}.full-map-layout{display:grid;grid-template-columns:1.8fr 1fr;min-height:620px;background:#fff;border:1px solid var(--line);border-radius:16px;overflow:hidden}.operations-map{position:relative;overflow:hidden;min-height:500px;background-color:#e9eee8;background-image:linear-gradient(35deg,transparent 48%,#d7dfd8 49% 51%,transparent 52%),linear-gradient(115deg,transparent 48%,#dce3dd 49% 51%,transparent 52%);background-size:95px 95px,135px 135px}.map-details{padding:24px}.map-details h3{font-size:20px;margin:7px 0}.map-details>p:not(.eyebrow){color:#75807a;font-size:10px;margin-bottom:22px}.analytics-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:15px}.analytics-card{background:#fff;border:1px solid var(--line);border-radius:15px;padding:22px;display:flex;flex-direction:column;gap:9px}.analytics-card span{font-size:10px;color:#748079}.analytics-card strong{font-size:30px}.analytics-card small{font-size:9px;color:#939c97}@media(max-width:1100px){.dispatch-board{grid-template-columns:repeat(2,1fr)}.full-map-layout{grid-template-columns:1fr}.analytics-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:760px){.dispatch-board,.analytics-grid{grid-template-columns:1fr}.dispatch-column{min-height:auto}}
+
+/* FleetOps modules: grouped navigation, orders board, rate estimator, compliance and analytics */
+.nav-group{margin-bottom:10px}.nav-group-label{margin:12px 12px 5px;font-size:8px;letter-spacing:1.5px;font-weight:800;color:#5d6b64}
+.tracking-code{display:block;margin-top:6px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:8px;color:#7d8a83;letter-spacing:.4px}
+.dispatch-board{grid-template-columns:repeat(5,1fr)}
+.dispatch-card div{display:flex;gap:6px;flex-wrap:wrap}
+.dispatch-card button:disabled{opacity:.5;cursor:not-allowed}
+.allocate-box{border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:18px}
+.allocate-box .eyebrow{margin-bottom:12px}
+.allocate-grid{display:grid;gap:12px;margin-bottom:13px}
+.allocate-grid label{display:flex;flex-direction:column;gap:7px;font-size:10px;font-weight:750;color:#606b65}
+.allocate-grid select{border:1px solid #dfe4df;border-radius:9px;padding:10px 11px;font-size:11px;background:#fff;outline:none}
+.allocate-box .full-button{width:100%;height:40px;margin-top:0}
+.rate-layout{display:grid;grid-template-columns:1.5fr 1fr;gap:16px;align-items:start}
+.quote-card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:22px}
+.quote-card h3{margin:5px 0 16px;font-size:19px;letter-spacing:-.4px}
+.quote-form{padding:0}
+.quote-form .form-grid{margin-top:14px}
+.quote-form label{margin-bottom:0}
+.checkbox-row{flex-direction:row!important;align-items:center;gap:8px!important;margin-top:15px}
+.checkbox-row input{width:auto!important}
+.quote-form .full-button{width:100%;height:42px;margin-top:16px}
+.quote-result{margin-top:20px;border-top:1px solid var(--line);padding-top:16px}
+.quote-line{display:flex;justify-content:space-between;align-items:center;padding:9px 0;font-size:11px;color:#616c66;border-bottom:1px solid var(--line)}
+.quote-line strong{font-size:12px;color:#1e2a24}
+.quote-result .invoice-total{margin-top:16px}
+.module-stat.alert strong{color:#b95544}.module-stat.warn strong{color:#9a6b22}
+.chip{border:1px solid #dfe4df;background:#fff;border-radius:20px;padding:7px 12px;font-size:10px;font-weight:700;cursor:pointer;color:#4c574f}
+.chip.active{background:#16231d;color:#fff;border-color:#16231d}
+.compliance-second{margin-top:16px}
+.status.valid,.status.active,.status.completed,.status.approved,.status.resolved{background:#e9f6ee;color:#347257}
+.status.expiring,.status.assigned,.status.open,.status.created,.status.dispatched{background:#fff4df;color:#9a6b22}
+.status.expired,.status.cancelled,.status.critical{background:#ffebe7;color:#b95544}
+.status.in-transit,.status.high{background:#e9f1fb;color:#3a6e9d}
+.data-state{padding:34px;text-align:center;color:#8b948f;font-size:11px}
+.data-state.error{color:#b95544}
+.expense-split{margin-top:16px}
+.split-bars{display:flex;flex-direction:column;gap:11px}
+.split-row{display:grid;grid-template-columns:150px 1fr 100px;align-items:center;gap:12px;font-size:10px;color:#6b756f;text-transform:capitalize}
+.split-row i{display:block;height:11px;border-radius:6px;background:linear-gradient(90deg,#0d5f45,#63a888)}
+.split-row strong{text-align:right;font-size:11px;color:#22302a}
+.track-page{min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at 70% 20%,#264c3c 0,transparent 32%),linear-gradient(135deg,#0c1712,#14271e)}
+.track-card{width:min(560px,100%);background:#fff;border-radius:20px;padding:34px;box-shadow:0 30px 80px #0006}
+.track-card h1{font-size:28px;margin:0 0 8px}
+.track-intro{font-size:11px;color:#78827d;margin:0 0 22px}
+.track-form{display:flex;gap:9px;margin-bottom:16px}
+.track-form input{flex:1;border:1px solid #dce3dd;border-radius:10px;padding:12px;font-size:12px;outline:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.track-form input:focus{border-color:#648675;box-shadow:0 0 0 3px #e7f0eb}
+.track-form .primary{height:44px}
+.track-result{margin-top:20px;border-top:1px solid var(--line);padding-top:18px}
+.track-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.track-head strong{display:block;font-size:15px}
+.track-head small{font-size:10px;color:#7d8781}
+.track-footer{display:block;text-align:center;margin-top:22px;color:#98a09c;font-size:9px}
+@media(max-width:1100px){.rate-layout{grid-template-columns:1fr}.dispatch-board{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:760px){.dispatch-board{grid-template-columns:1fr}.split-row{grid-template-columns:110px 1fr 80px}.nav-group-label{font-size:0;margin:8px 0 2px}}
