@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_ROOT="/opt/phloz/fms"
+REPOSITORY_URL="${FMS_REPOSITORY_URL:-https://github.com/lakshya796/fms.git}"
+BRANCH="${FMS_BRANCH:-main}"
+RELEASE="${APP_ROOT}/releases/$(date +%Y%m%d%H%M%S)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+sudo mkdir -p "${APP_ROOT}/releases" "${APP_ROOT}/shared"
+sudo chown -R ec2-user:ec2-user "${APP_ROOT}"
+
+SOURCE_DIR="$(mktemp -d)"
+trap 'rm -rf "$SOURCE_DIR"' EXIT
+git clone --depth 1 --branch "$BRANCH" "$REPOSITORY_URL" "$SOURCE_DIR"
+
+mkdir -p "$RELEASE"
+cp -a "$SOURCE_DIR/backend/." "$RELEASE/"
+ln -s "${APP_ROOT}/shared/db.sqlite3" "$RELEASE/db.sqlite3"
+
+if [ ! -d "${APP_ROOT}/venv" ]; then
+    python3 -m venv "${APP_ROOT}/venv"
+fi
+"${APP_ROOT}/venv/bin/pip" install --no-cache-dir -r "$RELEASE/requirements.txt"
+
+if [ ! -f "${APP_ROOT}/shared/fms.env" ]; then
+    secret=$("${APP_ROOT}/venv/bin/python" -c 'import secrets; print(secrets.token_urlsafe(64))')
+    umask 077
+    printf 'DJANGO_SECRET_KEY=%s\nDJANGO_DEBUG=false\nDJANGO_ALLOWED_HOSTS=api-test.phloz.app,127.0.0.1,localhost\nCORS_ALLOWED_ORIGINS=https://track.phloz.app\nUSE_SQLITE=true\n' "$secret" > "${APP_ROOT}/shared/fms.env"
+fi
+
+set -a
+. "${APP_ROOT}/shared/fms.env"
+set +a
+cd "$RELEASE"
+"${APP_ROOT}/venv/bin/python" manage.py makemigrations fleet --noinput
+"${APP_ROOT}/venv/bin/python" manage.py migrate --noinput
+"${APP_ROOT}/venv/bin/python" manage.py collectstatic --noinput
+ln -sfn "$RELEASE" "${APP_ROOT}/current"
+
+sudo cp "$SCRIPT_DIR/phloz-fms.service" /etc/systemd/system/phloz-fms.service
+sudo systemctl daemon-reload
+sudo systemctl enable phloz-fms.service
+sudo systemctl restart phloz-fms.service
+sleep 2
+sudo systemctl --no-pager --full status phloz-fms.service
+curl -fsS http://127.0.0.1:8010/api/v1/health/
