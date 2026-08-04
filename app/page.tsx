@@ -118,7 +118,17 @@ function ActionPanel({ type, onClose, onDone, onCreated }: { type: string; onClo
   const [reference, setReference] = useState("");
   const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
+  const [liveTrip, setLiveTrip] = useState<any>(null);
   const meta = actionMeta[type];
+  useEffect(() => {
+    if (type !== "tracking") return;
+    fmsRequest<any>("trips/").then(payload => {
+      const records = Array.isArray(payload) ? payload : payload.results || [];
+      const trip = records[0] || null;
+      setLiveTrip(trip);
+      if (trip?.vehicle_number) setVehicle(trip.vehicle_number);
+    }).catch(() => undefined);
+  }, [type]);
   const submit = async (e: React.FormEvent) => {
     e.preventDefault(); setWorking(true); setError("");
     try {
@@ -160,7 +170,7 @@ function ActionPanel({ type, onClose, onDone, onCreated }: { type: string; onClo
     <div className="panel-head"><div><p className="eyebrow">{meta.eyebrow}</p><h2>{meta.title}</h2></div><button className="panel-close" onClick={onClose}>×</button></div>
     {type === "tracking" ? <div className="tracking-layout">
       <div className="mock-map"><div className="map-road r1"/><div className="map-road r2"/><div className="map-road r3"/><span className="city mumbai">Mumbai</span><span className="city pune">Pune</span><span className="map-pin start">●</span><span className="map-pin vehicle">▰</span><span className="map-pin finish">●</span><div className="map-progress"/></div>
-      <div className="vehicle-list"><label>Track vehicle<select value={vehicle} onChange={e => setVehicle(e.target.value)}><option>MH 04 JU 9182</option><option>KA 51 MN 6814</option><option>HR 55 AN 4021</option></select></label><div className="tracking-stat"><span>Status</span><strong>{vehicle === "KA 51 MN 6814" ? "Delayed · 2h 10m" : "Moving"}</strong></div><div className="tracking-grid"><div><span>Speed</span><strong>54 km/h</strong></div><div><span>ETA</span><strong>16:40</strong></div><div><span>Last update</span><strong>Just now</strong></div><div><span>Trip progress</span><strong>68%</strong></div></div><div className="event-feed"><strong>Automated trip events</strong><p><i/>Talegaon geofence crossed <span>14:18</span></p><p><i/>Vehicle resumed movement <span>13:52</span></p><p><i/>Khalapur toll crossed <span>12:46</span></p></div><button className="primary full-button" onClick={() => onDone("GPS location refreshed")}>{meta.button}</button></div>
+      <div className="vehicle-list"><label>Track vehicle<select value={vehicle} onChange={e => setVehicle(e.target.value)}><option>{liveTrip?.vehicle_number || "No assigned vehicle"}</option></select></label><div className="tracking-stat"><span>Status</span><strong>{liveTrip?.status?.replaceAll("_", " ") || "Loading live trip…"}</strong></div><div className="tracking-grid"><div><span>Speed</span><strong>{liveTrip?.tracking_events?.[0]?.speed_kph || 0} km/h</strong></div><div><span>Route</span><strong>{liveTrip ? liveTrip.origin + " → " + liveTrip.destination : "—"}</strong></div><div><span>Last update</span><strong>{liveTrip?.tracking_events?.[0]?.recorded_at ? new Date(liveTrip.tracking_events[0].recorded_at).toLocaleTimeString("en-IN") : "No GPS ping"}</strong></div><div><span>Trip</span><strong>{liveTrip?.number || "—"}</strong></div></div><div className="event-feed"><strong>Live trip events</strong>{(liveTrip?.tracking_events || []).slice(0, 4).map((event: any) => <p key={event.id}><i/>{event.description || event.event_type}<span>{new Date(event.recorded_at).toLocaleTimeString("en-IN")}</span></p>)}{liveTrip && !liveTrip.tracking_events?.length && <p>No GPS events received yet</p>}</div><button className="primary full-button" onClick={() => { setLiveTrip(null); fmsRequest<any>("trips/").then(payload => setLiveTrip((Array.isArray(payload) ? payload : payload.results || [])[0] || null)); onDone("GPS location refreshed"); }}>{meta.button}</button></div>
     </div> : complete ? <div className="success-state"><span>✓</span><h3>{reference} {type === "trip" ? "created" : "generated"}</h3><p>{type === "lr" ? "Digital LR is ready to print or share with the driver." : type === "trip" ? "Vehicle and driver are allocated. The trip is ready for dispatch." : "Invoice for ₹42,800 is ready to send to Tata Consumer Products."}</p><div className="document-preview"><b>phloz</b><strong>{type === "lr" ? "LORRY RECEIPT" : type === "trip" ? "TRIP SHEET" : "TAX INVOICE"}</strong><small>{type === "lr" ? "LR-240845 · Mumbai → Pune" : type === "trip" ? "TS-2845 · MH 04 JU 9182" : "INV-2026-0847 · ₹42,800"}</small></div><div className="success-actions"><button className="secondary" onClick={() => onDone("Document downloaded")}>⇩ Download PDF</button><button className="primary" onClick={() => onDone("Document shared on WhatsApp")}>Share via WhatsApp</button></div></div> :
       <form className="action-form" onSubmit={submit}>
         {type === "customer" && <div className="form-grid"><label>Customer name<input defaultValue="New Transport Customer"/></label><label>GSTIN<input defaultValue="Generated on save"/></label><label>PAN<input defaultValue="ABCDE1234F"/></label><label>Credit limit<input defaultValue="₹5,00,000"/></label><label>Phone<input defaultValue="+91 98765 44001"/></label><label>KYC status<select><option>Pending verification</option></select></label></div>}
