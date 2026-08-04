@@ -1,4 +1,4 @@
-const API_URL = process.env.NEXT_PUBLIC_FMS_API_URL || "";
+const API_URL = process.env.NEXT_PUBLIC_FMS_API_URL || "https://api-test.phloz.app/fms";
 
 export async function fmsRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
   if (!API_URL) throw new Error("NEXT_PUBLIC_FMS_API_URL is not configured");
