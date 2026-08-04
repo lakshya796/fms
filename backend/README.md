@@ -30,7 +30,23 @@ Full endpoint reference: [../docs/FLEETOPS.md](../docs/FLEETOPS.md).
 ## EC2 deployment
 
 Copy `.env.fms.example` to `.env.fms`, set secrets, then run:
-`docker compose -f docker-compose.fms.yml up -d --build`
+
+```bash
+docker compose --env-file .env.fms -f docker-compose.fms.yml up -d --build
+```
+
+`--env-file .env.fms` is required: the database service resolves `${POSTGRES_*}` through Compose
+variable interpolation, which does not read the service level `env_file`. Without it Postgres
+starts with a blank password and refuses to initialise.
+
+Migrations run automatically when the API container starts. Afterwards:
+
+```bash
+C="docker compose --env-file .env.fms -f docker-compose.fms.yml"
+$C exec fms-api python manage.py createsuperuser
+$C exec fms-api python manage.py seed_fleetops   # optional demo data
+curl -s localhost:8010/api/v1/health/
+```
 
 The API binds only to EC2 localhost port 8010 so the existing Nginx instance can proxy
 `api.track.phloz.app` safely.
