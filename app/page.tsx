@@ -88,8 +88,6 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
   const [working, setWorking] = useState(false);
   const submit = async (e: React.FormEvent) => {
     e.preventDefault(); setWorking(true); setError("");
-    const form = new FormData(e.currentTarget);
-    const value = (name: string, fallback: string) => String(form.get(name) || fallback);
     try { await login(username, password); onLogin(); }
     catch { setError("Invalid username or password"); }
     finally { setWorking(false); }
@@ -134,6 +132,8 @@ function ActionPanel({ type, onClose, onDone, onCreated }: { type: string; onClo
   }, [type]);
   const submit = async (e: React.FormEvent) => {
     e.preventDefault(); setWorking(true); setError("");
+    const form = new FormData(e.currentTarget as HTMLFormElement);
+    const value = (name: string, fallback: string) => String(form.get(name) || fallback);
     try {
       if (type === "lr") {
         const number = "LR-" + Date.now().toString().slice(-6);
