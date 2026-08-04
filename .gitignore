@@ -40,3 +40,11 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# python / django
+__pycache__/
+*.py[cod]
+/backend/db.sqlite3
+/backend/staticfiles/
+tsconfig.tsbuildinfo
+

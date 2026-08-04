@@ -44,9 +44,12 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements.txt
       - run: pip install -r backend/requirements.txt
-      - working-directory: backend
-        run: python manage.py makemigrations fleet --noinput
+      - name: Migrations are committed and up to date
+        working-directory: backend
+        run: python manage.py makemigrations --check --dry-run
       - working-directory: backend
         run: python manage.py migrate --noinput
+      - working-directory: backend
+        run: python manage.py test fleet -v2
       - working-directory: backend
         run: python manage.py check --deploy
