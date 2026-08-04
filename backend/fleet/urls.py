@@ -1,8 +1,9 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 from rest_framework.authtoken.views import obtain_auth_token
-from .views import health, CustomerViewSet, DriverViewSet, VehicleViewSet, LorryReceiptViewSet, TripViewSet, TrackingEventViewSet, InvoiceViewSet, SettlementViewSet
+from .views import health, CustomerViewSet, DriverViewSet, VehicleViewSet, LorryReceiptViewSet, TripViewSet, TrackingEventViewSet, InvoiceViewSet, SettlementViewSet, SalesQuoteViewSet
 router = DefaultRouter()
+router.register("quotes", SalesQuoteViewSet)
 router.register("customers", CustomerViewSet)
 router.register("drivers", DriverViewSet)
 router.register("vehicles", VehicleViewSet)
