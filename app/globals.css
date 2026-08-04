@@ -129,3 +129,40 @@ h1 { margin:0; font-size:24px; letter-spacing:-.7px; }
 @media(max-width:760px){.dispatch-board{grid-template-columns:1fr}.split-row{grid-template-columns:110px 1fr 80px}.nav-group-label{font-size:0;margin:8px 0 2px}}
 .action-form select[multiple]{min-height:104px;padding:6px}
 .action-form select[multiple] option{padding:5px 6px;border-radius:5px}
+
+/* Accounting, administration and the operations flow */
+.role-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:13px}
+.role-card{border:1px solid var(--line);border-radius:15px;background:#fff;padding:18px;text-align:left;cursor:pointer;transition:.18s ease}
+.role-card:hover{transform:translateY(-2px);border-color:#b9c7bf;box-shadow:0 10px 28px rgba(20,40,30,.07)}
+.role-card>div{display:flex;align-items:center;gap:8px}
+.role-card strong{font-size:14px}
+.role-card em{font-style:normal;font-size:8px;letter-spacing:.6px;text-transform:uppercase;background:#edf5c9;color:#36513f;border-radius:9px;padding:3px 7px;font-weight:800}
+.role-card p{margin:8px 0 12px;font-size:10px;color:#77817c;line-height:1.5}
+.role-card>span{font-size:9px;color:#93a099;font-weight:700}
+.permission-group{border-bottom:1px solid var(--line);padding-bottom:12px;margin-bottom:12px}
+.permission-group .eyebrow{margin-bottom:9px;text-transform:uppercase}
+.permission-row{display:flex!important;flex-direction:row!important;align-items:flex-start;gap:9px!important;padding:6px 0;cursor:pointer}
+.permission-row input{width:auto!important;margin-top:2px}
+.permission-row span{display:flex;flex-direction:column;gap:2px}
+.permission-row strong{font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.permission-row small{font-size:10px;color:#7e8883}
+.voucher-lines{margin-top:16px;border:1px solid var(--line);border-radius:11px;overflow:hidden}
+.voucher-head,.voucher-row{display:grid;grid-template-columns:2fr 1fr 1fr 1.6fr;gap:8px;padding:9px 11px;align-items:center}
+.voucher-head{background:#f7f8f6;font-size:9px;letter-spacing:.6px;text-transform:uppercase;color:#8a938e;font-weight:800}
+.voucher-row{border-top:1px solid var(--line)}
+.voucher-row select,.voucher-row input{width:100%;border:1px solid #dfe4df;border-radius:8px;padding:8px 9px;font-size:11px;outline:none;background:#fff}
+.voucher-row select:focus,.voucher-row input:focus{border-color:#658674}
+.voucher-total{display:flex;align-items:center;gap:16px;margin-top:14px;padding:13px 16px;border-radius:11px;background:#fff4df;color:#9a6b22;font-size:11px}
+.voucher-total strong{margin-left:auto;font-size:12px}
+.voucher-total.balanced{background:#e9f6ee;color:#347257}
+.voucher-toggle{margin-bottom:16px;gap:8px}
+.report-tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:13px}
+.report-range{display:flex;gap:12px;align-items:flex-end;margin-bottom:16px}
+.report-range label{display:flex;flex-direction:column;gap:6px;font-size:10px;font-weight:750;color:#606b65}
+.report-range input{border:1px solid #dfe4df;border-radius:9px;padding:9px 11px;font-size:11px;outline:none;background:#fff}
+.pnl-grid{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+.pnl-grid .invoice-total{grid-column:1/-1;margin-top:0}
+.quote-line.total{border-bottom:0;border-top:1px solid #cfd8d2;margin-top:6px;padding-top:11px}
+.quote-line.total strong{font-size:13px}
+@media(max-width:1100px){.role-grid{grid-template-columns:repeat(2,1fr)}.pnl-grid{grid-template-columns:1fr}}
+@media(max-width:760px){.role-grid{grid-template-columns:1fr}.voucher-head{display:none}.voucher-row{grid-template-columns:1fr;gap:6px}.report-range{flex-wrap:wrap}}

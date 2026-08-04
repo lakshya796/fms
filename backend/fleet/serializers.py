@@ -177,3 +177,18 @@ class QuoteRequestSerializer(serializers.Serializer):
     other_charges = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=0)
     customer = serializers.PrimaryKeyRelatedField(queryset=Customer.objects.all(), required=False, allow_null=True)
     save_quote = serializers.BooleanField(required=False, default=False)
+
+
+from .models import Indent
+
+
+class IndentSerializer(serializers.ModelSerializer):
+    number = serializers.CharField(max_length=30, required=False, allow_blank=True)
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
+    pickup_city = serializers.CharField(source="pickup.city", read_only=True)
+    dropoff_city = serializers.CharField(source="dropoff.city", read_only=True)
+    branch_name = serializers.CharField(source="branch.name", read_only=True, default="")
+    vehicle_number = serializers.CharField(source="vehicle.registration_number", read_only=True, default="")
+    driver_name = serializers.CharField(source="driver.name", read_only=True, default="")
+    order_number = serializers.CharField(source="order.number", read_only=True, default="")
+    class Meta: model = Indent; fields = "__all__"
