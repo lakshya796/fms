@@ -310,9 +310,8 @@ function RecordForm({ spec, onClose, onSaved }: { spec: FormSpec; onClose: () =>
   useEffect(() => {
     const sources = Array.from(new Set(spec.fields.map(field => field.source).filter(Boolean) as string[]));
     sources.forEach(source => {
-      fmsRequest<any>(source).then(payload => {
-        const records = Array.isArray(payload) ? payload : payload.results || [];
-        setOptions(current => ({ ...current, [source]: records }));
+      fmsRequest<any>(wholeSet(source)).then(payload => {
+        setOptions(current => ({ ...current, [source]: asList(payload) }));
       }).catch(() => undefined);
     });
   }, [spec]);
@@ -454,15 +453,17 @@ function ModuleView({ name, onAction, reloadKey, openAction }: { name: string; o
   const data = modules[name];
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<string[][]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [selectedRow, setSelectedRow] = useState<string[] | null>(null);
   useEffect(() => {
     let active = true; setLoading(true); setLoadError("");
-    fmsRequest<any>(liveModules[name].endpoint).then(payload => {
+    fmsRequest<any>(wholeSet(liveModules[name].endpoint)).then(payload => {
       if (!active) return;
-      const records = Array.isArray(payload) ? payload : payload.results || [];
+      const records = asList(payload);
       setRows(records.map(liveModules[name].map));
+      setTotal(asCount(payload, records));
     }).catch(error => { if (active) setLoadError(error instanceof Error ? error.message : "Unable to load records"); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
@@ -470,7 +471,7 @@ function ModuleView({ name, onAction, reloadKey, openAction }: { name: string; o
   const visibleRows = rows.filter(row => row.join(" ").toLowerCase().includes(query.toLowerCase()));
   return <div className="module-page">
     <div className="module-title"><div><p className="eyebrow">{data.eyebrow}</p><h2>{data.title}</h2><p>{data.blurb || "Live records from the Phloz fleet database."}</p></div><button className="primary module-action" onClick={() => data.actionType ? openAction(data.actionType) : onAction(data.action.replace("+ ", "") + " opened")}>{data.action}</button></div>
-    <div className="module-stats"><div className="module-stat"><span>Total records</span><strong>{loading ? "—" : rows.length}</strong><small>Stored in the live database</small></div><div className="module-stat"><span>Data source</span><strong>Live</strong><small>EC2 fleet API</small></div><div className="module-stat"><span>Last synchronised</span><strong>Now</strong><small>Refreshes after every save</small></div></div>
+    <div className="module-stats"><div className="module-stat"><span>Total records</span><strong>{loading ? "—" : total}</strong><small>{!loading && total > rows.length ? `Showing the first ${rows.length}` : "Stored in the live database"}</small></div><div className="module-stat"><span>Data source</span><strong>Live</strong><small>EC2 fleet API</small></div><div className="module-stat"><span>Last synchronised</span><strong>Now</strong><small>Refreshes after every save</small></div></div>
     <section className="module-table-card"><div className="module-toolbar"><div><strong>All {name.toLowerCase()}</strong><span>{loading ? "Loading live records…" : visibleRows.length + " live records"}</span></div><div className="toolbar-actions"><input aria-label={"Search " + name} placeholder={"Search " + name.toLowerCase() + "..."} value={query} onChange={e => setQuery(e.target.value)} /><button onClick={() => onAction("Live data refreshed")}>↻ Refresh</button><button onClick={() => onAction("Report exported")}>⇩ Export</button></div></div>
       {loadError ? <div className="data-state error">{loadError}</div> : loading ? <div className="data-state">Loading records from EC2…</div> : visibleRows.length === 0 ? <div className="data-state">No records found. Use the action button to create one.</div> :
       <div className="table-wrap"><table><thead><tr>{data.columns.map(col => <th key={col}>{col}</th>)}<th>Action</th></tr></thead><tbody>{visibleRows.map((row, i) => <tr key={row[0] + i}>{row.map((cell, j) => <td key={j}>{j === 0 ? <strong>{cell}</strong> : j === row.length - 1 ? <span className={"status " + cell.toLowerCase().replaceAll(" ", "-")}>{cell}</span> : cell}</td>)}<td><button className="row-action" onClick={() => setSelectedRow(row)}>View →</button></td></tr>)}</tbody></table></div>}
@@ -494,9 +495,9 @@ function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string;
   const endpoint = name === "Dispatch" || name === "Tracking" ? "trips/" : name === "Drivers" ? "drivers/" : name === "Maintenance" ? "maintenance/" : "analytics/fleet/";
   const load = () => {
     setLoading(true);
-    fmsRequest<any>(endpoint).then(payload => {
+    fmsRequest<any>(name === "Analytics" ? endpoint : wholeSet(endpoint)).then(payload => {
       if (name === "Analytics") setDashboard(payload);
-      else setRecords(Array.isArray(payload) ? payload : payload.results || []);
+      else setRecords(asList(payload));
     }).finally(() => setLoading(false));
   };
   useEffect(load, [name, reloadKey]);
@@ -532,6 +533,10 @@ function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string;
 }
 
 const asList = (payload: any): any[] => (Array.isArray(payload) ? payload : payload?.results || []);
+// DRF paginates at 50 by default, so `results.length` is a page size, not a total.
+const asCount = (payload: any, records: any[]): number => (typeof payload?.count === "number" ? payload.count : records.length);
+// Board and watchlist screens render a whole working set, so they ask for a larger page.
+const wholeSet = (endpoint: string) => endpoint + (endpoint.includes("?") ? "&" : "?") + "page_size=500";
 const rupees = (value: any) => "₹" + Number(value || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 });
 const orderColumns: [string, string][] = [["created", "Booked"], ["assigned", "Allocated"], ["dispatched", "Dispatched"], ["in_transit", "In transit"], ["completed", "Delivered"]];
 
@@ -540,6 +545,7 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
   const [drivers, setDrivers] = useState<any[]>([]);
   const [vehicles, setVehicles] = useState<any[]>([]);
   const [selected, setSelected] = useState<any>(null);
+  const [orderTotal, setOrderTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [driver, setDriver] = useState("");
@@ -547,12 +553,16 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
 
   const load = () => {
     setLoading(true);
-    fmsRequest<any>("orders/").then(payload => setOrders(asList(payload))).finally(() => setLoading(false));
+    fmsRequest<any>(wholeSet("orders/")).then(payload => {
+      const records = asList(payload);
+      setOrders(records);
+      setOrderTotal(asCount(payload, records));
+    }).finally(() => setLoading(false));
   };
   useEffect(load, [reloadKey]);
   useEffect(() => {
-    fmsRequest<any>("drivers/").then(payload => setDrivers(asList(payload))).catch(() => undefined);
-    fmsRequest<any>("vehicles/").then(payload => setVehicles(asList(payload))).catch(() => undefined);
+    fmsRequest<any>(wholeSet("drivers/")).then(payload => setDrivers(asList(payload))).catch(() => undefined);
+    fmsRequest<any>(wholeSet("vehicles/")).then(payload => setVehicles(asList(payload))).catch(() => undefined);
   }, []);
 
   const run = async (order: any, path: string, body?: Record<string, unknown>) => {
@@ -573,7 +583,7 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
   return <div className="module-page">
     <div className="module-title"><div><p className="eyebrow">FLEETOPS ORDERS</p><h2>Consignment orders</h2><p>Booking to ePOD, with waypoints, live activity feed and consignee tracking numbers.</p></div><button className="primary module-action" onClick={() => openAction("order")}>＋ New order</button></div>
     <div className="module-stats">
-      <div className="module-stat"><span>Total orders</span><strong>{loading ? "—" : orders.length}</strong><small>Across all statuses</small></div>
+      <div className="module-stat"><span>Total orders</span><strong>{loading ? "—" : orderTotal}</strong><small>Across all statuses</small></div>
       <div className="module-stat"><span>Active now</span><strong>{loading ? "—" : active.length}</strong><small>Booked, allocated or moving</small></div>
       <div className="module-stat"><span>Order value</span><strong>{rupees(totalValue)}</strong><small>Freight incl. GST</small></div>
     </div>
@@ -637,7 +647,7 @@ function RatesView({ reloadKey, onAction, openAction }: { reloadKey: number; onA
   const [quote, setQuote] = useState<any>(null);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
-  useEffect(() => { fmsRequest<any>("service-rates/").then(payload => setRates(asList(payload))).catch(() => undefined); }, [reloadKey]);
+  useEffect(() => { fmsRequest<any>(wholeSet("service-rates/")).then(payload => setRates(asList(payload))).catch(() => undefined); }, [reloadKey]);
 
   const estimate = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -698,6 +708,7 @@ function RatesView({ reloadKey, onAction, openAction }: { reloadKey: number; onA
 
 function ComplianceView({ reloadKey, onAction, openAction }: { reloadKey: number; onAction: (message: string) => void; openAction: (type: string) => void }) {
   const [documents, setDocuments] = useState<any[]>([]);
+  const [documentTotal, setDocumentTotal] = useState(0);
   const [expiring, setExpiring] = useState<any[]>([]);
   const [due, setDue] = useState<any[]>([]);
   const [horizon, setHorizon] = useState(30);
@@ -705,7 +716,11 @@ function ComplianceView({ reloadKey, onAction, openAction }: { reloadKey: number
   useEffect(() => {
     setLoading(true);
     Promise.all([
-      fmsRequest<any>("compliance-documents/").then(payload => setDocuments(asList(payload))).catch(() => undefined),
+      fmsRequest<any>(wholeSet("compliance-documents/")).then(payload => {
+        const records = asList(payload);
+        setDocuments(records);
+        setDocumentTotal(asCount(payload, records));
+      }).catch(() => undefined),
       fmsRequest<any>(`compliance-documents/expiring/?days=${horizon}`).then(payload => setExpiring(payload.documents || [])).catch(() => undefined),
       fmsRequest<any>("maintenance-schedules/due/").then(payload => setDue(payload.schedules || [])).catch(() => undefined),
     ]).finally(() => setLoading(false));
@@ -715,7 +730,7 @@ function ComplianceView({ reloadKey, onAction, openAction }: { reloadKey: number
   return <div className="module-page">
     <div className="module-title"><div><p className="eyebrow">STATUTORY COMPLIANCE</p><h2>Vehicle & driver documents</h2><p>RC, insurance, fitness, national permit, PUC, FASTag KYC and driving licences with renewal alerts.</p></div><button className="primary module-action" onClick={() => openAction("document")}>＋ Add document</button></div>
     <div className="module-stats">
-      <div className="module-stat"><span>Documents tracked</span><strong>{loading ? "—" : documents.length}</strong><small>Across vehicles and drivers</small></div>
+      <div className="module-stat"><span>Documents tracked</span><strong>{loading ? "—" : documentTotal}</strong><small>Across vehicles and drivers</small></div>
       <div className="module-stat alert"><span>Expired</span><strong>{loading ? "—" : expired.length}</strong><small>Vehicle must be taken off road</small></div>
       <div className="module-stat warn"><span>Due in {horizon} days</span><strong>{loading ? "—" : expiring.length - expired.length}</strong><small>Start the renewal now</small></div>
     </div>

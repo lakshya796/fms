@@ -8,7 +8,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from .models import (ComplianceDocument, Customer, Driver, Fleet, FuelEntry, Issue, MaintenanceSchedule, Order, Place,
-                     ProofOfDelivery, ServiceArea, ServiceRate, TripExpense, Vehicle, Waypoint, Zone, haversine_km)
+                     ProofOfDelivery, ServiceArea, ServiceRate, TripExpense, Vehicle, Vendor, Waypoint, Zone, haversine_km)
 
 
 class BaseFleetOpsTest(TestCase):
@@ -286,3 +286,20 @@ class AnalyticsAndAuthTests(BaseFleetOpsTest):
     def test_trip_endpoints_still_work_alongside_the_dispatch_action(self):
         response = self.client.get("/api/v1/trips/")
         self.assertEqual(response.status_code, 200)
+
+
+class PaginationTests(BaseFleetOpsTest):
+    def test_list_reports_the_true_total_not_the_page_size(self):
+        for index in range(60):
+            Vendor.objects.create(name=f"Vendor {index}", code=f"VN-{index:03d}")
+        default_page = self.client.get("/api/v1/vendors/")
+        self.assertEqual(default_page.data["count"], 60)          # the real total
+        self.assertEqual(len(default_page.data["results"]), 50)   # one page of it
+
+    def test_clients_can_request_a_larger_page_up_to_the_cap(self):
+        for index in range(60):
+            Vendor.objects.create(name=f"Vendor {index}", code=f"VN-{index:03d}")
+        full = self.client.get("/api/v1/vendors/", {"page_size": 500})
+        self.assertEqual(len(full.data["results"]), 60)
+        capped = self.client.get("/api/v1/vendors/", {"page_size": 5000})
+        self.assertEqual(len(capped.data["results"]), 60)         # cap applies, request still succeeds

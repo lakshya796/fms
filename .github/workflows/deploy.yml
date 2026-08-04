@@ -1,0 +1,94 @@
+# This workflow is manual only. It never runs on push, and it does nothing until the
+# repository secrets below exist, so adding the file changes no current behaviour.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   EC2_HOST     the instance address, e.g. 13.206.46.118
+#   EC2_USER     the login user, e.g. ubuntu
+#   EC2_SSH_KEY  the contents of the .pem private key
+#   EC2_APP_DIR  absolute path of the checkout on the instance, e.g. /home/ubuntu/fms
+#
+# Run it from the Actions tab -> "Deploy FMS API" -> Run workflow, choosing the branch
+# to deploy. GitHub's runners have unrestricted outbound network access, which is what
+# makes this work where a sandboxed session cannot reach the instance.
+name: Deploy FMS API
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to deploy on the instance
+        required: true
+        default: main
+
+concurrency:
+  group: deploy-fms-api
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify deployment secrets are configured
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          USER: ${{ secrets.EC2_USER }}
+          KEY: ${{ secrets.EC2_SSH_KEY }}
+          APP_DIR: ${{ secrets.EC2_APP_DIR }}
+        run: |
+          missing=""
+          [ -n "$HOST" ] || missing="$missing EC2_HOST"
+          [ -n "$USER" ] || missing="$missing EC2_USER"
+          [ -n "$KEY" ] || missing="$missing EC2_SSH_KEY"
+          [ -n "$APP_DIR" ] || missing="$missing EC2_APP_DIR"
+          if [ -n "$missing" ]; then
+            echo "Missing repository secrets:$missing"
+            exit 1
+          fi
+
+      - name: Configure SSH
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy.pem
+          chmod 600 ~/.ssh/deploy.pem
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy and verify
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          USER: ${{ secrets.EC2_USER }}
+          APP_DIR: ${{ secrets.EC2_APP_DIR }}
+          REF: ${{ inputs.ref }}
+        run: |
+          ssh -i ~/.ssh/deploy.pem -o BatchMode=yes "$USER@$HOST" bash -se <<EOF
+          set -euo pipefail
+          cd "$APP_DIR"
+
+          # Only the FMS stack is touched. Other containers and the host Nginx are untouched.
+          git fetch --all --prune
+          git checkout "$REF"
+          git pull --ff-only origin "$REF" || true
+          git --no-pager log --oneline -1
+
+          test -f .env.fms || { echo ".env.fms is missing on the instance"; exit 1; }
+          docker compose --env-file .env.fms -f docker-compose.fms.yml up -d --build
+
+          # The API container runs migrate on start; wait for it to answer before declaring success.
+          for attempt in \$(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8010/api/v1/health/ >/dev/null; then
+              echo "API healthy after \$attempt attempt(s)"
+              exit 0
+            fi
+            sleep 3
+          done
+
+          echo "API did not become healthy; recent logs:"
+          docker compose --env-file .env.fms -f docker-compose.fms.yml logs --tail=60 fms-api
+          exit 1
+          EOF
+
+      - name: Remove deployment key
+        if: always()
+        run: rm -f ~/.ssh/deploy.pem
