@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { fmsRequest, login } from "./lib/fms-api";
 
 const nav = ["Overview", "Customers", "Sales", "Operations", "Fleet", "Settlements", "Invoices", "Modules"];
 const icons = ["⌂", "◇", "↗", "▦", "▱", "₹", "▤", "⊞"];
@@ -94,6 +95,27 @@ function ModuleView({ name, onAction }: { name: string; onAction: (message: stri
 }
 
 
+
+function LoginScreen({ onLogin }: { onLogin: () => void }) {
+  const [username, setUsername] = useState("fleetadmin");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [working, setWorking] = useState(false);
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault(); setWorking(true); setError("");
+    try { await login(username, password); onLogin(); }
+    catch { setError("Invalid username or password"); }
+    finally { setWorking(false); }
+  };
+  return <main className="login-page"><section className="login-card">
+    <div className="brand login-brand"><span className="brand-mark">p</span><span>phloz</span></div>
+    <p className="eyebrow">FLEET MANAGEMENT SYSTEM</p><h1>Welcome back</h1><p>Sign in to manage consignments, trips, vehicles and billing.</p>
+    <form onSubmit={submit}><label>Username<input value={username} onChange={e => setUsername(e.target.value)} autoComplete="username" /></label><label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" autoFocus /></label>
+    {error && <div className="login-error">{error}</div>}<button className="primary" disabled={working}>{working ? "Signing in…" : "Sign in to workspace"}</button></form>
+    <small>Secure access · Phloz Transport ERP</small>
+  </section></main>;
+}
+
 const actionMeta: Record<string, { eyebrow: string; title: string; button: string }> = {
   lr: { eyebrow: "CONSIGNMENT BOOKING", title: "Generate digital LR", button: "Generate LR" },
   trip: { eyebrow: "DISPATCH PLANNING", title: "Create trip sheet", button: "Create trip sheet" },
@@ -104,19 +126,42 @@ const actionMeta: Record<string, { eyebrow: string; title: string; button: strin
 function ActionPanel({ type, onClose, onDone }: { type: string; onClose: () => void; onDone: (message: string) => void }) {
   const [complete, setComplete] = useState(false);
   const [vehicle, setVehicle] = useState("MH 04 JU 9182");
+  const [reference, setReference] = useState("");
+  const [error, setError] = useState("");
+  const [working, setWorking] = useState(false);
   const meta = actionMeta[type];
-  const submit = (e: React.FormEvent) => { e.preventDefault(); setComplete(true); };
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault(); setWorking(true); setError("");
+    try {
+      if (type === "lr") {
+        const number = "LR-" + Date.now().toString().slice(-6);
+        await fmsRequest("lorry-receipts/", { method: "POST", body: JSON.stringify({ number, customer: 1, consignor: "Tata Consumer, Mumbai", consignee: "D-Mart Warehouse, Pune", origin: "Mumbai", destination: "Pune", material: "Packaged food products", weight_kg: "12400.00", packages: 480, eway_bill_number: "271234567890", freight_amount: "42800.00", status: "booked" }) });
+        setReference(number);
+      } else if (type === "trip") {
+        const number = "TRP-" + Date.now().toString().slice(-5);
+        await fmsRequest("trips/", { method: "POST", body: JSON.stringify({ number, vehicle: 1, driver: 1, lorry_receipts: [1], origin: "Mumbai", destination: "Pune", planned_departure: new Date(Date.now() + 7200000).toISOString(), advance_amount: "12000.00", estimated_cost: "31600.00", status: "planned" }) });
+        setReference(number);
+      } else if (type === "invoice") {
+        const number = "INV-" + Date.now().toString().slice(-6);
+        const due = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+        await fmsRequest("invoices/", { method: "POST", body: JSON.stringify({ number, customer: 1, trip: 1, freight_amount: "38500.00", additional_charges: "1200.00", tax_amount: "3100.00", total_amount: "42800.00", due_date: due, status: "issued" }) });
+        setReference(number);
+      }
+      setComplete(true);
+    } catch (e) { setError(e instanceof Error ? e.message : "Unable to save record"); }
+    finally { setWorking(false); }
+  };
   return <div className="modal-backdrop" onMouseDown={onClose}><section className={"action-panel " + (type === "tracking" ? "map-panel" : "")} onMouseDown={e => e.stopPropagation()}>
     <div className="panel-head"><div><p className="eyebrow">{meta.eyebrow}</p><h2>{meta.title}</h2></div><button className="panel-close" onClick={onClose}>×</button></div>
     {type === "tracking" ? <div className="tracking-layout">
       <div className="mock-map"><div className="map-road r1"/><div className="map-road r2"/><div className="map-road r3"/><span className="city mumbai">Mumbai</span><span className="city pune">Pune</span><span className="map-pin start">●</span><span className="map-pin vehicle">▰</span><span className="map-pin finish">●</span><div className="map-progress"/></div>
       <div className="vehicle-list"><label>Track vehicle<select value={vehicle} onChange={e => setVehicle(e.target.value)}><option>MH 04 JU 9182</option><option>KA 51 MN 6814</option><option>HR 55 AN 4021</option></select></label><div className="tracking-stat"><span>Status</span><strong>{vehicle === "KA 51 MN 6814" ? "Delayed · 2h 10m" : "Moving"}</strong></div><div className="tracking-grid"><div><span>Speed</span><strong>54 km/h</strong></div><div><span>ETA</span><strong>16:40</strong></div><div><span>Last update</span><strong>Just now</strong></div><div><span>Trip progress</span><strong>68%</strong></div></div><div className="event-feed"><strong>Automated trip events</strong><p><i/>Talegaon geofence crossed <span>14:18</span></p><p><i/>Vehicle resumed movement <span>13:52</span></p><p><i/>Khalapur toll crossed <span>12:46</span></p></div><button className="primary full-button" onClick={() => onDone("GPS location refreshed")}>{meta.button}</button></div>
-    </div> : complete ? <div className="success-state"><span>✓</span><h3>{type === "lr" ? "LR-240845 generated" : type === "trip" ? "TS-2845 created" : "INV-2026-0847 generated"}</h3><p>{type === "lr" ? "Digital LR is ready to print or share with the driver." : type === "trip" ? "Vehicle and driver are allocated. The trip is ready for dispatch." : "Invoice for ₹42,800 is ready to send to Tata Consumer Products."}</p><div className="document-preview"><b>phloz</b><strong>{type === "lr" ? "LORRY RECEIPT" : type === "trip" ? "TRIP SHEET" : "TAX INVOICE"}</strong><small>{type === "lr" ? "LR-240845 · Mumbai → Pune" : type === "trip" ? "TS-2845 · MH 04 JU 9182" : "INV-2026-0847 · ₹42,800"}</small></div><div className="success-actions"><button className="secondary" onClick={() => onDone("Document downloaded")}>⇩ Download PDF</button><button className="primary" onClick={() => onDone("Document shared on WhatsApp")}>Share via WhatsApp</button></div></div> :
+    </div> : complete ? <div className="success-state"><span>✓</span><h3>{reference} {type === "trip" ? "created" : "generated"}</h3><p>{type === "lr" ? "Digital LR is ready to print or share with the driver." : type === "trip" ? "Vehicle and driver are allocated. The trip is ready for dispatch." : "Invoice for ₹42,800 is ready to send to Tata Consumer Products."}</p><div className="document-preview"><b>phloz</b><strong>{type === "lr" ? "LORRY RECEIPT" : type === "trip" ? "TRIP SHEET" : "TAX INVOICE"}</strong><small>{type === "lr" ? "LR-240845 · Mumbai → Pune" : type === "trip" ? "TS-2845 · MH 04 JU 9182" : "INV-2026-0847 · ₹42,800"}</small></div><div className="success-actions"><button className="secondary" onClick={() => onDone("Document downloaded")}>⇩ Download PDF</button><button className="primary" onClick={() => onDone("Document shared on WhatsApp")}>Share via WhatsApp</button></div></div> :
       <form className="action-form" onSubmit={submit}>
         {type === "lr" && <><div className="form-grid"><label>Customer<select><option>Tata Consumer Products</option><option>Asian Paints Ltd</option></select></label><label>Booking date<input type="date" defaultValue="2026-08-03"/></label><label>Consignor<input defaultValue="Tata Consumer, Mumbai"/></label><label>Consignee<input defaultValue="D-Mart Warehouse, Pune"/></label><label>Material<input defaultValue="Packaged food products"/></label><label>Weight<input defaultValue="12,400 kg"/></label></div><label>Special instructions<textarea defaultValue="Handle with care · Delivery before 5 PM"/></label></>}
         {type === "trip" && <><div className="form-grid"><label>Route<select><option>Mumbai → Pune</option><option>Delhi → Jaipur</option></select></label><label>Linked LR<select><option>LR-240845</option><option>LR-240831</option></select></label><label>Vehicle<select><option>MH 04 JU 9182 · Available</option><option>MH 12 PQ 4407 · Available</option></select></label><label>Driver<select><option>Ramesh Yadav · Available</option><option>Manoj Singh · Available</option></select></label><label>Trip advance<input defaultValue="₹12,000"/></label><label>Planned departure<input type="time" defaultValue="14:30"/></label></div><div className="cost-strip"><span>Estimated distance <b>149 km</b></span><span>Estimated cost <b>₹31,600</b></span><span>Expected margin <b>26.2%</b></span></div></>}
         {type === "invoice" && <><div className="form-grid"><label>Customer<select><option>Tata Consumer Products</option><option>Asian Paints Ltd</option></select></label><label>Completed trip<select><option>TRP-2836 · POD received</option><option>TRP-2831 · POD received</option></select></label><label>Freight amount<input defaultValue="₹38,500"/></label><label>Additional charges<input defaultValue="₹1,200"/></label><label>GST<input defaultValue="₹3,100"/></label><label>Payment terms<select><option>30 days</option><option>15 days</option><option>45 days</option></select></label></div><div className="invoice-total"><span>Invoice total</span><strong>₹42,800</strong><small>Freight + toll + GST</small></div></>}
-        <div className="form-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" type="submit">{meta.button}</button></div>
+        {error && <div className="form-error">{error}</div>}<div className="form-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" type="submit" disabled={working}>{working ? "Saving…" : meta.button}</button></div>
       </form>}
   </section></div>;
 }
@@ -125,11 +170,15 @@ export default function Home() {
   const [active, setActive] = useState("Overview");
   const [toast, setToast] = useState("");
   const [action, setAction] = useState("");
+  const [authenticated, setAuthenticated] = useState(false);
+  useEffect(() => { setAuthenticated(Boolean(sessionStorage.getItem("fms_token"))); }, []);
 
   const show = (message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(""), 2200);
   };
+
+  if (!authenticated) return <LoginScreen onLogin={() => setAuthenticated(true)} />;
 
   return (
     <main className="app-shell">
