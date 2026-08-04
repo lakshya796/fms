@@ -31,12 +31,22 @@ Built for a 1000+ vehicle operation — see
 
 ## Deploying the API
 
+On the EC2 instance (release directories, systemd and gunicorn):
+
+```bash
+sudo bash scripts/migrate-to-postgres.sh   # one time, only if still on SQLite
+bash scripts/deploy-fms.sh                 # every deploy
+```
+
+Both scripts touch only the FMS stack, back up before they change anything, and print a
+one-line rollback. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+There is also a Docker Compose path for a clean host:
+
 ```bash
 cp .env.fms.example .env.fms   # then fill in secrets
 docker compose --env-file .env.fms -f docker-compose.fms.yml up -d --build
 ```
-
-Full deployment notes, including the Nginx proxy, are in [backend/README.md](backend/README.md).
 
 ## Running locally
 
