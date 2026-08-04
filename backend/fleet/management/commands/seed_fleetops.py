@@ -13,7 +13,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from fleet.models import (Customer, Driver, Vehicle, Vendor, ServiceArea, Zone, Place, Fleet, ServiceRate, Order,
-                          Trip, Waypoint, FuelEntry, TripExpense, Issue, ComplianceDocument, MaintenanceSchedule)
+                          Trip, Waypoint, Indent, FuelEntry, TripExpense, Issue, ComplianceDocument,
+                          MaintenanceSchedule)
 
 SERVICE_AREAS = [
     ("West India", "WEST", "Maharashtra, Gujarat, Goa", 19.076, 72.8777),
@@ -84,8 +85,9 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         today = timezone.localdate()
         if options["reset"]:
-            for model in (Waypoint, Order, FuelEntry, TripExpense, Issue, ComplianceDocument, MaintenanceSchedule,
-                          ServiceRate, Fleet, Place, Zone, ServiceArea, Vendor):
+            # Order matters: children first, or PROTECT-ed foreign keys block the delete.
+            for model in (Indent, Waypoint, Order, FuelEntry, TripExpense, Issue, ComplianceDocument,
+                          MaintenanceSchedule, ServiceRate, Fleet, Place, Zone, ServiceArea, Vendor):
                 model.objects.all().delete()
             self.stdout.write("Cleared existing FleetOps records")
 

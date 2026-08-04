@@ -130,7 +130,8 @@ Orders and indents both carry a `branch`, and `Order` is indexed on `(status, cr
 
 New sections in the sidebar:
 
-- **TRANSPORT → Indents** — demand board with allocate and convert-to-order
+- **TRANSPORT → Indents** — demand board with drag-and-drop between columns and a detail
+  drawer on click; dropping onto "allocated" opens the truck allocation panel
 - **ACCOUNTS → Ledger** — chart of accounts with live balances, group headings marked
 - **ACCOUNTS → Vouchers** — journal entries, plus a composer that will not let you post an
   unbalanced entry or select a group heading
