@@ -15,6 +15,21 @@ script below touches them.
 
 ## One time: move to PostgreSQL
 
+### Against a PostgreSQL server you already run
+
+```bash
+sudo PG_HOST=ec2-13-235-89-56.ap-south-1.compute.amazonaws.com \
+     PG_ADMIN_USER=postgres PG_ADMIN_PASSWORD='...' \
+     bash scripts/migrate-to-postgres.sh
+```
+
+The FMS gets its **own** database (default `fms`). It must not share one with another
+Django project: both create `django_migrations`, `auth_user`, `django_content_type` and
+`authtoken_token`, and they would corrupt each other. The script refuses to touch a
+database that already holds a different project's tables.
+
+### Installing PostgreSQL on the app instance instead
+
 SQLite serialises writes, and double-entry accounting writes several rows per event. With
 two gunicorn workers that shows up as `database is locked` under load, so Postgres is the
 supported production database.
@@ -23,6 +38,10 @@ supported production database.
 sudo bash scripts/migrate-to-postgres.sh
 ```
 
+Amazon Linux defaults host connections to `ident` authentication, which fails for a role
+with no matching Unix user (`FATAL: Ident authentication failed`). The script switches local
+TCP to `scram-sha-256` and keeps a backup of `pg_hba.conf`.
+
 It installs PostgreSQL (or reuses one already on the box), creates the database and role,
 writes the credentials into `shared/fms.env`, **stops the API** so nothing writes to SQLite
 after the dump is taken, dumps with the currently running release, loads into Postgres, then
@@ -30,6 +49,9 @@ starts the API again — still on the same release. Nothing about the code chang
 confirm the app is healthy before deploying anything new.
 
 Backups it leaves behind: `shared/db.sqlite3.bak-<stamp>` and `shared/fms.env.bak-<stamp>`.
+
+**If any step fails**, the script restores the previous env file and restarts the API
+itself, so you are never left with a stopped service.
 
 **Rollback:** `sudo cp shared/fms.env.bak-<stamp> shared/fms.env && sudo systemctl restart phloz-fms`
 — the old file still has `USE_SQLITE=true`, and the SQLite file is untouched.

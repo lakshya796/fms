@@ -147,7 +147,7 @@ const featureGroups = [
   ["15", "Business intelligence", "Real-time profitability, revenue visibility, leakage detection and operational dashboards"],
 ];
 
-function FeatureHub({ onAction }: { onAction: (message: string) => void }) {
+function FeatureHub({ onAction }: { onAction: Notify }) {
   return <div className="module-page feature-page"><div className="module-title"><div><p className="eyebrow">COMPLETE TRANSPORT ERP</p><h2>One platform. Every fleet workflow.</h2><p>High-level capability map for modern Indian fleet owners and transporters.</p></div><button className="primary module-action" onClick={() => onAction("Capability brief exported")}>⇩ Export brief</button></div><div className="feature-grid">{featureGroups.map(group => <button className="feature-card" key={group[0]} onClick={() => onAction(`${group[1]} module opened`)}><span>{group[0]}</span><div><strong>{group[1]}</strong><p>{group[2]}</p></div><b>→</b></button>)}</div></div>;
 }
 
@@ -708,7 +708,7 @@ const liveModules: Record<string, { endpoint: string; map: (record: any) => stri
   "Audit trail": { endpoint: "iam/audit-log/", map: r => [new Date(r.recorded_at).toLocaleString("en-IN"), r.username || "—", r.action, `${r.entity} #${r.entity_id}`, r.summary || "—"] },
 };
 
-function ModuleView({ name, onAction, reloadKey, openAction }: { name: string; onAction: (message: string) => void; reloadKey: number; openAction: (type: string) => void }) {
+function ModuleView({ name, onAction, reloadKey, openAction }: { name: string; onAction: Notify; reloadKey: number; openAction: (type: string) => void }) {
   const data = modules[name];
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<string[][]>([]);
@@ -747,9 +747,10 @@ function ModuleView({ name, onAction, reloadKey, openAction }: { name: string; o
 
 const fleetOpsPages = ["Dispatch", "Tracking", "Drivers", "Maintenance", "Analytics"];
 
-function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string; onAction: (message: string) => void; reloadKey: number; openAction: (type: string) => void }) {
+function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string; onAction: Notify; reloadKey: number; openAction: (type: string) => void }) {
   const [records, setRecords] = useState<any[]>([]);
   const [dashboard, setDashboard] = useState<any>(null);
+  const [tripDetail, setTripDetail] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const endpoint = name === "Dispatch" || name === "Tracking" ? "trips/" : name === "Drivers" ? "drivers/" : name === "Maintenance" ? "maintenance/" : "analytics/fleet/";
   const load = () => {
@@ -761,11 +762,46 @@ function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string;
   };
   useEffect(load, [name, reloadKey]);
   const tripAction = async (trip: any, action: string) => {
-    await fmsRequest("trips/" + trip.id + "/" + action + "/", { method: "POST" });
-    onAction(trip.number + " " + action + "ed"); load();
+    try {
+      await fmsRequest("trips/" + trip.id + "/" + action + "/", { method: "POST" });
+      onAction(trip.number + " " + action + "ed");
+      setTripDetail(null);
+      load();
+    } catch (e) { onAction(e instanceof Error ? e.message.slice(0, 90) : "Action failed"); }
   };
-  if (name === "Dispatch") return <div className="module-page"><div className="module-title"><div><p className="eyebrow">FLEET-OPS DISPATCH</p><h2>Dispatch command board</h2><p>Plan, assign and progress trips through a visual workflow.</p></div><button className="primary module-action" onClick={() => openAction("trip")}>＋ Create trip</button></div>
-    <div className="dispatch-board">{["planned","dispatched","in_transit","closed"].map(status => <section className="dispatch-column" key={status}><header><strong>{status.replaceAll("_"," ")}</strong><span>{records.filter(r => r.status === status).length}</span></header>{records.filter(r => r.status === status).map(trip => <article className="dispatch-card" key={trip.id}><b>{trip.number}</b><p>{trip.origin} → {trip.destination}</p><small>{trip.vehicle_number} · {trip.driver_name}</small><div>{status === "planned" && <button onClick={() => tripAction(trip,"dispatch")}>Dispatch</button>}{status !== "closed" && status !== "planned" && <button onClick={() => tripAction(trip,"close")}>Close trip</button>}</div></article>)}{!loading && !records.some(r => r.status === status) && <div className="empty-column">No trips</div>}</section>)}</div></div>;
+  const board = useDragBoard({
+    "planned>dispatched": trip => tripAction(trip, "dispatch"),
+    "dispatched>closed": trip => tripAction(trip, "close"),
+    "in_transit>closed": trip => tripAction(trip, "close"),
+  }, onAction);
+  if (name === "Dispatch") return <div className="module-page"><div className="module-title"><div><p className="eyebrow">FLEET-OPS DISPATCH</p><h2>Dispatch command board</h2><p>Drag a trip between columns to progress it, or click one to open the trip sheet.</p></div><button className="primary module-action" onClick={() => openAction("trip")}>＋ Create trip</button></div>
+    <div className="dispatch-board">{["planned","dispatched","in_transit","closed"].map(status => <section {...board.columnProps(status)} key={status}>
+      <header><strong>{status.replaceAll("_"," ")}</strong><span>{records.filter(r => r.status === status).length}</span></header>
+      {records.filter(r => r.status === status).map(trip => <article className="dispatch-card" key={trip.id} {...board.cardProps(trip)} onClick={() => setTripDetail(trip)}>
+        <b>{trip.number}</b><p>{trip.origin} → {trip.destination}</p><small>{trip.vehicle_number} · {trip.driver_name}</small>
+        <div onClick={event => event.stopPropagation()}>
+          {status === "planned" && <button onClick={() => tripAction(trip,"dispatch")}>Dispatch</button>}
+          {status !== "closed" && status !== "planned" && <button onClick={() => tripAction(trip,"close")}>Close trip</button>}
+        </div>
+      </article>)}
+      {!loading && !records.some(r => r.status === status) && <div className="empty-column">Drop a card here</div>}
+    </section>)}</div>
+    {tripDetail && <DetailDrawer eyebrow="TRIP SHEET" title={tripDetail.number} status={tripDetail.status} onClose={() => setTripDetail(null)}
+      fields={[["Route", `${tripDetail.origin} → ${tripDetail.destination}`], ["Vehicle", tripDetail.vehicle_number],
+               ["Driver", tripDetail.driver_name], ["Consignments", (tripDetail.lorry_receipts || []).length],
+               ["Planned departure", tripDetail.planned_departure ? new Date(tripDetail.planned_departure).toLocaleString("en-IN") : ""],
+               ["Actual departure", tripDetail.actual_departure ? new Date(tripDetail.actual_departure).toLocaleString("en-IN") : ""],
+               ["Arrived", tripDetail.arrival_at ? new Date(tripDetail.arrival_at).toLocaleString("en-IN") : ""],
+               ["Trip advance", rupees(tripDetail.advance_amount)], ["Estimated cost", rupees(tripDetail.estimated_cost)]]}
+      sections={[{ label: "GPS EVENTS", rows: (tripDetail.tracking_events || []).slice(0, 8).map((event: any) => ({
+        key: String(event.id), primary: event.description || event.event_type,
+        secondary: `${event.speed_kph} km/h`, meta: new Date(event.recorded_at).toLocaleString("en-IN") })) }]}
+      actions={<>
+        <button className="secondary" onClick={() => setTripDetail(null)}>Close</button>
+        {tripDetail.status === "planned" && <button className="primary" onClick={() => tripAction(tripDetail, "dispatch")}>Dispatch trip</button>}
+        {["dispatched", "in_transit"].includes(tripDetail.status) && <button className="primary" onClick={() => tripAction(tripDetail, "close")}>Close trip</button>}
+      </>} />}
+  </div>;
   if (name === "Tracking") { const trip=records[0]; const event=trip?.tracking_events?.[0]; return <div className="module-page"><div className="module-title"><div><p className="eyebrow">LIVE FLEET MAP</p><h2>Track fleet operations</h2><p>GPS positions, routes, geofences and automated trip events.</p></div><button className="primary module-action" onClick={load}>↻ Refresh GPS</button></div><div className="full-map-layout"><div className="operations-map"><div className="map-road r1"/><div className="map-road r2"/><div className="map-road r3"/><span className="city mumbai">Mumbai</span><span className="city pune">Pune</span><span className="map-pin start">●</span><span className="map-pin vehicle">▰</span><span className="map-pin finish">●</span><div className="map-progress"/></div><aside className="map-details"><p className="eyebrow">SELECTED TRIP</p><h3>{trip?.number || "No active trip"}</h3><p>{trip ? trip.origin + " → " + trip.destination : "Create a trip to begin tracking"}</p><div className="tracking-grid"><div><span>Vehicle</span><strong>{trip?.vehicle_number || "—"}</strong></div><div><span>Driver</span><strong>{trip?.driver_name || "—"}</strong></div><div><span>Speed</span><strong>{event?.speed_kph || 0} km/h</strong></div><div><span>Status</span><strong>{trip?.status?.replaceAll("_"," ") || "—"}</strong></div></div><div className="event-feed"><strong>Latest events</strong>{(trip?.tracking_events || []).map((e:any)=><p key={e.id}><i/>{e.description || e.event_type}<span>{new Date(e.recorded_at).toLocaleTimeString("en-IN")}</span></p>)}</div></aside></div></div>; }
   if (name === "Drivers") return <div className="module-page"><div className="module-title"><div><p className="eyebrow">DRIVER OPERATIONS</p><h2>Drivers & availability</h2><p>Licences, shifts, current status and last known location.</p></div><button className="primary module-action" onClick={() => openAction("driver")}>＋ Add driver</button></div><section className="module-table-card"><div className="table-wrap"><table><thead><tr><th>Driver</th><th>Phone</th><th>Licence</th><th>Expiry</th><th>Status</th></tr></thead><tbody>{records.map(r=><tr key={r.id}><td><strong>{r.name}</strong></td><td>{r.phone}</td><td>{r.licence_number}</td><td>{r.licence_expiry || "—"}</td><td><span className={"status "+r.status}>{r.status}</span></td></tr>)}</tbody></table></div></section></div>;
   if (name === "Maintenance") return <div className="module-page"><div className="module-title"><div><p className="eyebrow">FLEET MAINTENANCE</p><h2>Work orders & schedules</h2><p>Preventive servicing, breakdowns and vehicle downtime.</p></div><button className="primary module-action" onClick={() => openAction("maintenance")}>＋ New work order</button></div><section className="module-table-card"><div className="table-wrap"><table><thead><tr><th>Work order</th><th>Vehicle</th><th>Work</th><th>Scheduled</th><th>Cost</th><th>Status</th></tr></thead><tbody>{records.map(r=><tr key={r.id}><td><strong>{r.number}</strong></td><td>{r.vehicle_number}</td><td>{r.title}</td><td>{r.scheduled_date}</td><td>₹{Number(r.estimated_cost).toLocaleString("en-IN")}</td><td><span className={"status "+r.status}>{r.status}</span></td></tr>)}</tbody></table></div></section></div>;
@@ -791,6 +827,8 @@ function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string;
   </div>;
 }
 
+type Notify = (message: string, tone?: "ok" | "warn") => void;
+
 const asList = (payload: any): any[] => (Array.isArray(payload) ? payload : payload?.results || []);
 // DRF paginates at 50 by default, so `results.length` is a page size, not a total.
 const asCount = (payload: any, records: any[]): number => (typeof payload?.count === "number" ? payload.count : records.length);
@@ -799,7 +837,75 @@ const wholeSet = (endpoint: string) => endpoint + (endpoint.includes("?") ? "&" 
 const rupees = (value: any) => "₹" + Number(value || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 });
 const orderColumns: [string, string][] = [["created", "Booked"], ["assigned", "Allocated"], ["dispatched", "Dispatched"], ["in_transit", "In transit"], ["completed", "Delivered"]];
 
-function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; onAction: (message: string) => void; openAction: (type: string) => void }) {
+// --- Kanban plumbing ------------------------------------------------------
+// A card is dragged by id; the column it lands on decides which API action runs.
+// `moves` maps "fromStatus>toStatus" to a handler, so an illegal drop simply says so
+// rather than silently doing the wrong thing.
+type CardMove = (card: any) => void | Promise<void>;
+
+function useDragBoard(moves: Record<string, CardMove>, onRefuse: Notify) {
+  const [dragging, setDragging] = useState<any>(null);
+  const [over, setOver] = useState<string>("");
+  const drop = async (status: string) => {
+    const card = dragging;
+    setDragging(null); setOver("");
+    if (!card || card.status === status) return;
+    const move = moves[`${card.status}>${status}`];
+    if (!move) {
+      onRefuse(`${card.number} cannot move from ${String(card.status).replaceAll("_", " ")} to ${status.replaceAll("_", " ")}`, "warn");
+      return;
+    }
+    await move(card);
+  };
+  const cardProps = (card: any) => ({
+    draggable: true,
+    onDragStart: (event: React.DragEvent) => { setDragging(card); event.dataTransfer.effectAllowed = "move"; },
+    onDragEnd: () => { setDragging(null); setOver(""); },
+  });
+  const columnProps = (status: string) => ({
+    onDragOver: (event: React.DragEvent) => {
+      if (!dragging) return;
+      event.preventDefault();
+      // Always accept the drop, even where the move is not allowed: dropEffect "none"
+      // stops the browser firing `drop` at all, and then nothing could explain why.
+      // The column still turns red, and the drop handler says what went wrong.
+      event.dataTransfer.dropEffect = "move";
+      setOver(status);
+    },
+    onDragLeave: () => setOver(current => (current === status ? "" : current)),
+    onDrop: (event: React.DragEvent) => { event.preventDefault(); drop(status); },
+    className: "dispatch-column"
+      + (over === status && dragging ? (moves[`${dragging.status}>${status}`] ? " drop-ok" : " drop-blocked") : ""),
+  });
+  return { dragging, cardProps, columnProps };
+}
+
+// A read-only detail drawer, used when a board card is clicked.
+function DetailDrawer({ eyebrow, title, status, fields, sections, actions, onClose }: {
+  eyebrow: string; title: string; status?: string;
+  fields: [string, any][];
+  sections?: { label: string; rows: { key: string; primary: string; secondary?: string; meta?: string }[] }[];
+  actions?: React.ReactNode; onClose: () => void;
+}) {
+  return <div className="record-backdrop" onMouseDown={onClose}><aside className="record-drawer" onMouseDown={event => event.stopPropagation()}>
+    <div className="record-head"><div><p className="eyebrow">{eyebrow}</p><h2>{title}</h2>
+      {status && <span className={"status " + String(status).replaceAll("_", "-")}>{String(status).replaceAll("_", " ")}</span>}
+    </div><button className="panel-close" onClick={onClose}>×</button></div>
+    <div className="record-fields">{fields.map(([label, value]) => <div className="record-field" key={label}>
+      <span>{label}</span><strong>{value === null || value === undefined || value === "" ? "—" : String(value)}</strong>
+    </div>)}</div>
+    {(sections || []).map(section => <div className="record-timeline" key={section.label}>
+      <p className="eyebrow">{section.label}</p>
+      {section.rows.length ? section.rows.map(row => <div key={row.key}>
+        <i /><span><strong>{row.primary}</strong>{row.secondary && <small>{row.secondary}</small>}</span>
+        {row.meta && <time>{row.meta}</time>}
+      </div>) : <div><i /><span><strong>Nothing yet</strong></span></div>}
+    </div>)}
+    {actions && <div className="record-actions">{actions}</div>}
+  </aside></div>;
+}
+
+function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; onAction: Notify; openAction: (type: string) => void }) {
   const [orders, setOrders] = useState<any[]>([]);
   const [drivers, setDrivers] = useState<any[]>([]);
   const [vehicles, setVehicles] = useState<any[]>([]);
@@ -839,8 +945,19 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
   const totalValue = orders.reduce((sum, order) => sum + Number(order.total_amount || 0), 0);
   const active = orders.filter(order => !["completed", "cancelled"].includes(order.status));
 
+  // Dropping onto "Allocated" opens the allocation panel, because an order cannot be
+  // assigned without naming a driver and a vehicle.
+  const board = useDragBoard({
+    "created>assigned": order => { setSelected(order); setDriver(""); setVehicle(""); },
+    "assigned>dispatched": order => run(order, "dispatch"),
+    "dispatched>in_transit": order => run(order, "activity", { status: "in_transit", code: "IN_TRANSIT", details: "Moved on the dispatch board" }),
+    "dispatched>completed": order => run(order, "complete", { receiver_name: "Consignee", proof_type: "signature" }),
+    "in_transit>completed": order => run(order, "complete", { receiver_name: "Consignee", proof_type: "signature" }),
+    "assigned>created": order => run(order, "activity", { status: "created", code: "ALLOCATION_RELEASED", details: "Returned to the booking queue" }),
+  }, onAction);
+
   return <div className="module-page">
-    <div className="module-title"><div><p className="eyebrow">FLEETOPS ORDERS</p><h2>Consignment orders</h2><p>Booking to ePOD, with waypoints, live activity feed and consignee tracking numbers.</p></div><button className="primary module-action" onClick={() => openAction("order")}>＋ New order</button></div>
+    <div className="module-title"><div><p className="eyebrow">FLEETOPS ORDERS</p><h2>Consignment orders</h2><p>Drag a card between columns to move it on, or click one to open the consignment.</p></div><button className="primary module-action" onClick={() => openAction("order")}>＋ New order</button></div>
     <div className="module-stats">
       <div className="module-stat"><span>Total orders</span><strong>{loading ? "—" : orderTotal}</strong><small>Across all statuses</small></div>
       <div className="module-stat"><span>Active now</span><strong>{loading ? "—" : active.length}</strong><small>Booked, allocated or moving</small></div>
@@ -848,21 +965,21 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
     </div>
     <div className="dispatch-board">{orderColumns.map(([status, label]) => {
       const bucket = orders.filter(order => order.status === status);
-      return <section className="dispatch-column" key={status}>
+      return <section {...board.columnProps(status)} key={status}>
         <header><strong>{label}</strong><span>{bucket.length}</span></header>
-        {bucket.map(order => <article className="dispatch-card" key={order.id}>
+        {bucket.map(order => <article className="dispatch-card" key={order.id}
+            {...board.cardProps(order)} onClick={() => { setSelected(order); setDriver(order.driver || ""); setVehicle(order.vehicle || ""); }}>
           <b>{order.number}</b>
           <p>{order.pickup_city} → {order.dropoff_city}</p>
           <small>{order.customer_name} · {rupees(order.total_amount)}</small>
           <small className="tracking-code">{order.tracking_number}</small>
-          <div>
-            <button onClick={() => { setSelected(order); setDriver(order.driver || ""); setVehicle(order.vehicle || ""); }}>Open</button>
+          <div onClick={event => event.stopPropagation()}>
             {status === "created" && <button disabled={busy} onClick={() => { setSelected(order); setDriver(""); setVehicle(""); }}>Allocate</button>}
             {status === "assigned" && <button disabled={busy} onClick={() => run(order, "dispatch")}>Dispatch</button>}
             {["dispatched", "in_transit"].includes(status) && <button disabled={busy} onClick={() => run(order, "complete", { receiver_name: "Consignee", proof_type: "signature" })}>Deliver</button>}
           </div>
         </article>)}
-        {!loading && bucket.length === 0 && <div className="empty-column">No orders</div>}
+        {!loading && bucket.length === 0 && <div className="empty-column">Drop a card here</div>}
       </section>;
     })}</div>
 
@@ -901,7 +1018,7 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
   </div>;
 }
 
-function RatesView({ reloadKey, onAction, openAction }: { reloadKey: number; onAction: (message: string) => void; openAction: (type: string) => void }) {
+function RatesView({ reloadKey, onAction, openAction }: { reloadKey: number; onAction: Notify; openAction: (type: string) => void }) {
   const [rates, setRates] = useState<any[]>([]);
   const [quote, setQuote] = useState<any>(null);
   const [working, setWorking] = useState(false);
@@ -1022,7 +1139,7 @@ function ComplianceView({ reloadKey, openAction }: { reloadKey: number; openActi
 
 // --- Administration -------------------------------------------------------
 
-function UsersView({ reloadKey, onAction, openAction }: { reloadKey: number; onAction: (message: string) => void; openAction: (type: string) => void }) {
+function UsersView({ reloadKey, onAction, openAction }: { reloadKey: number; onAction: Notify; openAction: (type: string) => void }) {
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -1056,7 +1173,7 @@ function UsersView({ reloadKey, onAction, openAction }: { reloadKey: number; onA
   </div>;
 }
 
-function RolesView({ reloadKey, onAction }: { reloadKey: number; onAction: (message: string) => void }) {
+function RolesView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify }) {
   const [roles, setRoles] = useState<any[]>([]);
   const [catalogue, setCatalogue] = useState<any[]>([]);
   const [selected, setSelected] = useState<any>(null);
@@ -1100,7 +1217,7 @@ function RolesView({ reloadKey, onAction }: { reloadKey: number; onAction: (mess
 
 // --- Accounting -----------------------------------------------------------
 
-function VouchersView({ reloadKey, onAction }: { reloadKey: number; onAction: (message: string) => void }) {
+function VouchersView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify }) {
   const [entries, setEntries] = useState<any[]>([]);
   const [accounts, setAccounts] = useState<any[]>([]);
   const [composing, setComposing] = useState(false);
@@ -1182,7 +1299,7 @@ function VouchersView({ reloadKey, onAction }: { reloadKey: number; onAction: (m
   </div>;
 }
 
-function PaymentsView({ reloadKey, onAction }: { reloadKey: number; onAction: (message: string) => void }) {
+function PaymentsView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify }) {
   const [payments, setPayments] = useState<any[]>([]);
   const [accounts, setAccounts] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
@@ -1280,7 +1397,7 @@ const financialReports: [string, string, string][] = [
   ["GST summary", "accounting/reports/gst-summary/", "Output less input GST for the period"],
 ];
 
-function FinancialsView({ reloadKey, onAction }: { reloadKey: number; onAction: (message: string) => void }) {
+function FinancialsView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify }) {
   const [tab, setTab] = useState(0);
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -1330,11 +1447,12 @@ function FinancialsView({ reloadKey, onAction }: { reloadKey: number; onAction: 
 
 // --- Operations flow ------------------------------------------------------
 
-function IndentsView({ reloadKey, onAction, openAction }: { reloadKey: number; onAction: (message: string) => void; openAction: (type: string) => void }) {
+function IndentsView({ reloadKey, onAction, openAction }: { reloadKey: number; onAction: Notify; openAction: (type: string) => void }) {
   const [indents, setIndents] = useState<any[]>([]);
   const [vehicles, setVehicles] = useState<any[]>([]);
   const [drivers, setDrivers] = useState<any[]>([]);
   const [selected, setSelected] = useState<any>(null);
+  const [detail, setDetail] = useState<any>(null);
   const [vehicle, setVehicle] = useState("");
   const [driver, setDriver] = useState("");
   const [loading, setLoading] = useState(true);
@@ -1357,27 +1475,50 @@ function IndentsView({ reloadKey, onAction, openAction }: { reloadKey: number; o
   };
 
   const columns: [string, string][] = [["open", "Open demand"], ["allocated", "Allocated"], ["converted", "Converted"], ["cancelled", "Cancelled"]];
+  // Allocating needs a truck named, so that drop opens the panel instead of guessing.
+  const board = useDragBoard({
+    "open>allocated": indent => { setSelected(indent); setVehicle(""); setDriver(""); },
+    "allocated>converted": indent => run(indent, "convert"),
+    "open>cancelled": indent => run(indent, "cancel", { reason: "Cancelled on the board" }),
+    "allocated>cancelled": indent => run(indent, "cancel", { reason: "Cancelled on the board" }),
+  }, onAction);
   return <div className="module-page">
-    <div className="module-title"><div><p className="eyebrow">OPERATIONS FLOW</p><h2>Indents & allocation</h2><p>Customer demand is captured first, allocated to a truck, then becomes a consignment order.</p></div><button className="primary module-action" onClick={() => openAction("indent")}>＋ Raise indent</button></div>
+    <div className="module-title"><div><p className="eyebrow">OPERATIONS FLOW</p><h2>Indents & allocation</h2><p>Drag a card between columns, or click one to open it. Demand is captured, allocated to a truck, then converted.</p></div><button className="primary module-action" onClick={() => openAction("indent")}>＋ Raise indent</button></div>
     <div className="dispatch-board">{columns.map(([status, label]) => {
       const bucket = indents.filter(indent => indent.status === status);
-      return <section className="dispatch-column" key={status}>
+      return <section {...board.columnProps(status)} key={status}>
         <header><strong>{label}</strong><span>{bucket.length}</span></header>
-        {bucket.map(indent => <article className="dispatch-card" key={indent.id}>
+        {bucket.map(indent => <article className="dispatch-card" key={indent.id}
+            {...board.cardProps(indent)} onClick={() => setDetail(indent)}>
           <b>{indent.number}</b>
           <p>{indent.pickup_city} → {indent.dropoff_city}</p>
           <small>{indent.customer_name} · {indent.vehicle_type || "any vehicle"}</small>
           {indent.vehicle_number && <small className="tracking-code">{indent.vehicle_number} · {indent.driver_name}</small>}
           {indent.order_number && <small className="tracking-code">order {indent.order_number}</small>}
-          <div>
+          <div onClick={event => event.stopPropagation()}>
             {status === "open" && <button onClick={() => { setSelected(indent); setVehicle(""); setDriver(""); }}>Allocate</button>}
             {status === "allocated" && <button disabled={busy} onClick={() => run(indent, "convert")}>Convert to order</button>}
             {status !== "converted" && status !== "cancelled" && <button disabled={busy} onClick={() => run(indent, "cancel", { reason: "Cancelled at the desk" })}>Cancel</button>}
           </div>
         </article>)}
-        {!loading && !bucket.length && <div className="empty-column">Nothing here</div>}
+        {!loading && !bucket.length && <div className="empty-column">Drop a card here</div>}
       </section>;
     })}</div>
+
+    {detail && <DetailDrawer eyebrow="INDENT" title={detail.number} status={detail.status} onClose={() => setDetail(null)}
+      fields={[["Customer", detail.customer_name], ["Branch", detail.branch_name],
+               ["Loading point", detail.pickup_city], ["Unloading point", detail.dropoff_city],
+               ["Vehicle required", detail.vehicle_type], ["How many", detail.vehicles_required],
+               ["Material", detail.material], ["Weight", `${Number(detail.weight_kg).toLocaleString("en-IN")} kg`],
+               ["Expected freight", rupees(detail.expected_rate)],
+               ["Required by", detail.required_at ? new Date(detail.required_at).toLocaleString("en-IN") : ""],
+               ["Allocated truck", detail.vehicle_number], ["Driver", detail.driver_name],
+               ["Order", detail.order_number], ["Remarks", detail.remarks]]}
+      actions={<>
+        <button className="secondary" onClick={() => setDetail(null)}>Close</button>
+        {detail.status === "open" && <button className="primary" onClick={() => { setSelected(detail); setDetail(null); setVehicle(""); setDriver(""); }}>Allocate a truck</button>}
+        {detail.status === "allocated" && <button className="primary" disabled={busy} onClick={() => { setDetail(null); run(detail, "convert"); }}>Convert to order</button>}
+      </>} />}
 
     {selected && <div className="modal-backdrop" onMouseDown={() => setSelected(null)}><section className="action-panel" onMouseDown={event => event.stopPropagation()}>
       <div className="panel-head"><div><p className="eyebrow">ALLOCATE A TRUCK</p><h2>{selected.number}</h2></div><button className="panel-close" onClick={() => setSelected(null)}>×</button></div>
@@ -1400,7 +1541,7 @@ function IndentsView({ reloadKey, onAction, openAction }: { reloadKey: number; o
 
 export default function Home() {
   const [active, setActive] = useState("Overview");
-  const [toast, setToast] = useState("");
+  const [toast, setToast] = useState<{ text: string; tone: string } | null>(null);
   const [action, setAction] = useState("");
   const [authenticated, setAuthenticated] = useState(false);
   const [dataVersion, setDataVersion] = useState(0);
@@ -1411,9 +1552,9 @@ export default function Home() {
     fmsRequest<any>("dashboard/").then(setDashboard).catch(() => undefined);
   }, [authenticated, dataVersion]);
 
-  const show = (message: string) => {
-    setToast(message);
-    window.setTimeout(() => setToast(""), 2200);
+  const show: Notify = (message, tone = "ok") => {
+    setToast({ text: message, tone });
+    window.setTimeout(() => setToast(null), tone === "warn" ? 3600 : 2200);
   };
 
   if (!authenticated) return <LoginScreen onLogin={() => setAuthenticated(true)} />;
@@ -1478,7 +1619,7 @@ export default function Home() {
         </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
       </section>
       {action && <ActionPanel type={action} onClose={() => setAction("")} onCreated={() => setDataVersion(v => v + 1)} onDone={(message) => { show(message); if (action !== "tracking") setAction(""); }} />}
-      {toast && <div className="toast">✓ {toast}</div>}
+      {toast && <div className={"toast " + toast.tone}>{toast.tone === "warn" ? "⚠" : "✓"} {toast.text}</div>}
     </main>
   );
 }

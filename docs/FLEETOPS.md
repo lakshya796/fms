@@ -112,8 +112,12 @@ POST /api/v1/maintenance-schedules/{id}/complete/
 
 New workspace sections in the Next.js console:
 
-- **Orders** — a five-column board (booked, allocated, dispatched, in transit, delivered) with a
-  detail drawer for allocation, waypoints and the tracking activity feed.
+- **Orders** — a five-column board (booked, allocated, dispatched, in transit, delivered).
+  Drag a card between columns to progress it, or click one to open the consignment with its
+  allocation, waypoints and tracking feed. Columns highlight green where the move is allowed
+  and red where it is not, and an illegal drop says why rather than failing quietly. Dropping
+  onto "allocated" opens the allocation panel, because an order cannot be assigned without
+  naming a driver and a vehicle.
 - **Rates** — rate cards plus a freight estimator that shows the full GST breakdown.
 - **Compliance** — expiry watchlist over 15/30/60/90 days, plus preventive services that are due.
 - **Fleets, Vendors, Places, Zones, Fuel, Expenses, Issues** — live master-data tables with create
