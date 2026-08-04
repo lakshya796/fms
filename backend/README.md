@@ -12,7 +12,15 @@ service areas, geofenced zones, fleets, rate cards and quotes, consignment order
 tracking activity and ePOD, fuel entries with mileage, on-road trip expenses, issues, statutory
 compliance documents and preventive maintenance schedules.
 
-Full endpoint reference: [../docs/FLEETOPS.md](../docs/FLEETOPS.md).
+**Accounting** (`/api/v1/accounting/`) — chart of accounts, cost centres, double-entry journal
+vouchers, vendor bills with TDS, receipts and payments, and reports for trial balance, P&L,
+ledger, receivable and payable ageing, vehicle profitability and GST.
+
+**Identity and access** (`/api/v1/iam/`) — organisation, branches, roles with a 19 permission
+catalogue, users, and an audit trail.
+
+Endpoint references: [../docs/FLEETOPS.md](../docs/FLEETOPS.md) and
+[../docs/ACCOUNTING-AND-ADMIN.md](../docs/ACCOUNTING-AND-ADMIN.md).
 
 ## Local development
 
@@ -20,7 +28,8 @@ Full endpoint reference: [../docs/FLEETOPS.md](../docs/FLEETOPS.md).
 2. Export `DJANGO_SECRET_KEY`, `DJANGO_ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS` and either
    `USE_SQLITE=true` or the `POSTGRES_*` variables.
 3. Run `python manage.py migrate` (migrations are committed; do not generate them at runtime).
-4. Run `python manage.py seed_fleetops` for a realistic Indian demo dataset.
+4. Run `python manage.py seed_accounting`, then `python manage.py seed_fleetops` for a
+   realistic Indian demo dataset that is also billed and posted to the ledger.
 5. Run `python manage.py runserver` and open `/api/v1/health/` or `/api/v1/`.
 
 ## Tests

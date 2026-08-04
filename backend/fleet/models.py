@@ -328,6 +328,7 @@ class Order(Timestamped):
     number = models.CharField(max_length=30, unique=True)
     tracking_number = models.CharField(max_length=24, unique=True, blank=True)
     customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name="orders")
+    branch = models.ForeignKey("iam.Branch", on_delete=models.SET_NULL, null=True, blank=True, related_name="orders")
     order_type = models.CharField(max_length=20, choices=ORDER_TYPES, default="ftl")
     service_rate = models.ForeignKey(ServiceRate, on_delete=models.SET_NULL, null=True, blank=True, related_name="orders")
     fleet = models.ForeignKey(Fleet, on_delete=models.SET_NULL, null=True, blank=True, related_name="orders")
@@ -361,6 +362,8 @@ class Order(Timestamped):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [models.Index(fields=["status", "-created_at"]), models.Index(fields=["tracking_number"]),
+                   models.Index(fields=["branch", "status"])]
 
     def save(self, *args, **kwargs):
         if not self.tracking_number:
@@ -604,3 +607,45 @@ class MaintenanceSchedule(Timestamped):
 
     def __str__(self):
         return f"{self.task} ({self.vehicle_id})"
+
+
+# ---------------------------------------------------------------------------
+# Operations flow for a large fleet: a customer indent is raised, allocated to a
+# vehicle, and only then becomes a consignment order. Branch scoping lets each
+# depot work its own book.
+# ---------------------------------------------------------------------------
+
+INDENT_STATUSES = [("open", "Open"), ("allocated", "Allocated"), ("converted", "Converted to order"),
+                   ("cancelled", "Cancelled"), ("rejected", "Rejected")]
+
+
+class Indent(Timestamped):
+    """A customer's vehicle requirement, before a truck is committed to it.
+
+    Large fleets take demand in advance and allocate against it each morning;
+    the indent is what the allocation desk works from.
+    """
+    number = models.CharField(max_length=30, unique=True)
+    customer = models.ForeignKey(Customer, on_delete=models.PROTECT, related_name="indents")
+    branch = models.ForeignKey("iam.Branch", on_delete=models.SET_NULL, null=True, blank=True, related_name="indents")
+    pickup = models.ForeignKey(Place, on_delete=models.PROTECT, related_name="pickup_indents")
+    dropoff = models.ForeignKey(Place, on_delete=models.PROTECT, related_name="dropoff_indents")
+    vehicle_type = models.CharField(max_length=60, blank=True)
+    vehicles_required = models.PositiveIntegerField(default=1)
+    material = models.CharField(max_length=180, blank=True)
+    weight_kg = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    required_at = models.DateTimeField(null=True, blank=True)
+    expected_rate = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    service_rate = models.ForeignKey(ServiceRate, on_delete=models.SET_NULL, null=True, blank=True, related_name="indents")
+    vehicle = models.ForeignKey(Vehicle, on_delete=models.SET_NULL, null=True, blank=True, related_name="indents")
+    driver = models.ForeignKey(Driver, on_delete=models.SET_NULL, null=True, blank=True, related_name="indents")
+    order = models.ForeignKey(Order, on_delete=models.SET_NULL, null=True, blank=True, related_name="indents")
+    remarks = models.CharField(max_length=240, blank=True)
+    status = models.CharField(max_length=20, choices=INDENT_STATUSES, default="open")
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["status", "-created_at"])]
+
+    def __str__(self):
+        return self.number

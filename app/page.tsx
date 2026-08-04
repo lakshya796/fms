@@ -5,11 +5,13 @@ import { fmsRequest, login } from "./lib/fms-api";
 
 const navGroups: { label: string; items: [string, string][] }[] = [
   { label: "WORKSPACE", items: [["Overview", "⌂"], ["Analytics", "◎"]] },
-  { label: "TRANSPORT", items: [["Dispatch", "▦"], ["Orders", "◈"], ["Tracking", "⌖"], ["Operations", "▤"]] },
+  { label: "TRANSPORT", items: [["Indents", "◰"], ["Dispatch", "▦"], ["Orders", "◈"], ["Tracking", "⌖"], ["Operations", "▤"]] },
   { label: "COMMERCIAL", items: [["Customers", "◇"], ["Sales", "↗"], ["Rates", "⚖"], ["Invoices", "▥"]] },
   { label: "FLEET", items: [["Fleet", "▱"], ["Fleets", "▩"], ["Drivers", "♙"], ["Maintenance", "⚒"], ["Compliance", "▣"], ["Fuel", "⛽"], ["Issues", "⚠"]] },
   { label: "NETWORK", items: [["Vendors", "⌸"], ["Places", "⌂"], ["Service areas", "◫"], ["Zones", "◍"]] },
   { label: "FINANCE", items: [["Expenses", "▤"], ["Settlements", "₹"]] },
+  { label: "ACCOUNTS", items: [["Ledger", "▦"], ["Vouchers", "▤"], ["Vendor bills", "◳"], ["Payments", "⇄"], ["Financials", "◫"]] },
+  { label: "ADMIN", items: [["Users", "♟"], ["Roles", "⚿"], ["Branches", "⌸"], ["Audit trail", "◷"]] },
   { label: "PLATFORM", items: [["Modules", "⊞"]] },
 ];
 const nav = navGroups.flatMap(group => group.items.map(item => item[0]));
@@ -68,6 +70,26 @@ const modules: Record<string, { eyebrow: string; title: string; action: string; 
     eyebrow: "INCIDENTS", title: "Issues reported on road", action: "+ Report issue", actionType: "issue",
     blurb: "Breakdowns, tyre failures, detentions and check-post delays raised by drivers.",
     columns: ["Issue", "Vehicle", "Type", "Priority", "Status"],
+  },
+  Ledger: {
+    eyebrow: "CHART OF ACCOUNTS", title: "Ledger accounts", action: "+ Add account", actionType: "account",
+    blurb: "Assets, liabilities, income and expense heads with their live balances.",
+    columns: ["Account", "Name", "Type", "Balance", "Status"],
+  },
+  "Vendor bills": {
+    eyebrow: "PAYABLES", title: "Vendor bills", action: "+ Record bill", actionType: "bill",
+    blurb: "Purchase invoices from attached transporters, workshops and fuel vendors, with TDS.",
+    columns: ["Bill", "Vendor", "Date", "Balance due", "Status"],
+  },
+  Branches: {
+    eyebrow: "ORGANISATION", title: "Branches & depots", action: "+ Add branch", actionType: "branch",
+    blurb: "Each depot books its own consignments and reports its own numbers.",
+    columns: ["Branch", "Code", "City", "Staff", "Status"],
+  },
+  "Audit trail": {
+    eyebrow: "GOVERNANCE", title: "Audit trail", action: "", actionType: "",
+    blurb: "Every create, update and delete, with the person who did it.",
+    columns: ["When", "User", "Action", "Record", "Detail"],
   },
   Customers: {
     eyebrow: "CUSTOMER MASTER", title: "Customers & KYC", action: "+ Add customer", actionType: "customer",
@@ -161,6 +183,11 @@ const sourceLabel: Record<string, (record: any) => string> = {
   "places/": r => `${r.name} · ${r.city}`, "service-areas/": r => r.name, "service-rates/": r => r.name,
   "fleets/": r => r.name, "trips/": r => r.number, "vendors/": r => r.name, "orders/": r => r.number,
   "lorry-receipts/": r => `${r.number} · ${r.origin} → ${r.destination}`,
+  "accounting/accounts/": r => `${r.code} ${r.name}`,
+  "accounting/accounts/?account_type=expense": r => `${r.code} ${r.name}`,
+  "accounting/cost-centres/": r => r.name,
+  "iam/branches/": r => `${r.name} (${r.code})`,
+  "iam/roles/": r => r.name,
 };
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -467,6 +494,96 @@ const recordForms: Record<string, FormSpec> = {
       { name: "status", label: "Status", type: "select", options: [["open", "Open"], ["in_progress", "In progress"], ["completed", "Completed"]] },
     ],
   },
+  user: {
+    eyebrow: "USER MANAGEMENT", title: "Add user", button: "Create user", endpoint: "iam/users/",
+    reference: values => values.username,
+    fields: [
+      { name: "username", label: "Login username", required: true },
+      { name: "password", label: "Password (min 10 characters)", required: true },
+      { name: "first_name", label: "First name" },
+      { name: "last_name", label: "Last name" },
+      { name: "email", label: "Email" },
+      { name: "employee_code", label: "Employee code", required: true },
+      { name: "phone", label: "Phone" },
+      { name: "designation", label: "Designation" },
+      { name: "role", label: "Role", type: "select", source: "iam/roles/" },
+      { name: "branch", label: "Branch", type: "select", source: "iam/branches/" },
+      { name: "restrict_to_branch", label: "Restrict to own branch", type: "select", options: [["false", "No, sees all branches"], ["true", "Yes, own branch only"]] },
+    ],
+  },
+  account: {
+    eyebrow: "CHART OF ACCOUNTS", title: "Add ledger account", button: "Save account", endpoint: "accounting/accounts/",
+    reference: values => `${values.code} ${values.name}`,
+    fields: [
+      { name: "code", label: "Account code", required: true },
+      { name: "name", label: "Account name", required: true },
+      { name: "account_type", label: "Type", type: "select", options: [["asset", "Asset"], ["liability", "Liability"], ["equity", "Equity"], ["income", "Income"], ["expense", "Expense"]] },
+      { name: "parent", label: "Group under", type: "select", source: "accounting/accounts/" },
+      { name: "opening_balance", label: "Opening balance (₹)", type: "number", value: "0" },
+      { name: "description", label: "Description" },
+    ],
+  },
+  bill: {
+    eyebrow: "PAYABLES", title: "Record vendor bill", button: "Save bill", endpoint: "accounting/vendor-bills/",
+    reference: values => values.number,
+    fields: [
+      { name: "number", label: "Bill number", required: true },
+      { name: "vendor", label: "Vendor", type: "select", source: "vendors/", required: true },
+      { name: "bill_date", label: "Bill date", type: "date", value: today(), required: true },
+      { name: "due_date", label: "Due date", type: "date" },
+      { name: "expense_account", label: "Booked to (expense head)", type: "select", source: "accounting/accounts/?account_type=expense" },
+      { name: "cost_centre", label: "Cost centre", type: "select", source: "accounting/cost-centres/" },
+      { name: "taxable_amount", label: "Taxable value (₹)", type: "number", required: true },
+      { name: "gst_amount", label: "GST (₹)", type: "number", value: "0" },
+      { name: "tds_amount", label: "TDS deducted (₹)", type: "number", value: "0" },
+      { name: "narration", label: "Narration" },
+    ],
+  },
+  branch: {
+    eyebrow: "ORGANISATION", title: "Add branch", button: "Save branch", endpoint: "iam/branches/",
+    reference: values => values.name,
+    fields: [
+      { name: "name", label: "Branch name", required: true },
+      { name: "code", label: "Branch code", required: true },
+      { name: "branch_type", label: "Type", type: "select", options: [["branch", "Branch"], ["head_office", "Head office"], ["depot", "Depot"], ["warehouse", "Warehouse"], ["workshop", "Workshop"]] },
+      { name: "city", label: "City", required: true },
+      { name: "state", label: "State" },
+      { name: "pincode", label: "Pincode" },
+      { name: "gstin", label: "Branch GSTIN" },
+      { name: "phone", label: "Phone" },
+      { name: "manager", label: "Branch manager" },
+      { name: "address", label: "Address", type: "textarea" },
+    ],
+  },
+  costcentre: {
+    eyebrow: "COSTING", title: "Add cost centre", button: "Save cost centre", endpoint: "accounting/cost-centres/",
+    reference: values => values.name,
+    fields: [
+      { name: "name", label: "Cost centre name", required: true },
+      { name: "code", label: "Code", required: true },
+      { name: "centre_type", label: "Type", type: "select", options: [["vehicle", "Vehicle"], ["branch", "Branch"], ["route", "Route"], ["driver", "Driver"], ["other", "Other"]] },
+      { name: "vehicle", label: "Vehicle", type: "select", source: "vehicles/" },
+      { name: "branch", label: "Branch", type: "select", source: "iam/branches/" },
+    ],
+  },
+  indent: {
+    eyebrow: "DEMAND CAPTURE", title: "Raise an indent", button: "Save indent", endpoint: "indents/",
+    reference: (_values, created) => created?.number || "Indent",
+    fields: [
+      { name: "customer", label: "Customer", type: "select", source: "customers/", required: true },
+      { name: "branch", label: "Branch", type: "select", source: "iam/branches/" },
+      { name: "pickup", label: "Loading point", type: "select", source: "places/", required: true },
+      { name: "dropoff", label: "Unloading point", type: "select", source: "places/", required: true },
+      { name: "vehicle_type", label: "Vehicle required", value: "32 ft MXL container" },
+      { name: "vehicles_required", label: "How many", type: "number", value: "1" },
+      { name: "material", label: "Material" },
+      { name: "weight_kg", label: "Weight (kg)", type: "number", value: "12000" },
+      { name: "required_at", label: "Required by", type: "datetime" },
+      { name: "expected_rate", label: "Expected freight (₹)", type: "number", value: "0" },
+      { name: "service_rate", label: "Rate card", type: "select", source: "service-rates/" },
+      { name: "remarks", label: "Remarks", type: "textarea" },
+    ],
+  },
   order: {
     eyebrow: "FLEETOPS BOOKING", title: "Create consignment order", button: "Create order", endpoint: "orders/",
     reference: (_values, created) => created?.tracking_number || "Order",
@@ -585,6 +702,10 @@ const liveModules: Record<string, { endpoint: string; map: (record: any) => stri
   Fuel: { endpoint: "fuel-entries/", map: r => [r.vehicle_number, r.entry_date, Number(r.volume_litres).toFixed(2) + " L", Number(r.mileage_kmpl) ? Number(r.mileage_kmpl).toFixed(2) + " km/l" : "—", r.payment_method] },
   Expenses: { endpoint: "trip-expenses/", map: r => [r.category.replaceAll("_", " "), r.vehicle_number || "—", r.expense_date, "₹" + Number(r.amount).toLocaleString("en-IN"), r.status] },
   Issues: { endpoint: "issues/", map: r => [r.number, r.vehicle_number || "—", r.issue_type, r.priority, r.status] },
+  Ledger: { endpoint: "accounting/accounts/", map: r => [r.code, r.is_group ? `${r.name} (group)` : r.name, r.account_type, rupees(r.current_balance), r.is_active ? "active" : "inactive"] },
+  "Vendor bills": { endpoint: "accounting/vendor-bills/", map: r => [r.number, r.vendor_name, r.bill_date, rupees(r.balance_due), r.status] },
+  Branches: { endpoint: "iam/branches/", map: r => [r.name, r.code, r.city, String(r.staff_count ?? 0), r.status] },
+  "Audit trail": { endpoint: "iam/audit-log/", map: r => [new Date(r.recorded_at).toLocaleString("en-IN"), r.username || "—", r.action, `${r.entity} #${r.entity_id}`, r.summary || "—"] },
 };
 
 function ModuleView({ name, onAction, reloadKey, openAction }: { name: string; onAction: (message: string) => void; reloadKey: number; openAction: (type: string) => void }) {
@@ -608,7 +729,7 @@ function ModuleView({ name, onAction, reloadKey, openAction }: { name: string; o
   }, [name, reloadKey]);
   const visibleRows = rows.filter(row => row.join(" ").toLowerCase().includes(query.toLowerCase()));
   return <div className="module-page">
-    <div className="module-title"><div><p className="eyebrow">{data.eyebrow}</p><h2>{data.title}</h2><p>{data.blurb || "Live records from the Phloz fleet database."}</p></div><button className="primary module-action" onClick={() => data.actionType ? openAction(data.actionType) : onAction(data.action.replace("+ ", "") + " opened")}>{data.action}</button></div>
+    <div className="module-title"><div><p className="eyebrow">{data.eyebrow}</p><h2>{data.title}</h2><p>{data.blurb || "Live records from the Phloz fleet database."}</p></div>{data.action ? <button className="primary module-action" onClick={() => data.actionType ? openAction(data.actionType) : onAction(data.action.replace("+ ", "") + " opened")}>{data.action}</button> : null}</div>
     <div className="module-stats"><div className="module-stat"><span>Total records</span><strong>{loading ? "—" : total}</strong><small>{!loading && total > rows.length ? `Showing the first ${rows.length}` : "Stored in the live database"}</small></div><div className="module-stat"><span>Data source</span><strong>Live</strong><small>EC2 fleet API</small></div><div className="module-stat"><span>Last synchronised</span><strong>Now</strong><small>Refreshes after every save</small></div></div>
     <section className="module-table-card"><div className="module-toolbar"><div><strong>All {name.toLowerCase()}</strong><span>{loading ? "Loading live records…" : visibleRows.length + " live records"}</span></div><div className="toolbar-actions"><input aria-label={"Search " + name} placeholder={"Search " + name.toLowerCase() + "..."} value={query} onChange={e => setQuery(e.target.value)} /><button onClick={() => onAction("Live data refreshed")}>↻ Refresh</button><button onClick={() => onAction("Report exported")}>⇩ Export</button></div></div>
       {loadError ? <div className="data-state error">{loadError}</div> : loading ? <div className="data-state">Loading records from EC2…</div> : visibleRows.length === 0 ? <div className="data-state">No records found. Use the action button to create one.</div> :
@@ -899,6 +1020,384 @@ function ComplianceView({ reloadKey, openAction }: { reloadKey: number; openActi
   </div>;
 }
 
+// --- Administration -------------------------------------------------------
+
+function UsersView({ reloadKey, onAction, openAction }: { reloadKey: number; onAction: (message: string) => void; openAction: (type: string) => void }) {
+  const [users, setUsers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const load = () => { setLoading(true); fmsRequest<any>(wholeSet("iam/users/")).then(payload => setUsers(asList(payload))).finally(() => setLoading(false)); };
+  useEffect(load, [reloadKey]);
+  const toggle = async (person: any) => {
+    setBusy(true);
+    const next = person.status === "active" ? "deactivate" : "activate";
+    try { await fmsRequest(`iam/users/${person.id}/${next}/`, { method: "POST" }); onAction(`${person.username} ${next}d`); load(); }
+    catch (e) { onAction(e instanceof Error ? e.message.slice(0, 90) : "Action failed"); }
+    finally { setBusy(false); }
+  };
+  return <div className="module-page">
+    <div className="module-title"><div><p className="eyebrow">USER MANAGEMENT</p><h2>People & logins</h2><p>Every login carries a role and a branch. Deactivating a login blocks it immediately.</p></div><button className="primary module-action" onClick={() => openAction("user")}>＋ Add user</button></div>
+    <div className="module-stats">
+      <div className="module-stat"><span>Users</span><strong>{loading ? "—" : users.length}</strong><small>Across all branches</small></div>
+      <div className="module-stat"><span>Active</span><strong>{loading ? "—" : users.filter(u => u.status === "active").length}</strong><small>Able to sign in</small></div>
+      <div className="module-stat"><span>Without a role</span><strong>{loading ? "—" : users.filter(u => !u.role).length}</strong><small>These have unrestricted access</small></div>
+    </div>
+    <section className="module-table-card"><div className="table-wrap"><table>
+      <thead><tr><th>User</th><th>Employee code</th><th>Role</th><th>Branch</th><th>Status</th><th>Action</th></tr></thead>
+      <tbody>{users.map(person => <tr key={person.id}>
+        <td><strong>{person.username}</strong><small>{[person.first_name, person.last_name].filter(Boolean).join(" ") || person.designation || "—"}</small></td>
+        <td>{person.employee_code}</td>
+        <td>{person.role_name || (person.is_superuser ? "Administrator" : "— unrestricted —")}</td>
+        <td>{person.branch_name || "All branches"}</td>
+        <td><span className={"status " + person.status}>{person.status}</span></td>
+        <td><button className="row-action" disabled={busy} onClick={() => toggle(person)}>{person.status === "active" ? "Deactivate" : "Activate"}</button></td>
+      </tr>)}</tbody>
+    </table></div>{!loading && !users.length && <div className="data-state">No users yet.</div>}</section>
+  </div>;
+}
+
+function RolesView({ reloadKey, onAction }: { reloadKey: number; onAction: (message: string) => void }) {
+  const [roles, setRoles] = useState<any[]>([]);
+  const [catalogue, setCatalogue] = useState<any[]>([]);
+  const [selected, setSelected] = useState<any>(null);
+  const [chosen, setChosen] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const load = () => fmsRequest<any>(wholeSet("iam/roles/")).then(payload => setRoles(asList(payload))).catch(() => undefined);
+  useEffect(() => { load(); fmsRequest<any>("iam/permissions/").then(payload => setCatalogue(asList(payload))).catch(() => undefined); }, [reloadKey]);
+  const groups = Array.from(new Set(catalogue.map(item => item.group)));
+  const open = (role: any) => { setSelected(role); setChosen(role.permissions || []); };
+  const save = async () => {
+    setBusy(true);
+    try {
+      await fmsRequest(`iam/roles/${selected.id}/`, { method: "PATCH", body: JSON.stringify({ permissions: chosen }) });
+      onAction(`${selected.name} permissions updated`); setSelected(null); load();
+    } catch (e) { onAction(e instanceof Error ? e.message.slice(0, 90) : "Could not save"); }
+    finally { setBusy(false); }
+  };
+  return <div className="module-page">
+    <div className="module-title"><div><p className="eyebrow">ACCESS CONTROL</p><h2>Roles & permissions</h2><p>A dispatcher should not see the ledger, and a workshop supervisor should not book freight.</p></div></div>
+    <div className="role-grid">{roles.map(role => <button className="role-card" key={role.id} onClick={() => open(role)}>
+      <div><strong>{role.name}</strong>{role.is_system && <em>system</em>}</div>
+      <p>{role.description || "No description"}</p>
+      <span>{(role.permissions || []).length} permissions · {role.user_count ?? 0} users</span>
+    </button>)}</div>
+    {selected && <div className="modal-backdrop" onMouseDown={() => setSelected(null)}><section className="action-panel" onMouseDown={event => event.stopPropagation()}>
+      <div className="panel-head"><div><p className="eyebrow">ROLE PERMISSIONS</p><h2>{selected.name}</h2></div><button className="panel-close" onClick={() => setSelected(null)}>×</button></div>
+      <div className="action-form">
+        {groups.map(group => <div className="permission-group" key={group}>
+          <p className="eyebrow">{group}</p>
+          {catalogue.filter(item => item.group === group).map(item => <label className="permission-row" key={item.code}>
+            <input type="checkbox" checked={chosen.includes(item.code)} onChange={event =>
+              setChosen(current => event.target.checked ? [...current, item.code] : current.filter(code => code !== item.code))} />
+            <span><strong>{item.code}</strong><small>{item.label}</small></span>
+          </label>)}
+        </div>)}
+        <div className="form-actions"><button type="button" className="secondary" onClick={() => setSelected(null)}>Cancel</button><button className="primary" disabled={busy} onClick={save}>{busy ? "Saving…" : "Save permissions"}</button></div>
+      </div>
+    </section></div>}
+  </div>;
+}
+
+// --- Accounting -----------------------------------------------------------
+
+function VouchersView({ reloadKey, onAction }: { reloadKey: number; onAction: (message: string) => void }) {
+  const [entries, setEntries] = useState<any[]>([]);
+  const [accounts, setAccounts] = useState<any[]>([]);
+  const [composing, setComposing] = useState(false);
+  const [lines, setLines] = useState([{ account: "", debit: "", credit: "", description: "" }]);
+  const [narration, setNarration] = useState("");
+  const [entryDate, setEntryDate] = useState(today());
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = () => fmsRequest<any>(wholeSet("accounting/journal-entries/")).then(payload => setEntries(asList(payload))).catch(() => undefined);
+  useEffect(() => { load(); fmsRequest<any>(wholeSet("accounting/accounts/")).then(payload => setAccounts(asList(payload))).catch(() => undefined); }, [reloadKey]);
+
+  const totals = lines.reduce((sum, line) => ({ debit: sum.debit + Number(line.debit || 0), credit: sum.credit + Number(line.credit || 0) }), { debit: 0, credit: 0 });
+  const balanced = totals.debit === totals.credit && totals.debit > 0;
+  const setLine = (index: number, field: string, value: string) =>
+    setLines(current => current.map((line, i) => i === index ? { ...line, [field]: value } : line));
+
+  const save = async () => {
+    setBusy(true); setError("");
+    try {
+      await fmsRequest("accounting/journal-entries/", { method: "POST", body: JSON.stringify({
+        narration, entry_date: entryDate,
+        lines: lines.filter(line => line.account).map(line => ({
+          account: Number(line.account), debit: Number(line.debit || 0), credit: Number(line.credit || 0), description: line.description })) }) });
+      onAction("Journal entry posted");
+      setComposing(false); setLines([{ account: "", debit: "", credit: "", description: "" }]); setNarration("");
+      load();
+    } catch (e) { setError(e instanceof Error ? e.message : "Could not post the entry"); }
+    finally { setBusy(false); }
+  };
+  const reverse = async (entry: any) => {
+    try { await fmsRequest(`accounting/journal-entries/${entry.id}/reverse/`, { method: "POST" }); onAction(`${entry.number} reversed`); load(); }
+    catch (e) { onAction(e instanceof Error ? e.message.slice(0, 90) : "Could not reverse"); }
+  };
+
+  return <div className="module-page">
+    <div className="module-title"><div><p className="eyebrow">DOUBLE ENTRY</p><h2>Journal vouchers</h2><p>Every invoice, bill, payment and expense lands here as a balanced entry.</p></div><button className="primary module-action" onClick={() => setComposing(true)}>＋ New voucher</button></div>
+    <section className="module-table-card"><div className="table-wrap"><table>
+      <thead><tr><th>Voucher</th><th>Date</th><th>Source</th><th>Narration</th><th>Debit</th><th>Credit</th><th>Action</th></tr></thead>
+      <tbody>{entries.map(entry => <tr key={entry.id}>
+        <td><strong>{entry.number}</strong><small>{entry.branch_name || "—"}</small></td>
+        <td>{entry.entry_date}</td>
+        <td>{String(entry.source).replaceAll("_", " ")}</td>
+        <td>{entry.narration}</td>
+        <td>{rupees(entry.total_debit)}</td>
+        <td>{rupees(entry.total_credit)}</td>
+        <td>{entry.reversed_by ? <span className="status cancelled">reversed</span> : <button className="row-action" onClick={() => reverse(entry)}>Reverse</button>}</td>
+      </tr>)}</tbody></table></div>
+      {!entries.length && <div className="data-state">No vouchers yet.</div>}
+    </section>
+
+    {composing && <div className="modal-backdrop" onMouseDown={() => setComposing(false)}><section className="action-panel map-panel" onMouseDown={event => event.stopPropagation()}>
+      <div className="panel-head"><div><p className="eyebrow">MANUAL JOURNAL</p><h2>New voucher</h2></div><button className="panel-close" onClick={() => setComposing(false)}>×</button></div>
+      <div className="action-form">
+        <div className="form-grid">
+          <label>Date<input type="date" value={entryDate} onChange={event => setEntryDate(event.target.value)} /></label>
+          <label>Narration<input value={narration} onChange={event => setNarration(event.target.value)} placeholder="What is this entry for?" /></label>
+        </div>
+        <div className="voucher-lines">
+          <div className="voucher-head"><span>Account</span><span>Debit</span><span>Credit</span><span>Description</span></div>
+          {lines.map((line, index) => <div className="voucher-row" key={index}>
+            <select value={line.account} onChange={event => setLine(index, "account", event.target.value)}>
+              <option value="">Select account</option>
+              {accounts.filter(account => !account.is_group).map(account => <option key={account.id} value={account.id}>{account.code} {account.name}</option>)}
+            </select>
+            <input type="number" step="any" value={line.debit} onChange={event => setLine(index, "debit", event.target.value)} placeholder="0" />
+            <input type="number" step="any" value={line.credit} onChange={event => setLine(index, "credit", event.target.value)} placeholder="0" />
+            <input value={line.description} onChange={event => setLine(index, "description", event.target.value)} placeholder="Narration" />
+          </div>)}
+        </div>
+        <button className="chip" onClick={() => setLines(current => [...current, { account: "", debit: "", credit: "", description: "" }])}>＋ Add line</button>
+        <div className={balanced ? "voucher-total balanced" : "voucher-total"}>
+          <span>Debits {rupees(totals.debit)}</span><span>Credits {rupees(totals.credit)}</span>
+          <strong>{balanced ? "Balanced" : `Out by ${rupees(Math.abs(totals.debit - totals.credit))}`}</strong>
+        </div>
+        {error && <div className="form-error">{error}</div>}
+        <div className="form-actions"><button type="button" className="secondary" onClick={() => setComposing(false)}>Cancel</button><button className="primary" disabled={!balanced || busy} onClick={save}>{busy ? "Posting…" : "Post voucher"}</button></div>
+      </div>
+    </section></div>}
+  </div>;
+}
+
+function PaymentsView({ reloadKey, onAction }: { reloadKey: number; onAction: (message: string) => void }) {
+  const [payments, setPayments] = useState<any[]>([]);
+  const [accounts, setAccounts] = useState<any[]>([]);
+  const [customers, setCustomers] = useState<any[]>([]);
+  const [vendors, setVendors] = useState<any[]>([]);
+  const [bills, setBills] = useState<any[]>([]);
+  const [composing, setComposing] = useState(false);
+  const [kind, setKind] = useState("receipt");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = () => fmsRequest<any>(wholeSet("accounting/payments/")).then(payload => setPayments(asList(payload))).catch(() => undefined);
+  useEffect(() => {
+    load();
+    fmsRequest<any>(wholeSet("accounting/accounts/?is_bank=true")).then(p => setAccounts(asList(p))).catch(() => undefined);
+    fmsRequest<any>(wholeSet("customers/")).then(p => setCustomers(asList(p))).catch(() => undefined);
+    fmsRequest<any>(wholeSet("vendors/")).then(p => setVendors(asList(p))).catch(() => undefined);
+    fmsRequest<any>(wholeSet("accounting/vendor-bills/")).then(p => setBills(asList(p))).catch(() => undefined);
+  }, [reloadKey]);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBusy(true); setError("");
+    const form = new FormData(event.currentTarget as HTMLFormElement);
+    const value = (name: string) => String(form.get(name) || "").trim();
+    const body: Record<string, unknown> = {
+      payment_type: kind, payment_date: value("payment_date"), amount: Number(value("amount")),
+      mode: value("mode"), reference: value("reference"), narration: value("narration"),
+      bank_account: Number(value("bank_account")),
+    };
+    if (kind === "receipt" && value("customer")) body.customer = Number(value("customer"));
+    if (kind === "payment" && value("vendor")) body.vendor = Number(value("vendor"));
+    if (kind === "payment" && value("bill")) body.allocations = [{ bill: Number(value("bill")), amount: Number(value("amount")) }];
+    try {
+      const created = await fmsRequest<any>("accounting/payments/", { method: "POST", body: JSON.stringify(body) });
+      await fmsRequest(`accounting/payments/${created.id}/post_to_ledger/`, { method: "POST" }).catch(() => undefined);
+      onAction(`${created.number} recorded`); setComposing(false); load();
+    } catch (e) { setError(e instanceof Error ? e.message : "Could not record the payment"); }
+    finally { setBusy(false); }
+  };
+
+  const received = payments.filter(p => p.payment_type === "receipt").reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  const paid = payments.filter(p => p.payment_type === "payment").reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  return <div className="module-page">
+    <div className="module-title"><div><p className="eyebrow">CASH & BANK</p><h2>Receipts & payments</h2><p>Money in from customers, money out to vendors and drivers, posted to the ledger.</p></div><button className="primary module-action" onClick={() => setComposing(true)}>＋ New voucher</button></div>
+    <div className="module-stats">
+      <div className="module-stat"><span>Received</span><strong>{rupees(received)}</strong><small>From customers</small></div>
+      <div className="module-stat"><span>Paid out</span><strong>{rupees(paid)}</strong><small>To vendors and drivers</small></div>
+      <div className="module-stat"><span>Net movement</span><strong>{rupees(received - paid)}</strong><small>Across all bank accounts</small></div>
+    </div>
+    <section className="module-table-card"><div className="table-wrap"><table>
+      <thead><tr><th>Voucher</th><th>Date</th><th>Type</th><th>Party</th><th>Mode</th><th>Amount</th><th>Status</th></tr></thead>
+      <tbody>{payments.map(payment => <tr key={payment.id}>
+        <td><strong>{payment.number}</strong><small>{payment.reference || "—"}</small></td>
+        <td>{payment.payment_date}</td>
+        <td>{payment.payment_type}</td>
+        <td>{payment.customer_name || payment.vendor_name || payment.driver_name || "—"}</td>
+        <td>{String(payment.mode).toUpperCase()}</td>
+        <td>{rupees(payment.amount)}</td>
+        <td><span className={"status " + payment.status}>{payment.status}</span></td>
+      </tr>)}</tbody></table></div>
+      {!payments.length && <div className="data-state">No receipts or payments recorded yet.</div>}
+    </section>
+
+    {composing && <div className="modal-backdrop" onMouseDown={() => setComposing(false)}><section className="action-panel" onMouseDown={event => event.stopPropagation()}>
+      <div className="panel-head"><div><p className="eyebrow">CASH & BANK</p><h2>{kind === "receipt" ? "Record a receipt" : "Record a payment"}</h2></div><button className="panel-close" onClick={() => setComposing(false)}>×</button></div>
+      <form className="action-form" onSubmit={submit}>
+        <div className="toolbar-actions voucher-toggle">
+          <button type="button" className={kind === "receipt" ? "chip active" : "chip"} onClick={() => setKind("receipt")}>Receipt from customer</button>
+          <button type="button" className={kind === "payment" ? "chip active" : "chip"} onClick={() => setKind("payment")}>Payment to vendor</button>
+        </div>
+        <div className="form-grid">
+          {kind === "receipt"
+            ? <label>Customer<select name="customer">{customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
+            : <label>Vendor<select name="vendor">{vendors.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}</select></label>}
+          <label>Bank / cash account<select name="bank_account" required>{accounts.map(a => <option key={a.id} value={a.id}>{a.code} {a.name}</option>)}</select></label>
+          <label>Amount (₹)<input name="amount" type="number" step="any" required /></label>
+          <label>Date<input name="payment_date" type="date" defaultValue={today()} /></label>
+          <label>Mode<select name="mode"><option value="neft">NEFT</option><option value="rtgs">RTGS</option><option value="imps">IMPS</option><option value="upi">UPI</option><option value="cheque">Cheque</option><option value="cash">Cash</option></select></label>
+          <label>Reference (UTR / cheque)<input name="reference" /></label>
+          {kind === "payment" && <label>Settle bill<select name="bill"><option value="">Do not allocate</option>{bills.filter(b => Number(b.balance_due) > 0).map(b => <option key={b.id} value={b.id}>{b.number} · {b.vendor_name} · ₹{b.balance_due}</option>)}</select></label>}
+        </div>
+        <label>Narration<textarea name="narration" /></label>
+        {error && <div className="form-error">{error}</div>}
+        <div className="form-actions"><button type="button" className="secondary" onClick={() => setComposing(false)}>Cancel</button><button className="primary" disabled={busy}>{busy ? "Saving…" : "Record & post"}</button></div>
+      </form>
+    </section></div>}
+  </div>;
+}
+
+const financialReports: [string, string, string][] = [
+  ["Trial balance", "accounting/reports/trial-balance/", "Every account with movement, and the balancing check"],
+  ["Profit & loss", "accounting/reports/profit-and-loss/", "Income less expenses for the period"],
+  ["Receivables", "accounting/reports/receivable-ageing/", "Customer outstanding by age"],
+  ["Payables", "accounting/reports/payable-ageing/", "Vendor outstanding by age"],
+  ["Vehicle P&L", "accounting/reports/vehicle-profitability/", "Revenue less running cost, per truck"],
+  ["GST summary", "accounting/reports/gst-summary/", "Output less input GST for the period"],
+];
+
+function FinancialsView({ reloadKey, onAction }: { reloadKey: number; onAction: (message: string) => void }) {
+  const [tab, setTab] = useState(0);
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [range, setRange] = useState({ from: "", to: "" });
+  const load = () => {
+    setLoading(true); setData(null);
+    const query = range.from || range.to ? `?from=${range.from}&to=${range.to}` : "";
+    fmsRequest<any>(financialReports[tab][1] + query).then(setData).catch(() => setData(null)).finally(() => setLoading(false));
+  };
+  useEffect(load, [tab, reloadKey]);
+
+  const render = () => {
+    if (loading) return <div className="data-state">Loading…</div>;
+    if (!data) return <div className="data-state error">Could not load this report.</div>;
+    if (tab === 0) return <><div className="table-wrap"><table><thead><tr><th>Code</th><th>Account</th><th>Type</th><th>Debit</th><th>Credit</th></tr></thead>
+      <tbody>{(data.accounts || []).map((row: any) => <tr key={row.code}><td><strong>{row.code}</strong></td><td>{row.name}</td><td>{row.account_type}</td><td>{rupees(row.debit)}</td><td>{rupees(row.credit)}</td></tr>)}</tbody></table></div>
+      <div className={data.balanced ? "voucher-total balanced" : "voucher-total"}><span>Total debit {rupees(data.total_debit)}</span><span>Total credit {rupees(data.total_credit)}</span><strong>{data.balanced ? "Balanced" : "Out of balance"}</strong></div></>;
+    if (tab === 1) return <div className="pnl-grid">
+      <div><p className="eyebrow">INCOME</p>{(data.income || []).map((row: any) => <div className="quote-line" key={row.code}><span>{row.name}</span><strong>{rupees(row.amount)}</strong></div>)}<div className="quote-line total"><span>Total income</span><strong>{rupees(data.total_income)}</strong></div></div>
+      <div><p className="eyebrow">EXPENSES</p>{(data.expenses || []).map((row: any) => <div className="quote-line" key={row.code}><span>{row.name}</span><strong>{rupees(row.amount)}</strong></div>)}<div className="quote-line total"><span>Total expenses</span><strong>{rupees(data.total_expense)}</strong></div></div>
+      <div className="invoice-total"><span>Net profit</span><strong>{rupees(data.net_profit)}</strong><small>{data.margin_percent}% margin</small></div>
+    </div>;
+    if (tab === 2 || tab === 3) return <><div className="table-wrap"><table><thead><tr><th>Party</th><th>Current</th><th>1-30</th><th>31-60</th><th>61-90</th><th>90+</th><th>Total</th></tr></thead>
+      <tbody>{(data.parties || []).map((row: any) => <tr key={row.party}><td><strong>{row.party}</strong></td><td>{rupees(row.current)}</td><td>{rupees(row["1_30"])}</td><td>{rupees(row["31_60"])}</td><td>{rupees(row["61_90"])}</td><td>{rupees(row.over_90)}</td><td><strong>{rupees(row.total)}</strong></td></tr>)}</tbody></table></div>
+      {!(data.parties || []).length && <div className="data-state">Nothing outstanding.</div>}</>;
+    if (tab === 4) return <><div className="table-wrap"><table><thead><tr><th>Vehicle</th><th>Revenue</th><th>Running cost</th><th>Profit</th><th>Margin</th></tr></thead>
+      <tbody>{(data.vehicles || []).map((row: any) => <tr key={row.vehicle}><td><strong>{row.vehicle}</strong></td><td>{rupees(row.revenue)}</td><td>{rupees(row.cost)}</td><td><strong>{rupees(row.profit)}</strong></td><td><span className={"status " + (row.profit >= 0 ? "active" : "expired")}>{row.margin_percent}%</span></td></tr>)}</tbody></table></div>
+      {!(data.vehicles || []).length && <div className="data-state">No completed consignments in this period.</div>}</>;
+    return <div className="analytics-grid">
+      <div className="analytics-card"><span>Output GST</span><strong>{rupees(data.output_gst)}</strong><small>Collected on freight</small></div>
+      <div className="analytics-card"><span>Input GST</span><strong>{rupees(data.input_gst)}</strong><small>Paid on purchases</small></div>
+      <div className="analytics-card"><span>Net payable</span><strong>{rupees(data.net_payable)}</strong><small>Output less input</small></div>
+    </div>;
+  };
+
+  return <div className="module-page">
+    <div className="module-title"><div><p className="eyebrow">FINANCIAL REPORTING</p><h2>Books & financials</h2><p>{financialReports[tab][2]}.</p></div><button className="primary module-action" onClick={() => { onAction("Report refreshed"); load(); }}>↻ Refresh</button></div>
+    <div className="report-tabs">{financialReports.map((report, index) => <button key={report[0]} className={index === tab ? "chip active" : "chip"} onClick={() => setTab(index)}>{report[0]}</button>)}</div>
+    <div className="report-range">
+      <label>From<input type="date" value={range.from} onChange={event => setRange({ ...range, from: event.target.value })} /></label>
+      <label>To<input type="date" value={range.to} onChange={event => setRange({ ...range, to: event.target.value })} /></label>
+      <button className="chip" onClick={load}>Apply</button>
+    </div>
+    <section className="module-table-card">{render()}</section>
+  </div>;
+}
+
+// --- Operations flow ------------------------------------------------------
+
+function IndentsView({ reloadKey, onAction, openAction }: { reloadKey: number; onAction: (message: string) => void; openAction: (type: string) => void }) {
+  const [indents, setIndents] = useState<any[]>([]);
+  const [vehicles, setVehicles] = useState<any[]>([]);
+  const [drivers, setDrivers] = useState<any[]>([]);
+  const [selected, setSelected] = useState<any>(null);
+  const [vehicle, setVehicle] = useState("");
+  const [driver, setDriver] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const load = () => { setLoading(true); fmsRequest<any>(wholeSet("indents/")).then(payload => setIndents(asList(payload))).finally(() => setLoading(false)); };
+  useEffect(load, [reloadKey]);
+  useEffect(() => {
+    fmsRequest<any>(wholeSet("vehicles/?status=available")).then(p => setVehicles(asList(p))).catch(() => undefined);
+    fmsRequest<any>(wholeSet("drivers/?status=available")).then(p => setDrivers(asList(p))).catch(() => undefined);
+  }, [reloadKey]);
+
+  const run = async (indent: any, path: string, body?: Record<string, unknown>) => {
+    setBusy(true);
+    try {
+      await fmsRequest(`indents/${indent.id}/${path}/`, { method: "POST", body: JSON.stringify(body || {}) });
+      onAction(`${indent.number} ${path}d`);
+      setSelected(null); load();
+    } catch (e) { onAction(e instanceof Error ? e.message.slice(0, 90) : "Action failed"); }
+    finally { setBusy(false); }
+  };
+
+  const columns: [string, string][] = [["open", "Open demand"], ["allocated", "Allocated"], ["converted", "Converted"], ["cancelled", "Cancelled"]];
+  return <div className="module-page">
+    <div className="module-title"><div><p className="eyebrow">OPERATIONS FLOW</p><h2>Indents & allocation</h2><p>Customer demand is captured first, allocated to a truck, then becomes a consignment order.</p></div><button className="primary module-action" onClick={() => openAction("indent")}>＋ Raise indent</button></div>
+    <div className="dispatch-board">{columns.map(([status, label]) => {
+      const bucket = indents.filter(indent => indent.status === status);
+      return <section className="dispatch-column" key={status}>
+        <header><strong>{label}</strong><span>{bucket.length}</span></header>
+        {bucket.map(indent => <article className="dispatch-card" key={indent.id}>
+          <b>{indent.number}</b>
+          <p>{indent.pickup_city} → {indent.dropoff_city}</p>
+          <small>{indent.customer_name} · {indent.vehicle_type || "any vehicle"}</small>
+          {indent.vehicle_number && <small className="tracking-code">{indent.vehicle_number} · {indent.driver_name}</small>}
+          {indent.order_number && <small className="tracking-code">order {indent.order_number}</small>}
+          <div>
+            {status === "open" && <button onClick={() => { setSelected(indent); setVehicle(""); setDriver(""); }}>Allocate</button>}
+            {status === "allocated" && <button disabled={busy} onClick={() => run(indent, "convert")}>Convert to order</button>}
+            {status !== "converted" && status !== "cancelled" && <button disabled={busy} onClick={() => run(indent, "cancel", { reason: "Cancelled at the desk" })}>Cancel</button>}
+          </div>
+        </article>)}
+        {!loading && !bucket.length && <div className="empty-column">Nothing here</div>}
+      </section>;
+    })}</div>
+
+    {selected && <div className="modal-backdrop" onMouseDown={() => setSelected(null)}><section className="action-panel" onMouseDown={event => event.stopPropagation()}>
+      <div className="panel-head"><div><p className="eyebrow">ALLOCATE A TRUCK</p><h2>{selected.number}</h2></div><button className="panel-close" onClick={() => setSelected(null)}>×</button></div>
+      <div className="action-form">
+        <div className="tracking-grid">
+          <div><span>Customer</span><strong>{selected.customer_name}</strong></div>
+          <div><span>Lane</span><strong>{selected.pickup_city} → {selected.dropoff_city}</strong></div>
+          <div><span>Material</span><strong>{selected.material || "—"}</strong></div>
+          <div><span>Weight</span><strong>{Number(selected.weight_kg).toLocaleString("en-IN")} kg</strong></div>
+        </div>
+        <div className="form-grid">
+          <label>Vehicle<select value={vehicle} onChange={event => setVehicle(event.target.value)}><option value="">Select an available vehicle</option>{vehicles.map(v => <option key={v.id} value={v.id}>{v.registration_number} · {v.vehicle_type}</option>)}</select></label>
+          <label>Driver<select value={driver} onChange={event => setDriver(event.target.value)}><option value="">Select an available driver</option>{drivers.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></label>
+        </div>
+        <div className="form-actions"><button type="button" className="secondary" onClick={() => setSelected(null)}>Cancel</button><button className="primary" disabled={busy || !vehicle || !driver} onClick={() => run(selected, "allocate", { vehicle: Number(vehicle), driver: Number(driver) })}>Allocate truck</button></div>
+      </div>
+    </section></div>}
+  </div>;
+}
+
 export default function Home() {
   const [active, setActive] = useState("Overview");
   const [toast, setToast] = useState("");
@@ -976,7 +1475,7 @@ export default function Home() {
             <div className="section-heading"><div><p className="eyebrow">ACTIVE MOVEMENT</p><h2>Recent trips</h2></div><button className="link-button" onClick={() => show("All trips opened")}>View all trips →</button></div>
             <div className="table-wrap"><table><thead><tr><th>Trip & route</th><th>Vehicle</th><th>Driver</th><th>Status</th><th>ETA / POD</th><th>Revenue</th></tr></thead><tbody>{(dashboard?.recent_trips || []).map((t: any) => <tr key={t.id}><td><strong>{t.number}</strong><small>{t.origin} → {t.destination}</small></td><td>{t.vehicle_number}</td><td>{t.driver_name}</td><td><span className={`status ${t.status.toLowerCase().replaceAll("_","-")}`}>{t.status.replaceAll("_"," ")}</span></td><td>{t.planned_departure ? new Date(t.planned_departure).toLocaleString("en-IN") : "—"}</td><td><strong>₹{Number(t.estimated_cost || 0).toLocaleString("en-IN")}</strong></td></tr>)}</tbody></table></div>
           </section>
-        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
+        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
       </section>
       {action && <ActionPanel type={action} onClose={() => setAction("")} onCreated={() => setDataVersion(v => v + 1)} onDone={(message) => { show(message); if (action !== "tracking") setAction(""); }} />}
       {toast && <div className="toast">✓ {toast}</div>}

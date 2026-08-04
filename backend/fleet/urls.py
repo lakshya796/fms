@@ -6,7 +6,7 @@ from .views import (health, dashboard, fleet_analytics, public_tracking, Custome
                     SalesQuoteViewSet, MaintenanceWorkOrderViewSet, VendorViewSet, ServiceAreaViewSet, ZoneViewSet,
                     PlaceViewSet, FleetViewSet, ServiceRateViewSet, ServiceQuoteViewSet, OrderViewSet, WaypointViewSet,
                     TrackingActivityViewSet, ProofOfDeliveryViewSet, FuelEntryViewSet, TripExpenseViewSet, IssueViewSet,
-                    ComplianceDocumentViewSet, MaintenanceScheduleViewSet)
+                    ComplianceDocumentViewSet, MaintenanceScheduleViewSet, IndentViewSet, order_profitability)
 
 router = DefaultRouter()
 router.register("maintenance", MaintenanceWorkOrderViewSet)
@@ -36,12 +36,14 @@ router.register("trip-expenses", TripExpenseViewSet)
 router.register("issues", IssueViewSet)
 router.register("compliance-documents", ComplianceDocumentViewSet)
 router.register("maintenance-schedules", MaintenanceScheduleViewSet)
+router.register("indents", IndentViewSet)
 
 urlpatterns = [
     path("health/", health),
     path("dashboard/", dashboard),
     path("analytics/fleet/", fleet_analytics),
     path("track/<str:tracking_number>/", public_tracking),
+    path("orders/<int:pk>/profitability/", order_profitability),
     path("auth/token/", obtain_auth_token),
     path("", include(router.urls)),
 ]

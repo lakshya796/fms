@@ -6,9 +6,12 @@ from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from rest_framework.decorators import permission_classes
+from iam.filtering import apply_filters
+from iam.permissions import HasModulePermission, requires
 from .models import Customer, Driver, Vehicle, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement, SalesQuote, MaintenanceWorkOrder
 from .serializers import CustomerSerializer, DriverSerializer, VehicleSerializer, LorryReceiptSerializer, TripSerializer, TrackingEventSerializer, InvoiceSerializer, SettlementSerializer, SalesQuoteSerializer, MaintenanceWorkOrderSerializer
 
+@requires("reports.view")
 @api_view(["GET"])
 def dashboard(request):
     recent = Trip.objects.select_related("vehicle", "driver").order_by("-created_at")[:6]
@@ -54,22 +57,38 @@ def health(request):
     return Response({"status": "ok", "service": "phloz-fms-api", "time": timezone.now()})
 
 class MaintenanceWorkOrderViewSet(viewsets.ModelViewSet):
+    permission_classes = [HasModulePermission]
+    required_permission = "maintenance.view"; required_write_permission = "maintenance.manage"
     queryset = MaintenanceWorkOrder.objects.select_related("vehicle").all().order_by("-created_at")
     serializer_class = MaintenanceWorkOrderSerializer
 class SalesQuoteViewSet(viewsets.ModelViewSet):
+    permission_classes = [HasModulePermission]
+    required_permission = "rates.view"; required_write_permission = "rates.manage"
     queryset = SalesQuote.objects.select_related("customer").all().order_by("-created_at")
     serializer_class = SalesQuoteSerializer
 class CustomerViewSet(viewsets.ModelViewSet):
+    permission_classes = [HasModulePermission]
+    required_permission = "masters.view"; required_write_permission = "masters.manage"
     queryset = Customer.objects.all().order_by("-created_at"); serializer_class = CustomerSerializer
 class DriverViewSet(viewsets.ModelViewSet):
+    permission_classes = [HasModulePermission]
+    required_permission = "masters.view"; required_write_permission = "masters.manage"
     queryset = Driver.objects.all().order_by("name"); serializer_class = DriverSerializer
 class VehicleViewSet(viewsets.ModelViewSet):
+    permission_classes = [HasModulePermission]
+    required_permission = "masters.view"; required_write_permission = "masters.manage"
     queryset = Vehicle.objects.all().order_by("registration_number"); serializer_class = VehicleSerializer
 class LorryReceiptViewSet(viewsets.ModelViewSet):
+    permission_classes = [HasModulePermission]
+    required_permission = "operations.view"; required_write_permission = "operations.manage"
     queryset = LorryReceipt.objects.select_related("customer").all().order_by("-created_at"); serializer_class = LorryReceiptSerializer
 class TrackingEventViewSet(viewsets.ModelViewSet):
+    permission_classes = [HasModulePermission]
+    required_permission = "operations.view"; required_write_permission = "operations.manage"
     queryset = TrackingEvent.objects.select_related("trip").all().order_by("-recorded_at"); serializer_class = TrackingEventSerializer
 class TripViewSet(viewsets.ModelViewSet):
+    permission_classes = [HasModulePermission]
+    required_permission = "operations.view"; required_write_permission = "operations.manage"
     queryset = Trip.objects.select_related("vehicle", "driver").prefetch_related("lorry_receipts", "tracking_events").all().order_by("-created_at")
     serializer_class = TripSerializer
     @action(detail=True, methods=["post"], url_path="dispatch")
@@ -91,8 +110,12 @@ class TripViewSet(viewsets.ModelViewSet):
         trip.lorry_receipts.update(status="delivered")
         return Response(self.get_serializer(trip).data)
 class InvoiceViewSet(viewsets.ModelViewSet):
+    permission_classes = [HasModulePermission]
+    required_permission = "accounting.view"; required_write_permission = "accounting.manage"
     queryset = Invoice.objects.select_related("customer", "trip").all().order_by("-created_at"); serializer_class = InvoiceSerializer
 class SettlementViewSet(viewsets.ModelViewSet):
+    permission_classes = [HasModulePermission]
+    required_permission = "accounting.view"; required_write_permission = "accounting.manage"
     queryset = Settlement.objects.select_related("driver", "trip").all().order_by("-created_at"); serializer_class = SettlementSerializer
 
 
@@ -114,26 +137,20 @@ from .serializers import (VendorSerializer, ServiceAreaSerializer, ZoneSerialize
 
 
 class FilterableViewSet(viewsets.ModelViewSet):
-    """Adds `?field=value` filtering and `?search=` across `search_fields`."""
+    """Adds `?field=value` filtering, `?search=`, and role based access."""
+    permission_classes = [HasModulePermission]
+    required_permission = "operations.view"
+    required_write_permission = "operations.manage"
     filter_fields: list = []
     search_fields: list = []
 
     def get_queryset(self):
-        queryset = super().get_queryset()
-        for field in self.filter_fields:
-            value = self.request.query_params.get(field)
-            if value not in (None, ""):
-                queryset = queryset.filter(**{field: value})
-        term = self.request.query_params.get("search")
-        if term and self.search_fields:
-            match = Q()
-            for field in self.search_fields:
-                match |= Q(**{f"{field}__icontains": term})
-            queryset = queryset.filter(match)
-        return queryset
+        return apply_filters(super().get_queryset(), self.request.query_params,
+                             self.filter_fields, self.search_fields)
 
 
 class VendorViewSet(FilterableViewSet):
+    required_permission = "masters.view"; required_write_permission = "masters.manage"
     queryset = Vendor.objects.all()
     serializer_class = VendorSerializer
     filter_fields = ["vendor_type", "status", "state"]
@@ -141,6 +158,7 @@ class VendorViewSet(FilterableViewSet):
 
 
 class ServiceAreaViewSet(FilterableViewSet):
+    required_permission = "masters.view"; required_write_permission = "masters.manage"
     queryset = ServiceArea.objects.prefetch_related("zones").all()
     serializer_class = ServiceAreaSerializer
     filter_fields = ["status"]
@@ -148,6 +166,7 @@ class ServiceAreaViewSet(FilterableViewSet):
 
 
 class ZoneViewSet(FilterableViewSet):
+    required_permission = "masters.view"; required_write_permission = "masters.manage"
     queryset = Zone.objects.select_related("service_area").all()
     serializer_class = ZoneSerializer
     filter_fields = ["service_area", "zone_type", "status"]
@@ -170,6 +189,7 @@ class ZoneViewSet(FilterableViewSet):
 
 
 class PlaceViewSet(FilterableViewSet):
+    required_permission = "masters.view"; required_write_permission = "masters.manage"
     queryset = Place.objects.select_related("service_area", "customer").all()
     serializer_class = PlaceSerializer
     filter_fields = ["place_type", "city", "state", "service_area", "customer", "status"]
@@ -177,6 +197,7 @@ class PlaceViewSet(FilterableViewSet):
 
 
 class FleetViewSet(FilterableViewSet):
+    required_permission = "masters.view"; required_write_permission = "masters.manage"
     queryset = Fleet.objects.select_related("service_area", "vendor").prefetch_related("vehicles", "drivers").all()
     serializer_class = FleetSerializer
     filter_fields = ["service_area", "vendor", "status"]
@@ -195,6 +216,7 @@ class FleetViewSet(FilterableViewSet):
 
 
 class ServiceRateViewSet(FilterableViewSet):
+    required_permission = "rates.view"; required_write_permission = "rates.manage"
     queryset = ServiceRate.objects.select_related("service_area", "customer").all()
     serializer_class = ServiceRateSerializer
     filter_fields = ["service_area", "customer", "rate_type", "status"]
@@ -223,6 +245,7 @@ class ServiceRateViewSet(FilterableViewSet):
 
 
 class ServiceQuoteViewSet(FilterableViewSet):
+    required_permission = "rates.view"; required_write_permission = "rates.manage"
     queryset = ServiceQuote.objects.select_related("service_rate", "customer").all()
     serializer_class = ServiceQuoteSerializer
     filter_fields = ["customer", "service_rate", "status"]
@@ -361,6 +384,7 @@ class ProofOfDeliveryViewSet(FilterableViewSet):
 
 
 class FuelEntryViewSet(FilterableViewSet):
+    required_permission = "expenses.view"; required_write_permission = "expenses.manage"
     queryset = FuelEntry.objects.select_related("vehicle", "driver", "trip").all()
     serializer_class = FuelEntrySerializer
     filter_fields = ["vehicle", "driver", "trip", "payment_method"]
@@ -379,6 +403,7 @@ class FuelEntryViewSet(FilterableViewSet):
 
 
 class TripExpenseViewSet(FilterableViewSet):
+    required_permission = "expenses.view"; required_write_permission = "expenses.manage"
     queryset = TripExpense.objects.select_related("trip", "vehicle", "driver", "vendor").all()
     serializer_class = TripExpenseSerializer
     filter_fields = ["trip", "order", "vehicle", "driver", "category", "status", "paid_by"]
@@ -418,6 +443,7 @@ class IssueViewSet(FilterableViewSet):
 
 
 class ComplianceDocumentViewSet(FilterableViewSet):
+    required_permission = "compliance.view"; required_write_permission = "compliance.manage"
     queryset = ComplianceDocument.objects.select_related("vehicle", "driver").all()
     serializer_class = ComplianceDocumentSerializer
     filter_fields = ["vehicle", "driver", "document_type"]
@@ -436,6 +462,7 @@ class ComplianceDocumentViewSet(FilterableViewSet):
 
 
 class MaintenanceScheduleViewSet(FilterableViewSet):
+    required_permission = "maintenance.view"; required_write_permission = "maintenance.manage"
     queryset = MaintenanceSchedule.objects.select_related("vehicle").all()
     serializer_class = MaintenanceScheduleSerializer
     filter_fields = ["vehicle", "status"]
@@ -466,6 +493,7 @@ def public_tracking(request, tracking_number):
     return Response(PublicOrderTrackingSerializer(order).data)
 
 
+@requires("reports.view")
 @api_view(["GET"])
 def fleet_analytics(request):
     """Operating KPIs an Indian fleet owner reviews daily."""
@@ -501,4 +529,95 @@ def fleet_analytics(request):
         "open_issues": Issue.objects.exclude(status="resolved").count(),
         "documents_expiring": ComplianceDocument.objects.filter(expiry_date__isnull=False, expiry_date__lte=today + timedelta(days=30)).count(),
         "maintenance_due": len([s for s in MaintenanceSchedule.objects.select_related("vehicle") if s.is_due]),
+    })
+
+
+# --- operations flow: indent -> allocation -> order -------------------------
+from uuid import uuid4 as _uuid4
+
+from .models import Indent
+from .serializers import IndentSerializer
+
+
+class IndentViewSet(FilterableViewSet):
+    """Customer demand captured before a truck is committed to it."""
+    queryset = Indent.objects.select_related("customer", "pickup", "dropoff", "branch", "vehicle", "driver", "order").all()
+    serializer_class = IndentSerializer
+    filter_fields = ["status", "customer", "branch", "vehicle", "service_rate"]
+    search_fields = ["number", "material", "vehicle_type", "remarks"]
+
+    def perform_create(self, serializer):
+        serializer.save(number=serializer.validated_data.get("number")
+                        or "IND-" + timezone.now().strftime("%y%m%d") + _uuid4().hex[:6].upper())
+
+    @action(detail=True, methods=["post"])
+    def allocate(self, request, pk=None):
+        """Commit a vehicle and driver to the indent."""
+        indent = self.get_object()
+        if indent.status in ("converted", "cancelled"):
+            raise ValidationError(f"An indent that is {indent.status} cannot be allocated.")
+        vehicle_id, driver_id = request.data.get("vehicle"), request.data.get("driver")
+        if not vehicle_id or not driver_id:
+            raise ValidationError("Both a vehicle and a driver are required to allocate an indent.")
+        indent.vehicle = Vehicle.objects.get(pk=vehicle_id)
+        indent.driver = Driver.objects.get(pk=driver_id)
+        indent.status = "allocated"
+        indent.save(update_fields=["vehicle", "driver", "status", "updated_at"])
+        return Response(self.get_serializer(indent).data)
+
+    @action(detail=True, methods=["post"])
+    @transaction.atomic
+    def convert(self, request, pk=None):
+        """Turn an allocated indent into a live consignment order."""
+        indent = self.get_object()
+        if indent.order_id:
+            raise ValidationError(f"This indent already became order {indent.order.number}.")
+        if indent.status != "allocated":
+            raise ValidationError("Allocate a vehicle and driver before converting the indent.")
+        order = Order.objects.create(
+            number="ORD-" + timezone.now().strftime("%y%m%d") + _uuid4().hex[:6].upper(),
+            customer=indent.customer, branch=indent.branch, pickup=indent.pickup, dropoff=indent.dropoff,
+            service_rate=indent.service_rate, vehicle=indent.vehicle, driver=indent.driver,
+            payload_description=indent.material, weight_kg=indent.weight_kg,
+            scheduled_at=indent.required_at, status="assigned")
+        coordinates = [order.pickup.latitude, order.pickup.longitude, order.dropoff.latitude, order.dropoff.longitude]
+        if all(value is not None for value in coordinates):
+            order.distance_km = haversine_km(order.pickup.latitude, order.pickup.longitude,
+                                             order.dropoff.latitude, order.dropoff.longitude)
+            order.save(update_fields=["distance_km"])
+        if order.service_rate:
+            order.price_from_rate_card()
+        order.log("assigned", "ORDER_FROM_INDENT", f"Converted from indent {indent.number}", city=order.pickup.city)
+        indent.order = order
+        indent.status = "converted"
+        indent.save(update_fields=["order", "status", "updated_at"])
+        return Response({"indent": self.get_serializer(indent).data, "order": OrderSerializer(order).data})
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        indent = self.get_object()
+        indent.status = "cancelled"
+        indent.remarks = request.data.get("reason", indent.remarks)
+        indent.save(update_fields=["status", "remarks", "updated_at"])
+        return Response(self.get_serializer(indent).data)
+
+
+@requires("reports.view")
+@api_view(["GET"])
+def order_profitability(request, pk):
+    """Revenue, diesel and on-road cost for one consignment."""
+    order = Order.objects.filter(pk=pk).select_related("vehicle").first()
+    if not order:
+        return Response({"detail": "Order not found."}, status=404)
+    expenses = TripExpense.objects.filter(order=order).aggregate(value=Sum("amount"))["value"] or 0
+    fuel = FuelEntry.objects.filter(trip=order.trip).aggregate(value=Sum("amount"))["value"] or 0 if order.trip_id else 0
+    revenue = money(order.total_amount)
+    cost = money(expenses) + money(fuel)
+    profit = money(revenue - cost)
+    return Response({
+        "order": order.number, "vehicle": getattr(order.vehicle, "registration_number", ""),
+        "revenue": float(revenue), "trip_expenses": float(money(expenses)), "fuel": float(money(fuel)),
+        "total_cost": float(cost), "profit": float(profit),
+        "margin_percent": float(round(profit / revenue * 100, 2)) if revenue else 0.0,
+        "cost_per_km": float(money(cost / order.distance_km)) if order.distance_km else 0.0,
     })

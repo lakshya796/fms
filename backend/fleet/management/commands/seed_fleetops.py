@@ -13,7 +13,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from fleet.models import (Customer, Driver, Vehicle, Vendor, ServiceArea, Zone, Place, Fleet, ServiceRate, Order,
-                          Waypoint, FuelEntry, TripExpense, Issue, ComplianceDocument, MaintenanceSchedule)
+                          Trip, Waypoint, FuelEntry, TripExpense, Issue, ComplianceDocument, MaintenanceSchedule)
 
 SERVICE_AREAS = [
     ("West India", "WEST", "Maharashtra, Gujarat, Goa", 19.076, 72.8777),
@@ -233,6 +233,35 @@ class Command(BaseCommand):
                 "last_service_km": max(vehicle.current_odometer_km - (15600 if overdue else 9000), 0),
                 "last_service_date": today - timedelta(days=125 if overdue else 70)})
 
+        # Bill the delivered consignments and push everything through the ledger, so the
+        # financial reports have something real to show straight after seeding.
+        from accounting.models import Account
+        from accounting import services as accounting_services
+        from fleet.models import Invoice
+        if Account.objects.exists():
+            for order in orders:
+                if order.status != "completed" or not order.trip_id and not order.vehicle_id:
+                    continue
+                trip = order.trip or Trip.objects.filter(vehicle=order.vehicle).first()
+                if trip is None:
+                    trip = Trip.objects.create(
+                        number=f"TRP-{order.number[-6:]}", vehicle=order.vehicle, driver=order.driver,
+                        origin=order.pickup.city, destination=order.dropoff.city,
+                        planned_departure=order.scheduled_at or timezone.now(), status="closed")
+                invoice, _ = Invoice.objects.update_or_create(
+                    number=f"INV-{order.number[-6:]}", defaults={
+                        "customer": order.customer, "trip": trip, "freight_amount": order.freight_amount,
+                        "additional_charges": 0, "tax_amount": order.tax_amount,
+                        "total_amount": order.total_amount,
+                        "due_date": today + timedelta(days=30), "status": "issued"})
+                accounting_services.post_customer_invoice(invoice)
+            for expense in TripExpense.objects.all()[:12]:
+                accounting_services.post_trip_expense(expense)
+            for entry in FuelEntry.objects.all()[:6]:
+                accounting_services.post_fuel_entry(entry)
+
+        if options.get("verbosity", 1) == 0:
+            return
         self.stdout.write(self.style.SUCCESS(
             f"Seeded {ServiceArea.objects.count()} service areas, {Zone.objects.count()} zones, "
             f"{Place.objects.count()} places, {Vendor.objects.count()} vendors, {Fleet.objects.count()} fleets, "

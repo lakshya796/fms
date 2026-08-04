@@ -14,6 +14,16 @@ compliance documents with renewal alerts, and preventive maintenance schedules.
 See [docs/FLEETOPS.md](docs/FLEETOPS.md) for the API, the Fleetbase mapping and the India-specific
 behaviour (GST/RCM, e-way bill, FASTag, RTO paperwork, driver bhatta).
 
+## Accounting, operations flow and user management
+
+Double-entry accounting with an Indian transport chart of accounts, vendor bills with TDS,
+receipts and payments, and seven financial reports including vehicle-wise profitability and
+GST summary. Demand is captured as an indent, allocated to a truck and converted into a
+priced consignment order. Logins carry a role and a branch, with a full audit trail.
+
+Built for a 1000+ vehicle operation — see
+[docs/ACCOUNTING-AND-ADMIN.md](docs/ACCOUNTING-AND-ADMIN.md).
+
 ## Repository layout
 
 - `app/` — Next.js console (`/` workspace, `/track` public consignment tracking)
@@ -36,7 +46,8 @@ cd backend
 pip install -r requirements.txt
 export DJANGO_SECRET_KEY=dev DJANGO_ALLOWED_HOSTS=localhost CORS_ALLOWED_ORIGINS=http://localhost:3000 USE_SQLITE=true
 python manage.py migrate
-python manage.py seed_fleetops
+python manage.py seed_accounting     # chart of accounts, roles, head office, fiscal year
+python manage.py seed_fleetops       # demo fleet data, billed and posted to the ledger
 python manage.py runserver
 
 # Console
