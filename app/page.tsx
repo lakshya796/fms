@@ -203,6 +203,7 @@ function ModuleView({ name, onAction, reloadKey }: { name: string; onAction: (me
   const [rows, setRows] = useState<string[][]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [selectedRow, setSelectedRow] = useState<string[] | null>(null);
   useEffect(() => {
     let active = true; setLoading(true); setLoadError("");
     fmsRequest<any>(liveModules[name].endpoint).then(payload => {
@@ -219,8 +220,14 @@ function ModuleView({ name, onAction, reloadKey }: { name: string; onAction: (me
     <div className="module-stats"><div className="module-stat"><span>Total records</span><strong>{loading ? "—" : rows.length}</strong><small>Stored in the live database</small></div><div className="module-stat"><span>Data source</span><strong>Live</strong><small>EC2 fleet API</small></div><div className="module-stat"><span>Last synchronised</span><strong>Now</strong><small>Refreshes after every save</small></div></div>
     <section className="module-table-card"><div className="module-toolbar"><div><strong>All {name.toLowerCase()}</strong><span>{loading ? "Loading live records…" : visibleRows.length + " live records"}</span></div><div className="toolbar-actions"><input aria-label={"Search " + name} placeholder={"Search " + name.toLowerCase() + "..."} value={query} onChange={e => setQuery(e.target.value)} /><button onClick={() => onAction("Live data refreshed")}>↻ Refresh</button><button onClick={() => onAction("Report exported")}>⇩ Export</button></div></div>
       {loadError ? <div className="data-state error">{loadError}</div> : loading ? <div className="data-state">Loading records from EC2…</div> : visibleRows.length === 0 ? <div className="data-state">No records found. Use the action button to create one.</div> :
-      <div className="table-wrap"><table><thead><tr>{data.columns.map(col => <th key={col}>{col}</th>)}<th>Action</th></tr></thead><tbody>{visibleRows.map((row, i) => <tr key={row[0] + i}>{row.map((cell, j) => <td key={j}>{j === 0 ? <strong>{cell}</strong> : j === row.length - 1 ? <span className={"status " + cell.toLowerCase().replaceAll(" ", "-")}>{cell}</span> : cell}</td>)}<td><button className="row-action" onClick={() => onAction(row[0] + " opened")}>View →</button></td></tr>)}</tbody></table></div>}
+      <div className="table-wrap"><table><thead><tr>{data.columns.map(col => <th key={col}>{col}</th>)}<th>Action</th></tr></thead><tbody>{visibleRows.map((row, i) => <tr key={row[0] + i}>{row.map((cell, j) => <td key={j}>{j === 0 ? <strong>{cell}</strong> : j === row.length - 1 ? <span className={"status " + cell.toLowerCase().replaceAll(" ", "-")}>{cell}</span> : cell}</td>)}<td><button className="row-action" onClick={() => setSelectedRow(row)}>View →</button></td></tr>)}</tbody></table></div>}
     </section>
+    {selectedRow && <div className="record-backdrop" onMouseDown={() => setSelectedRow(null)}><aside className="record-drawer" onMouseDown={e => e.stopPropagation()}>
+      <div className="record-head"><div><p className="eyebrow">{data.eyebrow}</p><h2>{selectedRow[0]}</h2><span className={"status " + selectedRow[selectedRow.length - 1].toLowerCase().replaceAll(" ", "-")}>{selectedRow[selectedRow.length - 1]}</span></div><button className="panel-close" onClick={() => setSelectedRow(null)}>×</button></div>
+      <div className="record-fields">{data.columns.map((column, index) => <div className="record-field" key={column}><span>{column}</span><strong>{selectedRow[index] || "—"}</strong></div>)}</div>
+      <div className="record-timeline"><p className="eyebrow">RECORD ACTIVITY</p><div><i/><span><strong>Record loaded</strong><small>Live data from EC2 fleet API</small></span><time>Now</time></div><div><i/><span><strong>Last synchronised</strong><small>Changes are persisted automatically</small></span><time>Live</time></div></div>
+      <div className="record-actions"><button className="secondary" onClick={() => setSelectedRow(null)}>Close</button><button className="primary" onClick={() => onAction("Edit workflow opened for " + selectedRow[0])}>Edit record</button></div>
+    </aside></div>}
   </div>;
 }
 
