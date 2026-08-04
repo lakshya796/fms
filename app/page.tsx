@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fmsRequest, login } from "./lib/fms-api";
 
 const navGroups: { label: string; items: [string, string][] }[] = [
@@ -777,7 +777,7 @@ function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string;
   if (name === "Dispatch") return <div className="module-page"><div className="module-title"><div><p className="eyebrow">FLEET-OPS DISPATCH</p><h2>Dispatch command board</h2><p>Drag a trip between columns to progress it, or click one to open the trip sheet.</p></div><button className="primary module-action" onClick={() => openAction("trip")}>＋ Create trip</button></div>
     <div className="dispatch-board">{["planned","dispatched","in_transit","closed"].map(status => <section {...board.columnProps(status)} key={status}>
       <header><strong>{status.replaceAll("_"," ")}</strong><span>{records.filter(r => r.status === status).length}</span></header>
-      {records.filter(r => r.status === status).map(trip => <article className="dispatch-card" key={trip.id} {...board.cardProps(trip)} onClick={() => setTripDetail(trip)}>
+      {records.filter(r => r.status === status).map(trip => <article key={trip.id} {...board.cardProps(trip, setTripDetail)}>
         <b>{trip.number}</b><p>{trip.origin} → {trip.destination}</p><small>{trip.vehicle_number} · {trip.driver_name}</small>
         <div onClick={event => event.stopPropagation()}>
           {status === "planned" && <button onClick={() => tripAction(trip,"dispatch")}>Dispatch</button>}
@@ -845,38 +845,73 @@ type CardMove = (card: any) => void | Promise<void>;
 
 function useDragBoard(moves: Record<string, CardMove>, onRefuse: Notify) {
   const [dragging, setDragging] = useState<any>(null);
-  const [over, setOver] = useState<string>("");
-  const drop = async (status: string) => {
-    const card = dragging;
-    setDragging(null); setOver("");
-    if (!card || card.status === status) return;
-    const move = moves[`${card.status}>${status}`];
-    if (!move) {
-      onRefuse(`${card.number} cannot move from ${String(card.status).replaceAll("_", " ")} to ${status.replaceAll("_", " ")}`, "warn");
-      return;
-    }
-    await move(card);
+  const [over, setOver] = useState("");
+  // A drag that ends where it started is a click, so suppress the click that follows.
+  const suppressClick = useRef(false);
+
+  // Pointer events rather than HTML5 drag-and-drop: no dataTransfer quirks between
+  // browsers, and the same code works with a finger on a tablet in the yard.
+  const startDrag = (card: any, event: React.PointerEvent) => {
+    if (event.button !== 0) return;
+    if ((event.target as HTMLElement).closest("button")) return;   // let card buttons work
+    suppressClick.current = false;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    let moved = false;
+
+    const columnAt = (x: number, y: number) =>
+      (document.elementFromPoint(x, y) as HTMLElement | null)?.closest("[data-status]")?.getAttribute("data-status") || "";
+
+    const onMove = (moveEvent: PointerEvent) => {
+      if (!moved && Math.hypot(moveEvent.clientX - startX, moveEvent.clientY - startY) < 6) return;
+      if (!moved) {
+        moved = true;
+        setDragging(card);
+        document.body.classList.add("dragging-card");
+      }
+      setOver(columnAt(moveEvent.clientX, moveEvent.clientY));
+    };
+
+    const onUp = (upEvent: PointerEvent) => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      document.body.classList.remove("dragging-card");
+      setDragging(null);
+      setOver("");
+      if (!moved) return;                                          // it was a click
+      suppressClick.current = true;   // cleared by the next press, not by a timer
+      const status = columnAt(upEvent.clientX, upEvent.clientY);
+      if (!status || status === card.status) return;
+      const move = moves[`${card.status}>${status}`];
+      if (!move) {
+        onRefuse(`${card.number} cannot move from ${String(card.status).replaceAll("_", " ")} to ${status.replaceAll("_", " ")}`, "warn");
+        return;
+      }
+      move(card);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
   };
-  const cardProps = (card: any) => ({
-    draggable: true,
-    onDragStart: (event: React.DragEvent) => { setDragging(card); event.dataTransfer.effectAllowed = "move"; },
-    onDragEnd: () => { setDragging(null); setOver(""); },
-  });
-  const columnProps = (status: string) => ({
-    onDragOver: (event: React.DragEvent) => {
-      if (!dragging) return;
-      event.preventDefault();
-      // Always accept the drop, even where the move is not allowed: dropEffect "none"
-      // stops the browser firing `drop` at all, and then nothing could explain why.
-      // The column still turns red, and the drop handler says what went wrong.
-      event.dataTransfer.dropEffect = "move";
-      setOver(status);
+
+  const cardProps = (card: any, onOpen?: (card: any) => void) => ({
+    onPointerDown: (event: React.PointerEvent) => startDrag(card, event),
+    onClick: () => {
+      if (suppressClick.current) { suppressClick.current = false; return; }   // this click ended a drag
+      if (onOpen) onOpen(card);
     },
-    onDragLeave: () => setOver(current => (current === status ? "" : current)),
-    onDrop: (event: React.DragEvent) => { event.preventDefault(); drop(status); },
-    className: "dispatch-column"
-      + (over === status && dragging ? (moves[`${dragging.status}>${status}`] ? " drop-ok" : " drop-blocked") : ""),
+    className: "dispatch-card" + (dragging && dragging.id === card.id ? " is-dragging" : ""),
   });
+
+  const columnProps = (status: string) => ({
+    "data-status": status,
+    className: "dispatch-column"
+      + (over === status && dragging && dragging.status !== status
+          ? (moves[`${dragging.status}>${status}`] ? " drop-ok" : " drop-blocked") : ""),
+  });
+
   return { dragging, cardProps, columnProps };
 }
 
@@ -935,7 +970,9 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
     try {
       const updated = await fmsRequest<any>(`orders/${order.id}/${path}/`, { method: "POST", body: JSON.stringify(body || {}) });
       onAction(`${order.number} ${path.replace("_", " ")}`);
-      setSelected(updated?.id ? updated : null);
+      // Only refresh the drawer if it was already open, and only from a response that is
+      // actually an order: `activity` returns a tracking activity, not the consignment.
+      setSelected((current: any) => (current && updated?.number ? updated : null));
       load();
     } catch (e) {
       onAction(e instanceof Error ? e.message.slice(0, 90) : "Action failed");
@@ -967,8 +1004,8 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
       const bucket = orders.filter(order => order.status === status);
       return <section {...board.columnProps(status)} key={status}>
         <header><strong>{label}</strong><span>{bucket.length}</span></header>
-        {bucket.map(order => <article className="dispatch-card" key={order.id}
-            {...board.cardProps(order)} onClick={() => { setSelected(order); setDriver(order.driver || ""); setVehicle(order.vehicle || ""); }}>
+        {bucket.map(order => <article key={order.id}
+            {...board.cardProps(order, opened => { setSelected(opened); setDriver(opened.driver || ""); setVehicle(opened.vehicle || ""); })}>
           <b>{order.number}</b>
           <p>{order.pickup_city} → {order.dropoff_city}</p>
           <small>{order.customer_name} · {rupees(order.total_amount)}</small>
@@ -1488,8 +1525,7 @@ function IndentsView({ reloadKey, onAction, openAction }: { reloadKey: number; o
       const bucket = indents.filter(indent => indent.status === status);
       return <section {...board.columnProps(status)} key={status}>
         <header><strong>{label}</strong><span>{bucket.length}</span></header>
-        {bucket.map(indent => <article className="dispatch-card" key={indent.id}
-            {...board.cardProps(indent)} onClick={() => setDetail(indent)}>
+        {bucket.map(indent => <article key={indent.id} {...board.cardProps(indent, setDetail)}>
           <b>{indent.number}</b>
           <p>{indent.pickup_city} → {indent.dropoff_city}</p>
           <small>{indent.customer_name} · {indent.vehicle_type || "any vehicle"}</small>

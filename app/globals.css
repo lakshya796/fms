@@ -171,9 +171,11 @@ h1 { margin:0; font-size:24px; letter-spacing:-.7px; }
 .dispatch-column{transition:background .15s ease,box-shadow .15s ease}
 .dispatch-column.drop-ok{background:#e9f6ee;box-shadow:inset 0 0 0 2px #7fb495}
 .dispatch-column.drop-blocked{background:#ffeeea;box-shadow:inset 0 0 0 2px #e0a99c}
-.dispatch-card{cursor:pointer;user-select:none}
+.dispatch-card{cursor:grab;user-select:none;touch-action:none}
 .dispatch-card:hover{border-color:#b9c7bf;box-shadow:0 6px 18px rgba(20,40,30,.09)}
 .dispatch-card:active{cursor:grabbing}
-.dispatch-card[draggable="true"]{-webkit-user-drag:element}
+.dispatch-card.is-dragging{opacity:.45;transform:scale(.98)}
+body.dragging-card{cursor:grabbing}
+body.dragging-card .dispatch-card{cursor:grabbing}
 .empty-column{border:1px dashed #cfd8d2;border-radius:10px;background:#fbfcfa}
 .toast.warn{background:#7a3325}
