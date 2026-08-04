@@ -204,7 +204,7 @@ function ModuleView({ name, onAction, reloadKey }: { name: string; onAction: (me
   const visibleRows = rows.filter(row => row.join(" ").toLowerCase().includes(query.toLowerCase()));
   return <div className="module-page">
     <div className="module-title"><div><p className="eyebrow">{data.eyebrow}</p><h2>{data.title}</h2><p>Live records from the Phloz fleet database.</p></div><button className="primary module-action" onClick={() => onAction(data.action.replace("+ ", "") + " opened")}>{data.action}</button></div>
-    <div className="module-stats">{data.stats.map(stat => <div className="module-stat" key={stat[0]}><span>{stat[0]}</span><strong>{stat[1]}</strong><small>{stat[2]}</small></div>)}</div>
+    <div className="module-stats"><div className="module-stat"><span>Total records</span><strong>{loading ? "—" : rows.length}</strong><small>Stored in the live database</small></div><div className="module-stat"><span>Data source</span><strong>Live</strong><small>EC2 fleet API</small></div><div className="module-stat"><span>Last synchronised</span><strong>Now</strong><small>Refreshes after every save</small></div></div>
     <section className="module-table-card"><div className="module-toolbar"><div><strong>All {name.toLowerCase()}</strong><span>{loading ? "Loading live records…" : visibleRows.length + " live records"}</span></div><div className="toolbar-actions"><input aria-label={"Search " + name} placeholder={"Search " + name.toLowerCase() + "..."} value={query} onChange={e => setQuery(e.target.value)} /><button onClick={() => onAction("Live data refreshed")}>↻ Refresh</button><button onClick={() => onAction("Report exported")}>⇩ Export</button></div></div>
       {loadError ? <div className="data-state error">{loadError}</div> : loading ? <div className="data-state">Loading records from EC2…</div> : visibleRows.length === 0 ? <div className="data-state">No records found. Use the action button to create one.</div> :
       <div className="table-wrap"><table><thead><tr>{data.columns.map(col => <th key={col}>{col}</th>)}<th>Action</th></tr></thead><tbody>{visibleRows.map((row, i) => <tr key={row[0] + i}>{row.map((cell, j) => <td key={j}>{j === 0 ? <strong>{cell}</strong> : j === row.length - 1 ? <span className={"status " + cell.toLowerCase().replaceAll(" ", "-")}>{cell}</span> : cell}</td>)}<td><button className="row-action" onClick={() => onAction(row[0] + " opened")}>View →</button></td></tr>)}</tbody></table></div>}
@@ -218,7 +218,12 @@ export default function Home() {
   const [action, setAction] = useState("");
   const [authenticated, setAuthenticated] = useState(false);
   const [dataVersion, setDataVersion] = useState(0);
+  const [dashboard, setDashboard] = useState<any>(null);
   useEffect(() => { setAuthenticated(Boolean(sessionStorage.getItem("fms_token"))); }, []);
+  useEffect(() => {
+    if (!authenticated) return;
+    fmsRequest<any>("dashboard/").then(setDashboard).catch(() => undefined);
+  }, [authenticated, dataVersion]);
 
   const show = (message: string) => {
     setToast(message);
@@ -254,13 +259,13 @@ export default function Home() {
 
         {active === "Overview" ? <div className="page-grid"><section className="quick-actions"><div><p className="eyebrow">QUICK ACTIONS</p><h2>Run daily fleet operations</h2></div><button onClick={() => setAction("lr")}><span>▤</span><b>Generate LR</b><small>Book consignment</small></button><button onClick={() => setAction("trip")}><span>▦</span><b>Create trip sheet</b><small>Allocate vehicle & driver</small></button><button onClick={() => setAction("invoice")}><span>₹</span><b>Generate invoice</b><small>Bill a completed trip</small></button><button onClick={() => setAction("tracking")}><span>⌖</span><b>Track vehicles</b><small>View live GPS map</small></button></section>
           <section className="hero-card">
-            <div><span className="live-pill"><i /> LIVE FLEET</span><h2>32 of 41 vehicles<br />are on the road</h2><p>78% fleet utilisation · 4 trips need attention</p><button className="text-button" onClick={() => show("Live operations opened")}>View live operations <span>→</span></button></div>
-            <div className="fleet-visual" aria-label="Fleet utilisation 78 percent"><div className="ring"><strong>78%</strong><span>utilised</span></div><div className="route-line"><span className="pin one" /><span className="truck">▰</span><span className="pin two" /></div></div>
+            <div><span className="live-pill"><i /> LIVE FLEET</span><h2>{dashboard?.vehicles_on_trip ?? "—"} of {dashboard?.vehicles ?? "—"} vehicles<br />are on the road</h2><p>{dashboard ? Math.round((dashboard.vehicles_on_trip / Math.max(dashboard.vehicles, 1)) * 100) : "—"}% fleet utilisation · {dashboard?.active_trips ?? "—"} active trips</p><button className="text-button" onClick={() => show("Live operations opened")}>View live operations <span>→</span></button></div>
+            <div className="fleet-visual" aria-label="Fleet utilisation 78 percent"><div className="ring"><strong>{dashboard ? Math.round((dashboard.vehicles_on_trip / Math.max(dashboard.vehicles, 1)) * 100) : "—"}%</strong><span>utilised</span></div><div className="route-line"><span className="pin one" /><span className="truck">▰</span><span className="pin two" /></div></div>
           </section>
 
-          <section className="metric-card"><div className="metric-top"><span className="metric-icon green">₹</span><span className="trend up">↗ 12.4%</span></div><p>Revenue this month</p><h3>₹28.6L</h3><small>vs ₹25.4L last month</small></section>
-          <section className="metric-card"><div className="metric-top"><span className="metric-icon blue">↗</span><span className="trend down">↘ 3.1%</span></div><p>Operating cost</p><h3>₹19.2L</h3><small>Fuel is 61% of total cost</small></section>
-          <section className="metric-card profit"><div className="metric-top"><span className="metric-icon violet">◎</span><span className="trend up">↗ 2.8%</span></div><p>Fleet margin</p><h3>32.9%</h3><small>₹9.4L gross contribution</small></section>
+          <section className="metric-card"><div className="metric-top"><span className="metric-icon green">₹</span><span className="trend up">↗ 12.4%</span></div><p>Total invoiced</p><h3>₹{Number(dashboard?.invoice_total || 0).toLocaleString("en-IN")}</h3><small>{dashboard?.open_invoices ?? 0} open invoices</small></section>
+          <section className="metric-card"><div className="metric-top"><span className="metric-icon blue">↗</span><span className="trend down">↘ 3.1%</span></div><p>Pending settlements</p><h3>₹{Number(dashboard?.pending_settlements || 0).toLocaleString("en-IN")}</h3><small>Driver and trip expenses</small></section>
+          <section className="metric-card profit"><div className="metric-top"><span className="metric-icon violet">◎</span><span className="trend up">↗ 2.8%</span></div><p>Available vehicles</p><h3>{dashboard?.available_vehicles ?? "—"}</h3><small>Ready for allocation</small></section>
 
           <section className="workflow-card">
             <div className="section-heading"><div><p className="eyebrow">TODAY&apos;S WORKFLOW</p><h2>Keep operations moving</h2></div><button className="more">•••</button></div>
@@ -269,14 +274,14 @@ export default function Home() {
 
           <section className="cash-card">
             <div className="section-heading"><div><p className="eyebrow">CASH POSITION</p><h2>Receivables</h2></div><button className="more">•••</button></div>
-            <div className="donut-wrap"><div className="donut"><div><strong>₹12.8L</strong><span>outstanding</span></div></div></div>
-            <div className="legend"><div><span><i className="dot current"/>Current</span><strong>₹7.2L</strong></div><div><span><i className="dot overdue"/>Overdue</span><strong>₹3.9L</strong></div><div><span><i className="dot critical"/>60+ days</span><strong>₹1.7L</strong></div></div>
+            <div className="donut-wrap"><div className="donut"><div><strong>₹{Number(dashboard?.invoice_total || 0).toLocaleString("en-IN")}</strong><span>invoiced</span></div></div></div>
+            <div className="legend"><div><span><i className="dot current"/>Customers</span><strong>{dashboard?.customers ?? "—"}</strong></div><div><span><i className="dot overdue"/>Open invoices</span><strong>{dashboard?.open_invoices ?? "—"}</strong></div><div><span><i className="dot critical"/>KYC pending</span><strong>{dashboard?.kyc_pending ?? "—"}</strong></div></div>
             <button className="secondary" onClick={() => show("Invoice follow-ups opened")}>Review collections</button>
           </section>
 
           <section className="trips-card">
             <div className="section-heading"><div><p className="eyebrow">ACTIVE MOVEMENT</p><h2>Recent trips</h2></div><button className="link-button" onClick={() => show("All trips opened")}>View all trips →</button></div>
-            <div className="table-wrap"><table><thead><tr><th>Trip & route</th><th>Vehicle</th><th>Driver</th><th>Status</th><th>ETA / POD</th><th>Revenue</th></tr></thead><tbody>{trips.map(t => <tr key={t.id}><td><strong>{t.id}</strong><small>{t.route}</small></td><td>{t.truck}</td><td>{t.driver}</td><td><span className={`status ${t.status.toLowerCase().replace(" ","-")}`}>{t.status}</span></td><td>{t.eta}</td><td><strong>{t.revenue}</strong></td></tr>)}</tbody></table></div>
+            <div className="table-wrap"><table><thead><tr><th>Trip & route</th><th>Vehicle</th><th>Driver</th><th>Status</th><th>ETA / POD</th><th>Revenue</th></tr></thead><tbody>{(dashboard?.recent_trips || []).map((t: any) => <tr key={t.id}><td><strong>{t.number}</strong><small>{t.origin} → {t.destination}</small></td><td>{t.vehicle_number}</td><td>{t.driver_name}</td><td><span className={`status ${t.status.toLowerCase().replaceAll("_","-")}`}>{t.status.replaceAll("_"," ")}</span></td><td>{t.planned_departure ? new Date(t.planned_departure).toLocaleString("en-IN") : "—"}</td><td><strong>₹{Number(t.estimated_cost || 0).toLocaleString("en-IN")}</strong></td></tr>)}</tbody></table></div>
           </section>
         </div> : active === "Modules" ? <FeatureHub onAction={show} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={(message) => {
           if (message.includes("Book LR")) setAction("lr");
