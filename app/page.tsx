@@ -81,89 +81,40 @@ function FeatureHub({ onAction }: { onAction: (message: string) => void }) {
   return <div className="module-page feature-page"><div className="module-title"><div><p className="eyebrow">COMPLETE TRANSPORT ERP</p><h2>One platform. Every fleet workflow.</h2><p>High-level capability map for modern Indian fleet owners and transporters.</p></div><button className="primary module-action" onClick={() => onAction("Capability brief exported")}>⇩ Export brief</button></div><div className="feature-grid">{featureGroups.map(group => <button className="feature-card" key={group[0]} onClick={() => onAction(`${group[1]} module opened`)}><span>{group[0]}</span><div><strong>{group[1]}</strong><p>{group[2]}</p></div><b>→</b></button>)}</div></div>;
 }
 
-function ModuleView({ name, onAction }: { name: string; onAction: (message: string) => void }) {
-  const data = modules[name];
-  const [query, setQuery] = useState("");
-  const visibleRows = data.rows.filter(row => row.join(" ").toLowerCase().includes(query.toLowerCase()));
-  return <div className="module-page">
-    <div className="module-title"><div><p className="eyebrow">{data.eyebrow}</p><h2>{data.title}</h2><p>Manage every step from one operational workspace.</p></div><button className="primary module-action" onClick={() => onAction(`${data.action.replace("+ ", "")} opened`)}>{data.action}</button></div>
-    <div className="module-stats">{data.stats.map(stat => <div className="module-stat" key={stat[0]}><span>{stat[0]}</span><strong>{stat[1]}</strong><small>{stat[2]}</small></div>)}</div>
-    <section className="module-table-card"><div className="module-toolbar"><div><strong>All {name.toLowerCase()}</strong><span>{visibleRows.length} records</span></div><div className="toolbar-actions"><input aria-label={`Search ${name}`} placeholder={`Search ${name.toLowerCase()}...`} value={query} onChange={e => setQuery(e.target.value)} /><button onClick={() => onAction("Filters applied")}>☷ Filter</button><button onClick={() => onAction("Report exported")}>⇩ Export</button></div></div>
-      <div className="table-wrap"><table><thead><tr>{data.columns.map(col => <th key={col}>{col}</th>)}<th>Action</th></tr></thead><tbody>{visibleRows.map((row, i) => <tr key={row[0]}>{row.map((cell, j) => <td key={cell}>{j === 0 ? <strong>{cell}</strong> : j === row.length - 1 ? <span className={`status ${cell.toLowerCase().replaceAll(" ", "-")}`}>{cell}</span> : cell}</td>)}<td><button className="row-action" onClick={() => onAction(`${row[0]} opened`)}>View →</button></td></tr>)}</tbody></table></div>
-    </section>
-  </div>;
-}
-
-
-
-function LoginScreen({ onLogin }: { onLogin: () => void }) {
-  const [username, setUsername] = useState("fleetadmin");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [working, setWorking] = useState(false);
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault(); setWorking(true); setError("");
-    try { await login(username, password); onLogin(); }
-    catch { setError("Invalid username or password"); }
-    finally { setWorking(false); }
-  };
-  return <main className="login-page"><section className="login-card">
-    <div className="brand login-brand"><span className="brand-mark">p</span><span>phloz</span></div>
-    <p className="eyebrow">FLEET MANAGEMENT SYSTEM</p><h1>Welcome back</h1><p>Sign in to manage consignments, trips, vehicles and billing.</p>
-    <form onSubmit={submit}><label>Username<input value={username} onChange={e => setUsername(e.target.value)} autoComplete="username" /></label><label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete="current-password" autoFocus /></label>
-    {error && <div className="login-error">{error}</div>}<button className="primary" disabled={working}>{working ? "Signing in…" : "Sign in to workspace"}</button></form>
-    <small>Secure access · Phloz Transport ERP</small>
-  </section></main>;
-}
-
-const actionMeta: Record<string, { eyebrow: string; title: string; button: string }> = {
-  lr: { eyebrow: "CONSIGNMENT BOOKING", title: "Generate digital LR", button: "Generate LR" },
-  trip: { eyebrow: "DISPATCH PLANNING", title: "Create trip sheet", button: "Create trip sheet" },
-  invoice: { eyebrow: "FREIGHT BILLING", title: "Generate customer invoice", button: "Generate invoice" },
-  tracking: { eyebrow: "LIVE GPS", title: "Vehicle tracking", button: "Refresh location" },
+const liveModules: Record<string, { endpoint: string; map: (record: any) => string[] }> = {
+  Customers: { endpoint: "customers/", map: r => [r.name, r.gstin, "₹" + Number(r.credit_limit).toLocaleString("en-IN"), r.email || "—", r.kyc_status] },
+  Sales: { endpoint: "quotes/", map: r => [r.number, r.customer_name, r.origin + " → " + r.destination, "₹" + Number(r.freight_amount).toLocaleString("en-IN"), r.status] },
+  Operations: { endpoint: "lorry-receipts/", map: r => [r.number, r.consignor + " → " + r.consignee, r.origin + " → " + r.destination, r.eway_bill_number || "—", r.status] },
+  Fleet: { endpoint: "vehicles/", map: r => [r.registration_number, r.vehicle_type, r.ownership, Number(r.capacity_kg).toLocaleString("en-IN") + " kg", r.status] },
+  Settlements: { endpoint: "settlements/", map: r => [r.driver_name, "Trip #" + r.trip, "₹" + Number(r.advance_amount).toLocaleString("en-IN"), "₹" + Number(r.approved_expenses).toLocaleString("en-IN"), r.status] },
+  Invoices: { endpoint: "invoices/", map: r => [r.number, r.customer_name, r.due_date, "₹" + Number(r.total_amount).toLocaleString("en-IN"), r.status] },
 };
 
-function ActionPanel({ type, onClose, onDone }: { type: string; onClose: () => void; onDone: (message: string) => void }) {
-  const [complete, setComplete] = useState(false);
-  const [vehicle, setVehicle] = useState("MH 04 JU 9182");
-  const [reference, setReference] = useState("");
-  const [error, setError] = useState("");
-  const [working, setWorking] = useState(false);
-  const meta = actionMeta[type];
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault(); setWorking(true); setError("");
-    try {
-      if (type === "lr") {
-        const number = "LR-" + Date.now().toString().slice(-6);
-        await fmsRequest("lorry-receipts/", { method: "POST", body: JSON.stringify({ number, customer: 1, consignor: "Tata Consumer, Mumbai", consignee: "D-Mart Warehouse, Pune", origin: "Mumbai", destination: "Pune", material: "Packaged food products", weight_kg: "12400.00", packages: 480, eway_bill_number: "271234567890", freight_amount: "42800.00", status: "booked" }) });
-        setReference(number);
-      } else if (type === "trip") {
-        const number = "TRP-" + Date.now().toString().slice(-5);
-        await fmsRequest("trips/", { method: "POST", body: JSON.stringify({ number, vehicle: 1, driver: 1, lorry_receipts: [1], origin: "Mumbai", destination: "Pune", planned_departure: new Date(Date.now() + 7200000).toISOString(), advance_amount: "12000.00", estimated_cost: "31600.00", status: "planned" }) });
-        setReference(number);
-      } else if (type === "invoice") {
-        const number = "INV-" + Date.now().toString().slice(-6);
-        const due = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
-        await fmsRequest("invoices/", { method: "POST", body: JSON.stringify({ number, customer: 1, trip: 1, freight_amount: "38500.00", additional_charges: "1200.00", tax_amount: "3100.00", total_amount: "42800.00", due_date: due, status: "issued" }) });
-        setReference(number);
-      }
-      setComplete(true);
-    } catch (e) { setError(e instanceof Error ? e.message : "Unable to save record"); }
-    finally { setWorking(false); }
-  };
-  return <div className="modal-backdrop" onMouseDown={onClose}><section className={"action-panel " + (type === "tracking" ? "map-panel" : "")} onMouseDown={e => e.stopPropagation()}>
-    <div className="panel-head"><div><p className="eyebrow">{meta.eyebrow}</p><h2>{meta.title}</h2></div><button className="panel-close" onClick={onClose}>×</button></div>
-    {type === "tracking" ? <div className="tracking-layout">
-      <div className="mock-map"><div className="map-road r1"/><div className="map-road r2"/><div className="map-road r3"/><span className="city mumbai">Mumbai</span><span className="city pune">Pune</span><span className="map-pin start">●</span><span className="map-pin vehicle">▰</span><span className="map-pin finish">●</span><div className="map-progress"/></div>
-      <div className="vehicle-list"><label>Track vehicle<select value={vehicle} onChange={e => setVehicle(e.target.value)}><option>MH 04 JU 9182</option><option>KA 51 MN 6814</option><option>HR 55 AN 4021</option></select></label><div className="tracking-stat"><span>Status</span><strong>{vehicle === "KA 51 MN 6814" ? "Delayed · 2h 10m" : "Moving"}</strong></div><div className="tracking-grid"><div><span>Speed</span><strong>54 km/h</strong></div><div><span>ETA</span><strong>16:40</strong></div><div><span>Last update</span><strong>Just now</strong></div><div><span>Trip progress</span><strong>68%</strong></div></div><div className="event-feed"><strong>Automated trip events</strong><p><i/>Talegaon geofence crossed <span>14:18</span></p><p><i/>Vehicle resumed movement <span>13:52</span></p><p><i/>Khalapur toll crossed <span>12:46</span></p></div><button className="primary full-button" onClick={() => onDone("GPS location refreshed")}>{meta.button}</button></div>
-    </div> : complete ? <div className="success-state"><span>✓</span><h3>{reference} {type === "trip" ? "created" : "generated"}</h3><p>{type === "lr" ? "Digital LR is ready to print or share with the driver." : type === "trip" ? "Vehicle and driver are allocated. The trip is ready for dispatch." : "Invoice for ₹42,800 is ready to send to Tata Consumer Products."}</p><div className="document-preview"><b>phloz</b><strong>{type === "lr" ? "LORRY RECEIPT" : type === "trip" ? "TRIP SHEET" : "TAX INVOICE"}</strong><small>{type === "lr" ? "LR-240845 · Mumbai → Pune" : type === "trip" ? "TS-2845 · MH 04 JU 9182" : "INV-2026-0847 · ₹42,800"}</small></div><div className="success-actions"><button className="secondary" onClick={() => onDone("Document downloaded")}>⇩ Download PDF</button><button className="primary" onClick={() => onDone("Document shared on WhatsApp")}>Share via WhatsApp</button></div></div> :
-      <form className="action-form" onSubmit={submit}>
-        {type === "lr" && <><div className="form-grid"><label>Customer<select><option>Tata Consumer Products</option><option>Asian Paints Ltd</option></select></label><label>Booking date<input type="date" defaultValue="2026-08-03"/></label><label>Consignor<input defaultValue="Tata Consumer, Mumbai"/></label><label>Consignee<input defaultValue="D-Mart Warehouse, Pune"/></label><label>Material<input defaultValue="Packaged food products"/></label><label>Weight<input defaultValue="12,400 kg"/></label></div><label>Special instructions<textarea defaultValue="Handle with care · Delivery before 5 PM"/></label></>}
-        {type === "trip" && <><div className="form-grid"><label>Route<select><option>Mumbai → Pune</option><option>Delhi → Jaipur</option></select></label><label>Linked LR<select><option>LR-240845</option><option>LR-240831</option></select></label><label>Vehicle<select><option>MH 04 JU 9182 · Available</option><option>MH 12 PQ 4407 · Available</option></select></label><label>Driver<select><option>Ramesh Yadav · Available</option><option>Manoj Singh · Available</option></select></label><label>Trip advance<input defaultValue="₹12,000"/></label><label>Planned departure<input type="time" defaultValue="14:30"/></label></div><div className="cost-strip"><span>Estimated distance <b>149 km</b></span><span>Estimated cost <b>₹31,600</b></span><span>Expected margin <b>26.2%</b></span></div></>}
-        {type === "invoice" && <><div className="form-grid"><label>Customer<select><option>Tata Consumer Products</option><option>Asian Paints Ltd</option></select></label><label>Completed trip<select><option>TRP-2836 · POD received</option><option>TRP-2831 · POD received</option></select></label><label>Freight amount<input defaultValue="₹38,500"/></label><label>Additional charges<input defaultValue="₹1,200"/></label><label>GST<input defaultValue="₹3,100"/></label><label>Payment terms<select><option>30 days</option><option>15 days</option><option>45 days</option></select></label></div><div className="invoice-total"><span>Invoice total</span><strong>₹42,800</strong><small>Freight + toll + GST</small></div></>}
-        {error && <div className="form-error">{error}</div>}<div className="form-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" type="submit" disabled={working}>{working ? "Saving…" : meta.button}</button></div>
-      </form>}
-  </section></div>;
+function ModuleView({ name, onAction, reloadKey }: { name: string; onAction: (message: string) => void; reloadKey: number }) {
+  const data = modules[name];
+  const [query, setQuery] = useState("");
+  const [rows, setRows] = useState<string[][]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  useEffect(() => {
+    let active = true; setLoading(true); setLoadError("");
+    fmsRequest<any>(liveModules[name].endpoint).then(payload => {
+      if (!active) return;
+      const records = Array.isArray(payload) ? payload : payload.results || [];
+      setRows(records.map(liveModules[name].map));
+    }).catch(error => { if (active) setLoadError(error instanceof Error ? error.message : "Unable to load records"); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [name, reloadKey]);
+  const visibleRows = rows.filter(row => row.join(" ").toLowerCase().includes(query.toLowerCase()));
+  return <div className="module-page">
+    <div className="module-title"><div><p className="eyebrow">{data.eyebrow}</p><h2>{data.title}</h2><p>Live records from the Phloz fleet database.</p></div><button className="primary module-action" onClick={() => onAction(data.action.replace("+ ", "") + " opened")}>{data.action}</button></div>
+    <div className="module-stats">{data.stats.map(stat => <div className="module-stat" key={stat[0]}><span>{stat[0]}</span><strong>{stat[1]}</strong><small>{stat[2]}</small></div>)}</div>
+    <section className="module-table-card"><div className="module-toolbar"><div><strong>All {name.toLowerCase()}</strong><span>{loading ? "Loading live records…" : visibleRows.length + " live records"}</span></div><div className="toolbar-actions"><input aria-label={"Search " + name} placeholder={"Search " + name.toLowerCase() + "..."} value={query} onChange={e => setQuery(e.target.value)} /><button onClick={() => onAction("Live data refreshed")}>↻ Refresh</button><button onClick={() => onAction("Report exported")}>⇩ Export</button></div></div>
+      {loadError ? <div className="data-state error">{loadError}</div> : loading ? <div className="data-state">Loading records from EC2…</div> : visibleRows.length === 0 ? <div className="data-state">No records found. Use the action button to create one.</div> :
+      <div className="table-wrap"><table><thead><tr>{data.columns.map(col => <th key={col}>{col}</th>)}<th>Action</th></tr></thead><tbody>{visibleRows.map((row, i) => <tr key={row[0] + i}>{row.map((cell, j) => <td key={j}>{j === 0 ? <strong>{cell}</strong> : j === row.length - 1 ? <span className={"status " + cell.toLowerCase().replaceAll(" ", "-")}>{cell}</span> : cell}</td>)}<td><button className="row-action" onClick={() => onAction(row[0] + " opened")}>View →</button></td></tr>)}</tbody></table></div>}
+    </section>
+  </div>;
 }
 
 export default function Home() {
@@ -171,6 +122,7 @@ export default function Home() {
   const [toast, setToast] = useState("");
   const [action, setAction] = useState("");
   const [authenticated, setAuthenticated] = useState(false);
+  const [dataVersion, setDataVersion] = useState(0);
   useEffect(() => { setAuthenticated(Boolean(sessionStorage.getItem("fms_token"))); }, []);
 
   const show = (message: string) => {
@@ -231,13 +183,13 @@ export default function Home() {
             <div className="section-heading"><div><p className="eyebrow">ACTIVE MOVEMENT</p><h2>Recent trips</h2></div><button className="link-button" onClick={() => show("All trips opened")}>View all trips →</button></div>
             <div className="table-wrap"><table><thead><tr><th>Trip & route</th><th>Vehicle</th><th>Driver</th><th>Status</th><th>ETA / POD</th><th>Revenue</th></tr></thead><tbody>{trips.map(t => <tr key={t.id}><td><strong>{t.id}</strong><small>{t.route}</small></td><td>{t.truck}</td><td>{t.driver}</td><td><span className={`status ${t.status.toLowerCase().replace(" ","-")}`}>{t.status}</span></td><td>{t.eta}</td><td><strong>{t.revenue}</strong></td></tr>)}</tbody></table></div>
           </section>
-        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : <ModuleView name={active as keyof typeof modules} onAction={(message) => {
+        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={(message) => {
           if (message.includes("Book LR")) setAction("lr");
           else if (message.includes("Generate invoice")) setAction("invoice");
           else show(message);
         }} />}
       </section>
-      {action && <ActionPanel type={action} onClose={() => setAction("")} onDone={(message) => { show(message); if (action !== "tracking") setAction(""); }} />}
+      {action && <ActionPanel type={action} onClose={() => setAction("")} onCreated={() => setDataVersion(v => v + 1)} onDone={(message) => { show(message); if (action !== "tracking") setAction(""); }} />}
       {toast && <div className="toast">✓ {toast}</div>}
     </main>
   );
