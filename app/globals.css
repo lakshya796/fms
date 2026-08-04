@@ -179,3 +179,5 @@ body.dragging-card{cursor:grabbing}
 body.dragging-card .dispatch-card{cursor:grabbing}
 .empty-column{border:1px dashed #cfd8d2;border-radius:10px;background:#fbfcfa}
 .toast.warn{background:#7a3325}
+.sign-out{border:1px solid #2c3a33;background:#1a2721;color:#9fb0a7;border-radius:8px;width:30px;height:30px;font-size:13px;cursor:pointer;flex:none}
+.sign-out:hover{background:#dff77d;color:#152019;border-color:#dff77d}

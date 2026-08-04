@@ -130,8 +130,9 @@ Orders and indents both carry a `branch`, and `Order` is indexed on `(status, cr
 
 New sections in the sidebar:
 
-- **TRANSPORT → Indents** — demand board with drag-and-drop between columns and a detail
-  drawer on click; dropping onto "allocated" opens the truck allocation panel
+- **TRANSPORT → Indents** — demand board with drag-and-drop between any two columns and a
+  detail drawer on click; dropping onto "allocated" opens the truck allocation panel, and
+  "converted" creates the priced order
 - **ACCOUNTS → Ledger** — chart of accounts with live balances, group headings marked
 - **ACCOUNTS → Vouchers** — journal entries, plus a composer that will not let you post an
   unbalanced entry or select a group heading
@@ -140,6 +141,10 @@ New sections in the sidebar:
 - **ACCOUNTS → Financials** — the six reports above, with a date window
 - **ADMIN → Users / Roles / Branches / Audit trail** — the role editor is a permission
   checklist grouped by module
+
+The sidebar footer shows who is signed in, with their role, and a sign-out button. A token
+that has been revoked, or a login that has been deactivated, returns the operator to the
+sign-in screen rather than leaving a workspace that can no longer load.
 
 ## 5. Tests
 
