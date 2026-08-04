@@ -53,3 +53,9 @@ class Settlement(Timestamped):
     trip=models.ForeignKey(Trip,on_delete=models.PROTECT,related_name="settlements"); driver=models.ForeignKey(Driver,on_delete=models.PROTECT,related_name="settlements")
     advance_amount=models.DecimalField(max_digits=12,decimal_places=2,default=0); approved_expenses=models.DecimalField(max_digits=12,decimal_places=2,default=0)
     net_payable=models.DecimalField(max_digits=12,decimal_places=2,default=0); status=models.CharField(max_length=20,default="pending")
+
+class SalesQuote(Timestamped):
+    number=models.CharField(max_length=30,unique=True); customer=models.ForeignKey(Customer,on_delete=models.PROTECT,related_name="quotes")
+    origin=models.CharField(max_length=120); destination=models.CharField(max_length=120); freight_amount=models.DecimalField(max_digits=12,decimal_places=2)
+    valid_until=models.DateField(); status=models.CharField(max_length=20,default="draft")
+    def __str__(self): return self.number
