@@ -34,12 +34,12 @@ Built for a 1000+ vehicle operation — see
 On the EC2 instance (release directories, systemd and gunicorn):
 
 ```bash
-sudo bash scripts/migrate-to-postgres.sh   # one time, only if still on SQLite
-bash scripts/deploy-fms.sh                 # every deploy
+sudo PG_ADMIN_PASSWORD='...' bash scripts/deploy-fms.sh
 ```
 
-Both scripts touch only the FMS stack, back up before they change anything, and print a
-one-line rollback. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+It sets up PostgreSQL, cuts a release, migrates, seeds, restarts only `phloz-fms` and
+verifies. It never touches the Falcon9 or Baileys services. See
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 There is also a Docker Compose path for a clean host:
 
