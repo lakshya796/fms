@@ -141,6 +141,23 @@ is always recomputed from its parts and can never be typed. The invoice is poste
 It refuses a consignment that is not delivered, or whose ePOD is not verified, and billing the
 same order twice returns the invoice already raised rather than a second one.
 
+### Live tracking
+
+Every `Order` carries two derived, read-only fields wherever it is serialized:
+
+- `progress_percent` — how far along the lane the most recent GPS-tagged tracking activity
+  puts the truck, 0-100. A straight-line estimate against the lane's own straight-line
+  distance, both computed with the same haversine formula, so it stays consistent even though
+  neither is the actual road distance. `100` once delivered, `0` before dispatch.
+- `last_position` — the most recent activity that carries a fix (`city`, `latitude`,
+  `longitude`, `code`, `details`, `recorded_at`), or `null` if nothing has ever reported one. A
+  status change logged from the desk without coordinates does not shadow the last real fix.
+
+`POST /api/v1/orders/{id}/activity/` is how a position gets recorded — a driver app, a
+telematics webhook, or a dispatcher logging a checkpoint by hand all call the same endpoint;
+`latitude`/`longitude` are optional; a checkpoint without coordinates just adds a note without
+moving the last known position.
+
 ### Operational lookups
 
 ```
@@ -175,6 +192,13 @@ New workspace sections in the Next.js console:
   and **Raise invoice** once it is delivered.
 - **ePOD** — the delivery desk: awaiting, in review, verified and rejected, with the OTP, the
   capture form and the verify/reject decision in one drawer.
+- **Tracking** — every trackable consignment in one list, filterable by status and by "running
+  late" (past its scheduled time and not yet delivered), with a route panel per shipment: a
+  progress bar and vehicle position along the lane, distance covered, an approximate ETA at
+  highway running speed, the geofence the last fix falls inside (via `zones/locate`), the full
+  movement history, and a **Log a checkpoint** form — city, note and coordinates, with a "use
+  device location" button backed by the browser's geolocation API — for dispatchers without a
+  telematics feed. Every shipment also gets a **Copy tracking link** button.
 - **Rates** — rate cards, a freight estimator with the full GST breakdown, and a **margin
   projection** that costs the lane against the fleet's own diesel and on-road spend.
 - **Compliance** — expiry watchlist over 15/30/60/90 days, plus preventive services that are due.
@@ -182,8 +206,10 @@ New workspace sections in the Next.js console:
   forms.
 - **Analytics** — utilisation, cost per km, average mileage, on-time delivery, diesel and expense
   split for the last 30 days.
-- **`/track`** — a public page where a consignee can enter a tracking number; it shows status and
-  movement history and never exposes pricing.
+- **`/track`** — the public page behind the copied link. A consignee enters a tracking number,
+  or opens a shared `/track?number=...` link and it searches automatically, and sees a progress
+  bar, the last known city and time, and the full movement history. It never exposes pricing or
+  exact coordinates.
 
 ## Demo data
 
@@ -196,6 +222,12 @@ Seeds three service areas, seven zones, nine places, five vendors, two fleets, f
 four orders with waypoints and activity, fuel entries with realistic mileage, on-road expenses,
 issues, compliance documents and maintenance schedules.
 
+The dispatched, in-transit and completed orders also get a GPS trail: coordinates interpolated
+along their pickup-dropoff line with staggered timestamps, so the tracking page has real
+movement to show rather than just a booking event. The in-transit lane is deliberately
+scheduled in the past, so there is always a "running late" shipment to see, and one of its
+checkpoints is a check-post hold rather than a plain ping.
+
 ## Tests
 
 ```
@@ -205,6 +237,8 @@ python manage.py test fleet
 Covers rate-card arithmetic (including minimum charge and reverse charge), geofence containment,
 the full order lifecycle, the ePOD workflow (OTP issue, wrong and expired codes, shortage review,
 verify and reject, and the gate on completion), automatic invoicing and its idempotency, lane
-projection against recorded fuel and expense history, public tracking, mileage and odometer
-roll-up, expense summaries, document expiry windows, maintenance intervals, fleet assignment and
-the analytics endpoint.
+projection against recorded fuel and expense history, live tracking (progress against the most
+recent GPS fix, a desk status change never shadowing a real one, and the public endpoint
+exposing progress without coordinates), public tracking, mileage and odometer roll-up, expense
+summaries, document expiry windows, maintenance intervals, fleet assignment and the analytics
+endpoint.

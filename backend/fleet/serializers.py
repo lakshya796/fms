@@ -122,7 +122,20 @@ class OrderSerializer(serializers.ModelSerializer):
     waypoints = WaypointSerializer(many=True, read_only=True)
     activities = TrackingActivitySerializer(many=True, read_only=True)
     proofs = ProofOfDeliverySerializer(many=True, read_only=True)
+    progress_percent = serializers.IntegerField(read_only=True)
+    last_position = serializers.SerializerMethodField()
+    pickup_latitude = serializers.DecimalField(source="pickup.latitude", max_digits=9, decimal_places=6, read_only=True, default=None)
+    pickup_longitude = serializers.DecimalField(source="pickup.longitude", max_digits=9, decimal_places=6, read_only=True, default=None)
+    dropoff_latitude = serializers.DecimalField(source="dropoff.latitude", max_digits=9, decimal_places=6, read_only=True, default=None)
+    dropoff_longitude = serializers.DecimalField(source="dropoff.longitude", max_digits=9, decimal_places=6, read_only=True, default=None)
     class Meta: model = Order; fields = "__all__"; read_only_fields = ["tracking_number"]
+
+    def get_last_position(self, order):
+        position = order.current_position()
+        if not position:
+            return None
+        return {"city": position.city, "latitude": position.latitude, "longitude": position.longitude,
+               "code": position.code, "details": position.details, "recorded_at": position.recorded_at}
 
 
 class PublicOrderTrackingSerializer(serializers.ModelSerializer):
@@ -131,10 +144,19 @@ class PublicOrderTrackingSerializer(serializers.ModelSerializer):
     origin = serializers.CharField(source="pickup.city", read_only=True)
     destination = serializers.CharField(source="dropoff.city", read_only=True)
     activities = TrackingActivitySerializer(many=True, read_only=True)
+    progress_percent = serializers.IntegerField(read_only=True)
+    last_position = serializers.SerializerMethodField()
     class Meta:
         model = Order
         fields = ["number", "tracking_number", "customer_name", "origin", "destination", "order_type", "status",
-                  "packages", "weight_kg", "scheduled_at", "dispatched_at", "completed_at", "activities"]
+                  "packages", "weight_kg", "scheduled_at", "dispatched_at", "completed_at", "activities",
+                  "progress_percent", "last_position"]
+
+    def get_last_position(self, order):
+        position = order.current_position()
+        if not position:
+            return None
+        return {"city": position.city, "recorded_at": position.recorded_at}
 
 
 class FuelEntrySerializer(serializers.ModelSerializer):

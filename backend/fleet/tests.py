@@ -171,6 +171,39 @@ class OrderLifecycleTests(BaseFleetOpsTest):
         self.assertNotIn("total_amount", response.data)
         self.assertEqual(anonymous.get("/api/v1/track/PHZ-does-not-exist/").status_code, 404)
 
+    def test_progress_and_position_track_the_most_recent_gps_fix(self):
+        order = self.create_order()
+        self.assertIsNone(order.current_position())
+        self.assertEqual(order.progress_percent, 0)   # freshly booked, not moving
+
+        halfway_lat = (self.pickup.latitude + self.dropoff.latitude) / 2
+        halfway_lng = (self.pickup.longitude + self.dropoff.longitude) / 2
+        order.log("dispatched", "GPS_PING_1", "Midway", halfway_lat, halfway_lng, city="En route")
+        order.status = "dispatched"; order.save(update_fields=["status"])
+        self.assertAlmostEqual(order.progress_percent, 50, delta=2)
+
+        # A later fix without coordinates (a desk status change) must not shadow the GPS one.
+        order.log("in_transit", "STATUS_CHANGED", "Marked in transit from the desk")
+        self.assertEqual(order.current_position().code, "GPS_PING_1")
+
+        order.status = "completed"; order.save(update_fields=["status"])
+        self.assertEqual(order.progress_percent, 100)
+
+        response = self.client.get(f"/api/v1/orders/{order.id}/")
+        self.assertEqual(response.data["progress_percent"], 100)
+        self.assertEqual(response.data["last_position"]["code"], "GPS_PING_1")
+        self.assertEqual(float(response.data["pickup_latitude"]), float(self.pickup.latitude))
+
+    def test_public_tracking_exposes_progress_but_not_coordinates(self):
+        order = self.create_order()
+        order.log("dispatched", "GPS_PING_1", "Midway", self.pickup.latitude, self.pickup.longitude, city="Bhiwandi")
+        order.status = "dispatched"; order.save(update_fields=["status"])
+        response = APIClient().get(f"/api/v1/track/{order.tracking_number}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("progress_percent", response.data)
+        self.assertEqual(response.data["last_position"]["city"], "Bhiwandi")
+        self.assertNotIn("latitude", response.data["last_position"])
+
     def test_order_list_supports_filtering_and_search(self):
         first = self.create_order()
         self.create_order(order_type="ptl")

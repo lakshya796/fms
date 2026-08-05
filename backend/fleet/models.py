@@ -399,6 +399,36 @@ class Order(Timestamped):
         return TrackingActivity.objects.create(order=self, status=status, code=code, details=details,
                                                latitude=latitude, longitude=longitude, city=city, recorded_at=timezone.now())
 
+    def current_position(self):
+        """The most recent tracking activity that carries a GPS fix, if any.
+
+        `activities` is ordered newest first, so the first hit is the latest ping -
+        not every activity carries coordinates (a status change logged from the desk
+        usually does not), so this skips past the ones that don't.
+        """
+        for activity in self.activities.all():
+            if activity.latitude is not None and activity.longitude is not None:
+                return activity
+        return None
+
+    @property
+    def progress_percent(self):
+        """How far along the lane the last GPS fix puts the truck, 0-100.
+
+        A straight-line estimate against the lane's own straight-line distance (both
+        computed with the same haversine formula), so it is consistent even though
+        neither is the actual road distance.
+        """
+        if self.status == "completed":
+            return 100
+        if self.status in ("created", "cancelled") or not self.distance_km:
+            return 0
+        position = self.current_position()
+        if not position or self.pickup.latitude is None or self.pickup.longitude is None:
+            return 0
+        covered = haversine_km(self.pickup.latitude, self.pickup.longitude, position.latitude, position.longitude)
+        return max(0, min(100, round(covered / float(self.distance_km) * 100)))
+
     def __str__(self):
         return self.number
 
