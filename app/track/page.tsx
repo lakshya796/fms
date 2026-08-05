@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { fmsRequest } from "../lib/fms-api";
 
 // Public consignee tracking, mirroring the Fleetbase order tracking experience.
@@ -10,16 +10,38 @@ export default function TrackConsignment() {
   const [order, setOrder] = useState<any>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
 
-  const search = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const runSearch = async (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
     setLoading(true); setError(""); setOrder(null);
     try {
-      setOrder(await fmsRequest<any>(`track/${number.trim()}/`));
+      setOrder(await fmsRequest<any>(`track/${trimmed}/`));
     } catch {
       setError("We could not find a consignment with that tracking number.");
     } finally { setLoading(false); }
   };
+
+  // A dispatcher can share a direct link (?number=...); land on it already searched.
+  useEffect(() => {
+    const shared = new URLSearchParams(window.location.search).get("number");
+    if (shared) { setNumber(shared); runSearch(shared); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const search = (event: React.FormEvent) => { event.preventDefault(); runSearch(number); };
+
+  const shareLink = async () => {
+    const link = `${window.location.origin}${window.location.pathname}?number=${number.trim()}`;
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* clipboard unavailable - the link is still visible in the address bar */ }
+  };
+
+  const progress = Math.max(0, Math.min(100, Number(order?.progress_percent || 0)));
 
   return <main className="track-page">
     <section className="track-card">
@@ -38,6 +60,13 @@ export default function TrackConsignment() {
           <div><strong>{order.number}</strong><small>{order.origin} → {order.destination}</small></div>
           <span className={"status " + String(order.status).replaceAll("_", "-")}>{String(order.status).replaceAll("_", " ")}</span>
         </div>
+
+        {!["completed", "cancelled"].includes(order.status) && <div className="track-progress">
+          <div className="track-progress-bar"><i style={{ width: `${Math.max(3, progress)}%` }} /></div>
+          <div className="track-progress-labels"><span>{order.origin}</span><span>{progress}% of the way</span><span>{order.destination}</span></div>
+        </div>}
+        {order.last_position && <p className="track-last-seen">Last seen near <strong>{order.last_position.city || "an unnamed point"}</strong> · {new Date(order.last_position.recorded_at).toLocaleString("en-IN")}</p>}
+
         <div className="tracking-grid">
           <div><span>Consignor</span><strong>{order.customer_name}</strong></div>
           <div><span>Service</span><strong>{String(order.order_type).toUpperCase()}</strong></div>
@@ -52,6 +81,7 @@ export default function TrackConsignment() {
           </div>)}
           {!(order.activities || []).length && <div><i /><span><strong>Booking confirmed</strong><small>Tracking updates will appear here</small></span><time>—</time></div>}
         </div>
+        <button type="button" className="secondary track-share" onClick={shareLink}>{copied ? "Link copied" : "Share this tracking link"}</button>
       </div>}
       <small className="track-footer">Powered by Phloz Fleet — transport ERP for Indian fleet owners</small>
     </section>

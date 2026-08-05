@@ -171,10 +171,6 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
   </section></main>;
 }
 
-const actionMeta: Record<string, { eyebrow: string; title: string; button: string }> = {
-  tracking: { eyebrow: "LIVE GPS", title: "Vehicle tracking", button: "Refresh location" },
-};
-
 type FormField = { name: string; label: string; type?: "text" | "number" | "date" | "datetime" | "select" | "textarea"; options?: [string, string][]; source?: string; value?: string; required?: boolean; multiple?: boolean };
 type FormSpec = { eyebrow: string; title: string; button: string; endpoint: string; fields: FormField[]; reference: (values: Record<string, string>, created: any) => string };
 
@@ -663,29 +659,15 @@ function RecordForm({ spec, onClose, onSaved }: { spec: FormSpec; onClose: () =>
   </form>;
 }
 
-function ActionPanel({ type, onClose, onDone, onCreated }: { type: string; onClose: () => void; onDone: (message: string) => void; onCreated: () => void }) {
+function ActionPanel({ type, onClose, onCreated }: { type: string; onClose: () => void; onCreated: () => void }) {
   const [complete, setComplete] = useState(false);
   const [reference, setReference] = useState("");
-  const [vehicle, setVehicle] = useState("");
-  const [liveTrip, setLiveTrip] = useState<any>(null);
   const spec = recordForms[type];
-  const meta = actionMeta[type] || spec;
-  useEffect(() => {
-    if (type !== "tracking") return;
-    fmsRequest<any>("trips/").then(payload => {
-      const trip = asList(payload)[0] || null;
-      setLiveTrip(trip);
-      if (trip?.vehicle_number) setVehicle(trip.vehicle_number);
-    }).catch(() => undefined);
-  }, [type]);
-  if (!meta) return null;
+  if (!spec) return null;
 
-  return <div className="modal-backdrop" onMouseDown={onClose}><section className={"action-panel " + (type === "tracking" ? "map-panel" : "")} onMouseDown={event => event.stopPropagation()}>
-    <div className="panel-head"><div><p className="eyebrow">{meta.eyebrow}</p><h2>{meta.title}</h2></div><button className="panel-close" onClick={onClose}>×</button></div>
-    {type === "tracking" ? <div className="tracking-layout">
-      <div className="mock-map"><div className="map-road r1"/><div className="map-road r2"/><div className="map-road r3"/><span className="city mumbai">Mumbai</span><span className="city pune">Pune</span><span className="map-pin start">●</span><span className="map-pin vehicle">▰</span><span className="map-pin finish">●</span><div className="map-progress"/></div>
-      <div className="vehicle-list"><label>Track vehicle<select value={vehicle} onChange={event => setVehicle(event.target.value)}><option>{liveTrip?.vehicle_number || "No assigned vehicle"}</option></select></label><div className="tracking-stat"><span>Status</span><strong>{liveTrip?.status?.replaceAll("_", " ") || "Loading live trip…"}</strong></div><div className="tracking-grid"><div><span>Speed</span><strong>{liveTrip?.tracking_events?.[0]?.speed_kph || 0} km/h</strong></div><div><span>Route</span><strong>{liveTrip ? liveTrip.origin + " → " + liveTrip.destination : "—"}</strong></div><div><span>Last update</span><strong>{liveTrip?.tracking_events?.[0]?.recorded_at ? new Date(liveTrip.tracking_events[0].recorded_at).toLocaleTimeString("en-IN") : "No GPS ping"}</strong></div><div><span>Trip</span><strong>{liveTrip?.number || "—"}</strong></div></div><div className="event-feed"><strong>Live trip events</strong>{(liveTrip?.tracking_events || []).slice(0, 4).map((event: any) => <p key={event.id}><i/>{event.description || event.event_type}<span>{new Date(event.recorded_at).toLocaleTimeString("en-IN")}</span></p>)}{liveTrip && !liveTrip.tracking_events?.length && <p>No GPS events received yet</p>}</div><button className="primary full-button" onClick={() => { setLiveTrip(null); fmsRequest<any>("trips/").then(payload => setLiveTrip(asList(payload)[0] || null)); onDone("GPS location refreshed"); }}>{meta.button}</button></div>
-    </div> : complete ? <div className="success-state"><span>✓</span><h3>{reference}</h3><p>Saved to the live fleet database. The module list has been refreshed.</p><div className="success-actions"><button className="secondary" onClick={onClose}>Close</button><button className="primary" onClick={() => { setComplete(false); setReference(""); }}>Add another</button></div></div>
+  return <div className="modal-backdrop" onMouseDown={onClose}><section className="action-panel" onMouseDown={event => event.stopPropagation()}>
+    <div className="panel-head"><div><p className="eyebrow">{spec.eyebrow}</p><h2>{spec.title}</h2></div><button className="panel-close" onClick={onClose}>×</button></div>
+    {complete ? <div className="success-state"><span>✓</span><h3>{reference}</h3><p>Saved to the live fleet database. The module list has been refreshed.</p><div className="success-actions"><button className="secondary" onClick={onClose}>Close</button><button className="primary" onClick={() => { setComplete(false); setReference(""); }}>Add another</button></div></div>
       : <RecordForm spec={spec} onClose={onClose} onSaved={newReference => { setReference(newReference); setComplete(true); onCreated(); }} />}
   </section></div>;
 }
@@ -748,14 +730,14 @@ function ModuleView({ name, onAction, reloadKey, openAction }: { name: string; o
 }
 
 
-const fleetOpsPages = ["Dispatch", "Tracking", "Drivers", "Maintenance", "Analytics"];
+const fleetOpsPages = ["Dispatch", "Drivers", "Maintenance", "Analytics"];
 
 function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string; onAction: Notify; reloadKey: number; openAction: (type: string) => void }) {
   const [records, setRecords] = useState<any[]>([]);
   const [dashboard, setDashboard] = useState<any>(null);
   const [tripDetail, setTripDetail] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const endpoint = name === "Dispatch" || name === "Tracking" ? "trips/" : name === "Drivers" ? "drivers/" : name === "Maintenance" ? "maintenance/" : "analytics/fleet/";
+  const endpoint = name === "Dispatch" ? "trips/" : name === "Drivers" ? "drivers/" : name === "Maintenance" ? "maintenance/" : "analytics/fleet/";
   const load = () => {
     setLoading(true);
     fmsRequest<any>(name === "Analytics" ? endpoint : wholeSet(endpoint)).then(payload => {
@@ -817,7 +799,6 @@ function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string;
         {["dispatched", "in_transit"].includes(tripDetail.status) && <button className="primary" onClick={() => tripAction(tripDetail, "close")}>Close trip</button>}
       </>} />}
   </div>;
-  if (name === "Tracking") { const trip=records[0]; const event=trip?.tracking_events?.[0]; return <div className="module-page"><div className="module-title"><div><p className="eyebrow">LIVE FLEET MAP</p><h2>Track fleet operations</h2><p>GPS positions, routes, geofences and automated trip events.</p></div><button className="primary module-action" onClick={load}>↻ Refresh GPS</button></div><div className="full-map-layout"><div className="operations-map"><div className="map-road r1"/><div className="map-road r2"/><div className="map-road r3"/><span className="city mumbai">Mumbai</span><span className="city pune">Pune</span><span className="map-pin start">●</span><span className="map-pin vehicle">▰</span><span className="map-pin finish">●</span><div className="map-progress"/></div><aside className="map-details"><p className="eyebrow">SELECTED TRIP</p><h3>{trip?.number || "No active trip"}</h3><p>{trip ? trip.origin + " → " + trip.destination : "Create a trip to begin tracking"}</p><div className="tracking-grid"><div><span>Vehicle</span><strong>{trip?.vehicle_number || "—"}</strong></div><div><span>Driver</span><strong>{trip?.driver_name || "—"}</strong></div><div><span>Speed</span><strong>{event?.speed_kph || 0} km/h</strong></div><div><span>Status</span><strong>{trip?.status?.replaceAll("_"," ") || "—"}</strong></div></div><div className="event-feed"><strong>Latest events</strong>{(trip?.tracking_events || []).map((e:any)=><p key={e.id}><i/>{e.description || e.event_type}<span>{new Date(e.recorded_at).toLocaleTimeString("en-IN")}</span></p>)}</div></aside></div></div>; }
   if (name === "Drivers") return <div className="module-page"><div className="module-title"><div><p className="eyebrow">DRIVER OPERATIONS</p><h2>Drivers & availability</h2><p>Licences, shifts, current status and last known location.</p></div><button className="primary module-action" onClick={() => openAction("driver")}>＋ Add driver</button></div><section className="module-table-card"><div className="table-wrap"><table><thead><tr><th>Driver</th><th>Phone</th><th>Licence</th><th>Expiry</th><th>Status</th></tr></thead><tbody>{records.map(r=><tr key={r.id}><td><strong>{r.name}</strong></td><td>{r.phone}</td><td>{r.licence_number}</td><td>{r.licence_expiry || "—"}</td><td><span className={"status "+r.status}>{r.status}</span></td></tr>)}</tbody></table></div></section></div>;
   if (name === "Maintenance") return <div className="module-page"><div className="module-title"><div><p className="eyebrow">FLEET MAINTENANCE</p><h2>Work orders & schedules</h2><p>Preventive servicing, breakdowns and vehicle downtime.</p></div><button className="primary module-action" onClick={() => openAction("maintenance")}>＋ New work order</button></div><section className="module-table-card"><div className="table-wrap"><table><thead><tr><th>Work order</th><th>Vehicle</th><th>Work</th><th>Scheduled</th><th>Cost</th><th>Status</th></tr></thead><tbody>{records.map(r=><tr key={r.id}><td><strong>{r.number}</strong></td><td>{r.vehicle_number}</td><td>{r.title}</td><td>{r.scheduled_date}</td><td>₹{Number(r.estimated_cost).toLocaleString("en-IN")}</td><td><span className={"status "+r.status}>{r.status}</span></td></tr>)}</tbody></table></div></section></div>;
   const cards: [string, any, string][] = [
@@ -1274,6 +1255,8 @@ function EpodView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [reason, setReason] = useState("");
+  const [lostReason, setLostReason] = useState("");
+  const [courierOnly, setCourierOnly] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -1312,8 +1295,25 @@ function EpodView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify
     }, "ePOD captured");
   };
 
-  const shown = filter ? proofs.filter(proof => proof.status === filter) : proofs;
+  const sendByCourier = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget as HTMLFormElement);
+    await call(`proofs/${selected.id}/courier-dispatch/`, {
+      courier_name: String(form.get("courier_name") || ""), awb_number: String(form.get("awb_number") || ""),
+      expected_by: String(form.get("expected_by") || "") || undefined, remarks: String(form.get("courier_note") || ""),
+    }, "Physical POD dispatch recorded");
+  };
+  const reportLost = async () => {
+    await call(`proofs/${selected.id}/courier-lost/`, { remarks: lostReason }, "Marked lost in transit");
+    setLostReason("");
+  };
+
+  const courierPending = (proof: any) => proof.physical_copy_required && proof.courier_status !== "delivered";
+  const shown = (filter ? proofs.filter(proof => proof.status === filter) : proofs)
+    .filter(proof => !courierOnly || courierPending(proof));
   const counts = (status: string) => proofs.filter(proof => proof.status === status).length;
+  const courierPendingCount = proofs.filter(courierPending).length;
+  const courierOverdueCount = proofs.filter(proof => proof.courier_overdue).length;
 
   return <div className="module-page">
     <div className="module-title"><div><p className="eyebrow">ELECTRONIC PROOF OF DELIVERY</p><h2>ePOD</h2><p>Issue the delivery OTP, capture what the driver hands back, and clear it for billing. A consignment cannot be invoiced until its proof is verified.</p></div></div>
@@ -1321,12 +1321,14 @@ function EpodView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify
       <div className="module-stat"><span>Awaiting delivery</span><strong>{loading ? "—" : counts("awaiting")}</strong><small>OTP issued, truck still running</small></div>
       <div className="module-stat warn"><span>In review</span><strong>{loading ? "—" : counts("submitted")}</strong><small>Held by a shortage or damage</small></div>
       <div className="module-stat"><span>Verified</span><strong>{loading ? "—" : counts("verified")}</strong><small>Cleared for invoicing</small></div>
+      <div className={"module-stat" + (courierOverdueCount ? " alert" : "")}><span>Physical copy by courier</span><strong>{loading ? "—" : courierPendingCount}</strong><small>{courierOverdueCount ? `${courierOverdueCount} overdue` : "Out with a courier"}</small></div>
     </div>
     <section className="module-table-card">
       <div className="module-toolbar"><div><strong>Delivery proofs</strong><span>{shown.length} of {proofs.length}</span></div>
-        <div className="toolbar-actions">{podFilters.map(([value, label]) => <button key={value} className={value === filter ? "chip active" : "chip"} onClick={() => setFilter(value)}>{label}</button>)}</div></div>
-      <div className="table-wrap"><table><thead><tr><th>Consignment</th><th>Customer</th><th>Drop</th><th>Received by</th><th>Captured</th><th>Exception</th><th>Status</th></tr></thead>
-        <tbody>{shown.map(proof => <tr key={proof.id} className="clickable" onClick={() => { setSelected(proof); setReason(""); }}>
+        <div className="toolbar-actions wrap">{podFilters.map(([value, label]) => <button key={value} className={value === filter ? "chip active" : "chip"} onClick={() => setFilter(value)}>{label}</button>)}
+          <button className={courierOnly ? "chip active" : "chip"} onClick={() => setCourierOnly(v => !v)}>Physical copy pending</button></div></div>
+      <div className="table-wrap"><table><thead><tr><th>Consignment</th><th>Customer</th><th>Drop</th><th>Received by</th><th>Captured</th><th>Exception</th><th>Status</th><th>Physical copy</th></tr></thead>
+        <tbody>{shown.map(proof => <tr key={proof.id} className="clickable" onClick={() => { setSelected(proof); setReason(""); setLostReason(""); }}>
           <td><strong>{proof.order_number}</strong><small>{proof.tracking_number}</small></td>
           <td>{proof.customer_name}</td>
           <td>{proof.destination || "—"}</td>
@@ -1334,6 +1336,7 @@ function EpodView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify
           <td>{proof.captured_at ? new Date(proof.captured_at).toLocaleString("en-IN") : "—"}</td>
           <td>{proof.is_clean ? "Clean" : [Number(proof.shortage_kg) ? `${Number(proof.shortage_kg)} kg short` : "", proof.damage_reported ? "damage" : ""].filter(Boolean).join(" · ")}</td>
           <td><span className={"status " + proof.status}>{proof.status}</span></td>
+          <td>{proof.physical_copy_required ? <span className={"status " + (proof.courier_overdue ? "cancelled" : String(proof.courier_status).replaceAll("_", "-"))}>{proof.courier_overdue ? "overdue" : proof.courier_status.replaceAll("_", " ")}</span> : "—"}</td>
         </tr>)}</tbody></table></div>
       {!loading && !shown.length && <div className="data-state">No delivery proofs in this state.</div>}
     </section>
@@ -1384,7 +1387,202 @@ function EpodView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify
         <button className="secondary" disabled={busy || !selected.captured_at || selected.status === "rejected"} onClick={() => call(`proofs/${selected.id}/reject/`, { reason }, "ePOD sent back")}>Reject</button>
         <button className="primary" disabled={busy || !selected.captured_at || selected.status === "verified"} onClick={() => call(`proofs/${selected.id}/verify/`, {}, "ePOD verified")}>Verify</button>
       </div>
+
+      <div className="allocate-box">
+        <p className="eyebrow">PHYSICAL POD BY COURIER</p>
+        {selected.courier_status === "not_sent" ? <>
+          <p className="pod-note">Some consignees will only sign a physical copy. If the driver collected one, send it back here.</p>
+          <form className="action-form pod-capture" onSubmit={sendByCourier}>
+            <div className="form-grid">
+              <label>Courier<input name="courier_name" list="courier-names" placeholder="Blue Dart" required /></label>
+              <label>AWB / tracking number<input name="awb_number" required /></label>
+              <label>Expected by<input name="expected_by" type="date" /></label>
+              <label>Note<input name="courier_note" placeholder="Optional" /></label>
+            </div>
+            <datalist id="courier-names"><option value="India Post" /><option value="Blue Dart" /><option value="DTDC" /><option value="Professional Couriers" /><option value="Delhivery" /><option value="Ecom Express" /></datalist>
+            <button className="primary full-button" disabled={busy}>Send by courier</button>
+          </form>
+        </> : <>
+          <div className="tracking-grid">
+            <div><span>Courier</span><strong>{selected.courier_name}</strong></div>
+            <div><span>AWB</span><strong>{selected.courier_awb_number}</strong></div>
+            <div><span>Dispatched</span><strong>{selected.courier_dispatched_at ? new Date(selected.courier_dispatched_at).toLocaleDateString("en-IN") : "—"}</strong></div>
+            <div><span>Expected by</span><strong className={selected.courier_overdue ? "text-late" : ""}>{selected.courier_expected_by || "—"}{selected.courier_overdue ? " · overdue" : ""}</strong></div>
+          </div>
+          <p className={"pod-note" + (selected.courier_status === "lost" ? " warn" : "")}>
+            {selected.courier_status === "delivered" ? `Received back at the office${selected.courier_received_at ? ` on ${new Date(selected.courier_received_at).toLocaleString("en-IN")}` : ""}.`
+              : selected.courier_status === "lost" ? `Reported lost in transit.${selected.courier_remarks ? ` ${selected.courier_remarks}` : ""}`
+              : selected.courier_status === "in_transit" ? "In transit with the courier."
+              : "Dispatched, not yet marked in transit."}
+          </p>
+          {selected.courier_status !== "lost" && selected.courier_status !== "delivered" &&
+            <label className="reject-reason">If it goes missing, note why<input value={lostReason} onChange={event => setLostReason(event.target.value)} placeholder="Misplaced at the hub" /></label>}
+          {selected.courier_status !== "delivered" && <div className="record-actions">
+            {selected.courier_status === "dispatched" && <button className="secondary" disabled={busy} onClick={() => call(`proofs/${selected.id}/courier-transit/`, {}, "Marked in transit")}>In transit</button>}
+            {selected.courier_status !== "lost" && <button className="secondary" disabled={busy} onClick={reportLost}>Report lost</button>}
+            <button className="primary" disabled={busy} onClick={() => call(`proofs/${selected.id}/courier-received/`, {}, "Physical POD received")}>Mark received</button>
+          </div>}
+        </>}
+      </div>
     </aside></div>}
+  </div>;
+}
+
+const trackingFilters: [string, string][] = [
+  ["", "All"], ["dispatched", "Dispatched"], ["in_transit", "In transit"],
+  ["completed", "Delivered"], ["delayed", "Running late"],
+];
+
+const isDelayed = (order: any) =>
+  Boolean(order.scheduled_at) && !["completed", "cancelled"].includes(order.status) && new Date(order.scheduled_at) < new Date();
+
+function TrackingView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify }) {
+  const [orders, setOrders] = useState<any[]>([]);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [filter, setFilter] = useState("");
+  const [zone, setZone] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    setLoading(true);
+    fmsRequest<any>(wholeSet("orders/")).then(payload => {
+      const records = asList(payload).filter((order: any) => order.status !== "cancelled");
+      setOrders(records);
+      setSelectedId((current: number | null) => (current && records.some((order: any) => order.id === current)) ? current
+        : (records.find((order: any) => ["dispatched", "in_transit"].includes(order.status)) || records[0])?.id ?? null);
+    }).finally(() => setLoading(false));
+  };
+  useEffect(load, [reloadKey]);
+
+  const selected = orders.find(order => order.id === selectedId) || null;
+  const position = selected?.last_position;
+
+  // The zone a coordinate falls inside is a live lookup, not something the order carries.
+  useEffect(() => {
+    setZone(null);
+    if (!position?.latitude || !position?.longitude) return;
+    fmsRequest<any>(`zones/locate/?lat=${position.latitude}&lng=${position.longitude}`)
+      .then(payload => setZone(payload.zones?.[0] || null)).catch(() => undefined);
+  }, [selected?.id, position?.recorded_at]);
+
+  const shown = orders.filter(order => (filter === "delayed" ? isDelayed(order) : filter ? order.status === filter : true));
+  const active = orders.filter(order => ["dispatched", "in_transit"].includes(order.status));
+  const delayed = orders.filter(isDelayed);
+  const today = new Date().toISOString().slice(0, 10);
+  const deliveredToday = orders.filter(order => order.completed_at && String(order.completed_at).slice(0, 10) === today);
+  const avgProgress = active.length
+    ? Math.round(active.reduce((sum, order) => sum + Number(order.progress_percent || 0), 0) / active.length) : 0;
+
+  const logCheckpoint = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!selected) return;
+    const form = event.currentTarget as HTMLFormElement;
+    const data = new FormData(form);
+    setBusy(true);
+    try {
+      await fmsRequest(`orders/${selected.id}/activity/`, { method: "POST", body: JSON.stringify({
+        code: "GPS_PING", city: String(data.get("city") || ""), details: String(data.get("details") || ""),
+        latitude: data.get("latitude") || undefined, longitude: data.get("longitude") || undefined }) });
+      onAction("Checkpoint logged");
+      form.reset();
+      load();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 100) : "Could not log the checkpoint", "warn");
+    } finally { setBusy(false); }
+  };
+
+  const useDeviceLocation = (form: HTMLFormElement | null) => {
+    if (!form) return;
+    if (!navigator.geolocation) { onAction("This browser will not share its location", "warn"); return; }
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        (form.elements.namedItem("latitude") as HTMLInputElement).value = pos.coords.latitude.toFixed(6);
+        (form.elements.namedItem("longitude") as HTMLInputElement).value = pos.coords.longitude.toFixed(6);
+      },
+      () => onAction("Could not read this device's location", "warn"));
+  };
+
+  const copyLink = async (order: any) => {
+    const link = `${window.location.origin}/track?number=${order.tracking_number}`;
+    try { await navigator.clipboard.writeText(link); onAction("Tracking link copied"); }
+    catch { onAction(link, "warn"); }
+  };
+
+  // A straight-line estimate at a typical highway running speed - not a real ETA feed, but a
+  // useful number for a lane where no telematics is wired in yet.
+  const remainingKm = selected ? Number(selected.distance_km || 0) * (1 - Number(selected.progress_percent || 0) / 100) : 0;
+  const eta = selected && ["dispatched", "in_transit"].includes(selected.status)
+    ? new Date(Date.now() + (remainingKm / 40) * 3600 * 1000) : null;
+  const pinFraction = Math.min(1, Number(selected?.progress_percent || 0) / 100);
+
+  return <div className="module-page">
+    <div className="module-title"><div><p className="eyebrow">LIVE FLEET MAP</p><h2>Track fleet operations</h2><p>Where every consignment is right now, its movement history, and a link to share with the consignee.</p></div><button className="primary module-action" onClick={load}>↻ Refresh</button></div>
+    <div className="module-stats">
+      <div className="module-stat"><span>On the road</span><strong>{loading ? "—" : active.length}</strong><small>Dispatched or in transit</small></div>
+      <div className="module-stat warn"><span>Running late</span><strong>{loading ? "—" : delayed.length}</strong><small>Past their scheduled time</small></div>
+      <div className="module-stat"><span>Delivered today</span><strong>{loading ? "—" : deliveredToday.length}</strong><small>Completed since midnight</small></div>
+      <div className="module-stat"><span>Average progress</span><strong>{loading ? "—" : `${avgProgress}%`}</strong><small>Across active shipments</small></div>
+    </div>
+
+    <div className="tracking-page-layout">
+      <section className="module-table-card shipment-list">
+        <div className="module-toolbar"><div><strong>Shipments</strong><span>{shown.length} of {orders.length}</span></div></div>
+        <div className="toolbar-actions wrap">{trackingFilters.map(([value, label]) => <button key={value} className={value === filter ? "chip active" : "chip"} onClick={() => setFilter(value)}>{label}</button>)}</div>
+        <div className="shipment-rows">
+          {shown.map(order => <div key={order.id} className={"shipment-row" + (order.id === selectedId ? " active" : "")} onClick={() => setSelectedId(order.id)}>
+            <div><strong>{order.number}</strong><small>{order.pickup_city} → {order.dropoff_city}</small></div>
+            <div className="shipment-row-meta">
+              <span className={"status " + String(order.status).replaceAll("_", "-")}>{String(order.status).replaceAll("_", " ")}</span>
+              {isDelayed(order) && <span className="status cancelled">delayed</span>}
+            </div>
+            <div className="shipment-progress"><i style={{ width: `${order.progress_percent || 0}%` }} /></div>
+          </div>)}
+          {!loading && !shown.length && <div className="data-state">No shipments match this filter.</div>}
+        </div>
+      </section>
+
+      {selected ? <section className="track-detail">
+        <div className="module-toolbar"><div><strong>{selected.number}</strong><span>{selected.tracking_number}</span></div>
+          <div className="toolbar-actions"><span className={"status " + String(selected.status).replaceAll("_", "-")}>{String(selected.status).replaceAll("_", " ")}</span><button className="chip" onClick={() => copyLink(selected)}>⧉ Copy tracking link</button></div></div>
+
+        <div className="operations-map compact-map">
+          <div className="map-road r1" />
+          <span className="city start-city">{selected.pickup_city}</span>
+          <span className="city finish-city">{selected.dropoff_city}</span>
+          <span className="map-pin start">●</span>
+          <span className="map-pin finish">●</span>
+          <div className="map-progress" style={{ width: `${Math.max(4, Math.min(96, selected.progress_percent || 0))}%` }} />
+          <span className="map-pin vehicle" style={{ left: `${17 + (83 - 17) * pinFraction}%`, top: `${60 + (42 - 60) * pinFraction}%` }}>▰</span>
+        </div>
+
+        <div className="tracking-grid">
+          <div><span>Customer</span><strong>{selected.customer_name}</strong></div>
+          <div><span>Vehicle · driver</span><strong>{selected.vehicle_number || "—"} · {selected.driver_name || "—"}</strong></div>
+          <div><span>Distance</span><strong>{Number(selected.distance_km).toFixed(0)} km · {selected.progress_percent || 0}% covered</strong></div>
+          <div><span>{eta ? "Est. arrival" : "Scheduled"}</span><strong className={isDelayed(selected) ? "text-late" : ""}>{eta ? eta.toLocaleString("en-IN") : selected.scheduled_at ? new Date(selected.scheduled_at).toLocaleString("en-IN") : "—"}</strong></div>
+        </div>
+        {isDelayed(selected) && <p className="pod-note warn">Running behind its scheduled time of {new Date(selected.scheduled_at).toLocaleString("en-IN")}.</p>}
+        {position && <p className="pod-note">Last seen near <strong>{position.city || "an unnamed point"}</strong>{zone ? `, inside the ${zone.name} zone` : ""} · {new Date(position.recorded_at).toLocaleString("en-IN")}</p>}
+
+        <div className="record-timeline"><p className="eyebrow">MOVEMENT HISTORY</p>
+          {(selected.activities || []).slice(0, 8).map((activity: any) => <div key={activity.id}><i /><span><strong>{String(activity.code).replaceAll("_", " ")}</strong><small>{activity.details || activity.status}{activity.city ? ` · ${activity.city}` : ""}</small></span><time>{new Date(activity.recorded_at).toLocaleString("en-IN")}</time></div>)}
+          {!(selected.activities || []).length && <div><i /><span><strong>No activity yet</strong></span><time>—</time></div>}
+        </div>
+
+        {!["completed", "cancelled"].includes(selected.status) && <form className="action-form pod-capture" onSubmit={logCheckpoint}>
+          <p className="eyebrow">LOG A CHECKPOINT</p>
+          <div className="form-grid">
+            <label>City / landmark<input name="city" placeholder="Vadodara toll plaza" /></label>
+            <label>Note<input name="details" placeholder="Crossed toll, on schedule" /></label>
+            <label>Latitude<input name="latitude" type="number" step="any" /></label>
+            <label>Longitude<input name="longitude" type="number" step="any" /></label>
+          </div>
+          <button type="button" className="chip" onClick={event => useDeviceLocation((event.currentTarget as HTMLElement).closest("form"))}>Use device location</button>
+          <button className="primary full-button" disabled={busy}>Log checkpoint</button>
+        </form>}
+      </section> : <section className="track-detail"><div className="data-state">{loading ? "Loading shipments…" : "No shipments to track yet."}</div></section>}
+    </div>
   </div>;
 }
 
@@ -1872,7 +2070,7 @@ export default function Home() {
           <div className="top-actions"><button className="icon-button" aria-label="Search">⌕</button><button className="icon-button notification" aria-label="Notifications">♢</button><button className="primary" onClick={() => setAction("lr")}>＋ New LR booking</button></div>
         </header>
 
-        {active === "Overview" ? <div className="page-grid"><section className="quick-actions"><div><p className="eyebrow">QUICK ACTIONS</p><h2>Run daily fleet operations</h2></div><button onClick={() => setAction("lr")}><span>▤</span><b>Generate LR</b><small>Book consignment</small></button><button onClick={() => setAction("trip")}><span>▦</span><b>Create trip sheet</b><small>Allocate vehicle & driver</small></button><button onClick={() => setAction("invoice")}><span>₹</span><b>Generate invoice</b><small>Bill a completed trip</small></button><button onClick={() => setAction("tracking")}><span>⌖</span><b>Track vehicles</b><small>View live GPS map</small></button><button onClick={() => setAction("order")}><span>◈</span><b>Book order</b><small>FleetOps consignment</small></button><button onClick={() => setAction("fuel")}><span>⛽</span><b>Log diesel</b><small>Fuel & mileage entry</small></button></section>
+        {active === "Overview" ? <div className="page-grid"><section className="quick-actions"><div><p className="eyebrow">QUICK ACTIONS</p><h2>Run daily fleet operations</h2></div><button onClick={() => setAction("lr")}><span>▤</span><b>Generate LR</b><small>Book consignment</small></button><button onClick={() => setAction("trip")}><span>▦</span><b>Create trip sheet</b><small>Allocate vehicle & driver</small></button><button onClick={() => setAction("invoice")}><span>₹</span><b>Generate invoice</b><small>Bill a completed trip</small></button><button onClick={() => setActive("Tracking")}><span>⌖</span><b>Track vehicles</b><small>View live GPS map</small></button><button onClick={() => setAction("order")}><span>◈</span><b>Book order</b><small>FleetOps consignment</small></button><button onClick={() => setAction("fuel")}><span>⛽</span><b>Log diesel</b><small>Fuel & mileage entry</small></button></section>
           <section className="hero-card">
             <div><span className="live-pill"><i /> LIVE FLEET</span><h2>{dashboard?.vehicles_on_trip ?? "—"} of {dashboard?.vehicles ?? "—"} vehicles<br />are on the road</h2><p>{dashboard ? Math.round((dashboard.vehicles_on_trip / Math.max(dashboard.vehicles, 1)) * 100) : "—"}% fleet utilisation · {dashboard?.active_trips ?? "—"} active trips</p><button className="text-button" onClick={() => show("Live operations opened")}>View live operations <span>→</span></button></div>
             <div className="fleet-visual" aria-label="Fleet utilisation 78 percent"><div className="ring"><strong>{dashboard ? Math.round((dashboard.vehicles_on_trip / Math.max(dashboard.vehicles, 1)) * 100) : "—"}%</strong><span>utilised</span></div><div className="route-line"><span className="pin one" /><span className="truck">▰</span><span className="pin two" /></div></div>
@@ -1898,9 +2096,9 @@ export default function Home() {
             <div className="section-heading"><div><p className="eyebrow">ACTIVE MOVEMENT</p><h2>Recent trips</h2></div><button className="link-button" onClick={() => show("All trips opened")}>View all trips →</button></div>
             <div className="table-wrap"><table><thead><tr><th>Trip & route</th><th>Vehicle</th><th>Driver</th><th>Status</th><th>ETA / POD</th><th>Revenue</th></tr></thead><tbody>{(dashboard?.recent_trips || []).map((t: any) => <tr key={t.id}><td><strong>{t.number}</strong><small>{t.origin} → {t.destination}</small></td><td>{t.vehicle_number}</td><td>{t.driver_name}</td><td><span className={`status ${t.status.toLowerCase().replaceAll("_","-")}`}>{t.status.replaceAll("_"," ")}</span></td><td>{t.planned_departure ? new Date(t.planned_departure).toLocaleString("en-IN") : "—"}</td><td><strong>₹{Number(t.estimated_cost || 0).toLocaleString("en-IN")}</strong></td></tr>)}</tbody></table></div>
           </section>
-        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
+        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Tracking" ? <TrackingView reloadKey={dataVersion} onAction={show} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
       </section>
-      {action && <ActionPanel type={action} onClose={() => setAction("")} onCreated={() => setDataVersion(v => v + 1)} onDone={(message) => { show(message); if (action !== "tracking") setAction(""); }} />}
+      {action && <ActionPanel type={action} onClose={() => setAction("")} onCreated={() => setDataVersion(v => v + 1)} />}
       {toast && <div className={"toast " + toast.tone}>{toast.tone === "warn" ? "⚠" : "✓"} {toast.text}</div>}
     </main>
   );

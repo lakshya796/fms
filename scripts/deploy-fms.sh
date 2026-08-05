@@ -170,6 +170,13 @@ else:
     print('exists')
 \"")
 echo "admin login '$ADMIN_USER': $CREATED"
+# Only report a password that was actually set. On a re-run the login already exists
+# and keeps the password it had, so printing the freshly generated one would be a lie.
+if [ "$CREATED" = "created" ]; then
+  ADMIN_LINE="console login   $ADMIN_USER / $ADMIN_PASSWORD"
+else
+  ADMIN_LINE="console login   $ADMIN_USER / unchanged (re-run with ADMIN_PASSWORD='...' to reset it)"
+fi
 
 say "5. Flip and restart"
 ln -sfn "$REL" "$APP/current"
@@ -204,7 +211,7 @@ cat <<DONE
   release   $REL
   rollback  ${PREV:-none}${PREV:+  ->  ln -sfn $PREV $APP/current && sudo systemctl restart $SERVICE}
 
-  console login   $ADMIN_USER / $ADMIN_PASSWORD
+  $ADMIN_LINE
   API token       $TOKEN
 
 The console is deployed separately - trigger an Amplify rebuild of $BRANCH, with

@@ -13,8 +13,8 @@ from django.db import transaction
 from django.utils import timezone
 
 from fleet.models import (Customer, Driver, Vehicle, Vendor, ServiceArea, Zone, Place, Fleet, ServiceRate, Order,
-                          Trip, Waypoint, Indent, ProofOfDelivery, FuelEntry, TripExpense, Issue, ComplianceDocument,
-                          MaintenanceSchedule)
+                          Trip, Waypoint, Indent, TrackingActivity, ProofOfDelivery, FuelEntry, TripExpense, Issue,
+                          ComplianceDocument, MaintenanceSchedule)
 
 SERVICE_AREAS = [
     ("West India", "WEST", "Maharashtra, Gujarat, Goa", 19.076, 72.8777),
@@ -153,19 +153,24 @@ class Command(BaseCommand):
             name="Tata Consumer Products", gstin="27AAACT2727Q1ZW", pan="AAACT2727Q", phone="+912266001100",
             email="logistics@tataconsumer.example", credit_limit=800000, kyc_status="verified")
 
+        # (pickup, dropoff, rate, type, distance, weight, payload, status, scheduled offset from now)
+        # The in-transit lane is scheduled in the past deliberately, so the tracking page has a
+        # real "running late" consignment to show rather than everything arriving on time.
         lanes = [
-            ("PL-BHW", "PL-CKN", "RC-MUMPUN", "ftl", 149, 12400, "Packaged food cartons", "dispatched"),
-            ("PL-TLJ", "PL-ASL", "RC-GJTON", "ftl", 522, 9800, "Paint drums", "in_transit"),
-            ("PL-KND", "PL-STP", "RC-NCRKG", "ptl", 288, 4200, "Electrical fittings", "created"),
-            ("PL-NLM", "PL-SPB", "RC-SOUTHFTL", "ftl", 347, 15200, "White goods", "completed"),
+            ("PL-BHW", "PL-CKN", "RC-MUMPUN", "ftl", 149, 12400, "Packaged food cartons", "dispatched", timedelta(hours=5)),
+            ("PL-TLJ", "PL-ASL", "RC-GJTON", "ftl", 522, 9800, "Paint drums", "in_transit", -timedelta(hours=3)),
+            ("PL-KND", "PL-STP", "RC-NCRKG", "ptl", 288, 4200, "Electrical fittings", "created", timedelta(days=2)),
+            ("PL-NLM", "PL-SPB", "RC-SOUTHFTL", "ftl", 347, 15200, "White goods", "completed", -timedelta(days=1, hours=6)),
         ]
         orders = []
-        for index, (pickup, dropoff, rate_code, order_type, distance, weight, payload, status) in enumerate(lanes, start=1):
+        for index, (pickup, dropoff, rate_code, order_type, distance, weight, payload, status, schedule_offset) in enumerate(lanes, start=1):
             order, _ = Order.objects.update_or_create(number=f"ORD-DEMO-{index:03d}", defaults={
                 "customer": customer, "order_type": order_type, "service_rate": rates[rate_code],
                 "pickup": places[pickup], "dropoff": places[dropoff], "distance_km": distance, "weight_kg": weight,
                 "payload_description": payload, "packages": 240 + index * 30, "declared_value": 450000,
-                "scheduled_at": timezone.now() + timedelta(hours=index * 6), "status": status,
+                "scheduled_at": timezone.now() + schedule_offset, "status": status,
+                "dispatched_at": timezone.now() - timedelta(hours=20) if status in ("dispatched", "in_transit", "completed") else None,
+                "completed_at": timezone.now() - timedelta(hours=2) if status == "completed" else None,
                 "payment_mode": "to_pay", "eway_bill_number": f"2712345678{index:02d}"})
             order.price_from_rate_card()
             if status in ("dispatched", "in_transit", "completed"):
@@ -182,10 +187,40 @@ class Command(BaseCommand):
                           city=places[pickup].city)
             orders.append(order)
 
+        # GPS trail: interpolate points along the pickup-dropoff line so a truck actually on the
+        # road has a movement history to show, not just its booking event.
+        def along(order, fraction):
+            pickup_lat, pickup_lng = float(order.pickup.latitude), float(order.pickup.longitude)
+            drop_lat, drop_lng = float(order.dropoff.latitude), float(order.dropoff.longitude)
+            return (round(pickup_lat + (drop_lat - pickup_lat) * fraction, 6),
+                    round(pickup_lng + (drop_lng - pickup_lng) * fraction, 6))
+
+        def ping(order, tag, minutes_ago, fraction, city, details):
+            lat, lng = along(order, fraction)
+            TrackingActivity.objects.update_or_create(order=order, code=tag, defaults={
+                "status": order.status, "details": details, "city": city, "latitude": lat, "longitude": lng,
+                "recorded_at": timezone.now() - timedelta(minutes=minutes_ago)})
+
+        dispatched_order = orders[0]
+        ping(dispatched_order, "GPS_PING_1", 180, 0.12, "Bhiwandi", "Left Bhiwandi warehouse, on NH-3 towards Chakan")
+        ping(dispatched_order, "GPS_PING_2", 45, 0.28, "Kalyan", "Crossed Kalyan toll plaza")
+
+        in_transit_order = orders[1]
+        ping(in_transit_order, "GPS_PING_1", 17 * 60, 0.18, "Taloja", "Left Taloja plant, joined NH-48")
+        ping(in_transit_order, "TOLL_CROSSED", 12 * 60, 0.41, "Vadodara", "Crossed Vadodara toll plaza")
+        ping(in_transit_order, "CHECKPOST_HOLD", 5 * 60, 0.63, "Godhra", "Held 40 minutes at Godhra RTO check post for document verification")
+        ping(in_transit_order, "GPS_PING_2", 22, 0.79, "Ahmedabad", "Approaching Ahmedabad ring road")
+
+        completed_order = orders[3]
+        ping(completed_order, "GPS_PING_1", 26 * 60, 0.35, "Nelamangala", "Left Nelamangala hub, on NH-48 towards Chennai")
+        ping(completed_order, "GPS_PING_2", 6 * 60, 0.88, "Sriperumbudur", "Approaching Sriperumbudur")
+
         # ePOD: one drop already cleared, one truck approaching its drop with the OTP
         # issued, and one capture held back by a shortage so the review queue is not empty.
         for order in orders:
             if order.status == "completed":
+                # The consignee only signs a physical copy, so the driver couriered it back -
+                # already received at the office, a closed loop.
                 proof, _ = ProofOfDelivery.objects.update_or_create(order=order, defaults={
                     "proof_type": "signature", "receiver_name": "Mahesh Rao", "receiver_phone": "+919845012233",
                     "file_url": "https://phloz.example/pod/demo-signed-lr.jpg", "otp": "204813",
@@ -193,18 +228,28 @@ class Command(BaseCommand):
                     "captured_at": timezone.now() - timedelta(days=1), "status": "verified",
                     "verified_at": timezone.now() - timedelta(hours=20), "verified_by": "Confirmed at delivery",
                     "latitude": order.dropoff.latitude, "longitude": order.dropoff.longitude,
-                    "remarks": "Delivered in full, seal intact"})
+                    "remarks": "Delivered in full, seal intact",
+                    "physical_copy_required": True, "courier_name": "Blue Dart", "courier_awb_number": "BD77410238842",
+                    "courier_status": "delivered", "courier_dispatched_at": timezone.now() - timedelta(hours=20),
+                    "courier_expected_by": timezone.localdate() - timedelta(days=1),
+                    "courier_received_at": timezone.now() - timedelta(hours=2)})
             elif order.status == "in_transit":
                 ProofOfDelivery.objects.update_or_create(order=order, defaults={
                     "proof_type": "otp", "receiver_phone": "+919820044556", "otp": "778120",
                     "otp_issued_at": timezone.now() - timedelta(hours=1), "status": "awaiting"})
             elif order.status == "dispatched":
+                # Held for review over a shortage, and its physical copy is overdue from the
+                # courier too - two independent problems the office needs to chase.
                 ProofOfDelivery.objects.update_or_create(order=order, defaults={
                     "proof_type": "photo", "receiver_name": "Gate supervisor", "receiver_phone": "+919930077889",
                     "otp": "551204", "otp_issued_at": timezone.now() - timedelta(hours=5), "otp_verified": True,
                     "captured_at": timezone.now() - timedelta(hours=4), "status": "submitted",
                     "shortage_kg": Decimal("120.00"), "damage_reported": True,
-                    "remarks": "Two cartons crushed, 120 kg short against the LR"})
+                    "remarks": "Two cartons crushed, 120 kg short against the LR",
+                    "physical_copy_required": True, "courier_name": "DTDC", "courier_awb_number": "DT99201847756",
+                    "courier_status": "dispatched", "courier_dispatched_at": timezone.now() - timedelta(days=5),
+                    "courier_expected_by": timezone.localdate() - timedelta(days=2),
+                    "courier_remarks": "Consignee's stores clerk was to countersign before dispatch"})
 
         for index, (registration, vehicle) in enumerate(vehicles.items()):
             # Two fills 1,000 km apart on 260 litres works out to a realistic 3.8 km/l for a loaded 32 ft truck.

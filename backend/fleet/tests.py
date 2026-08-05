@@ -171,6 +171,39 @@ class OrderLifecycleTests(BaseFleetOpsTest):
         self.assertNotIn("total_amount", response.data)
         self.assertEqual(anonymous.get("/api/v1/track/PHZ-does-not-exist/").status_code, 404)
 
+    def test_progress_and_position_track_the_most_recent_gps_fix(self):
+        order = self.create_order()
+        self.assertIsNone(order.current_position())
+        self.assertEqual(order.progress_percent, 0)   # freshly booked, not moving
+
+        halfway_lat = (self.pickup.latitude + self.dropoff.latitude) / 2
+        halfway_lng = (self.pickup.longitude + self.dropoff.longitude) / 2
+        order.log("dispatched", "GPS_PING_1", "Midway", halfway_lat, halfway_lng, city="En route")
+        order.status = "dispatched"; order.save(update_fields=["status"])
+        self.assertAlmostEqual(order.progress_percent, 50, delta=2)
+
+        # A later fix without coordinates (a desk status change) must not shadow the GPS one.
+        order.log("in_transit", "STATUS_CHANGED", "Marked in transit from the desk")
+        self.assertEqual(order.current_position().code, "GPS_PING_1")
+
+        order.status = "completed"; order.save(update_fields=["status"])
+        self.assertEqual(order.progress_percent, 100)
+
+        response = self.client.get(f"/api/v1/orders/{order.id}/")
+        self.assertEqual(response.data["progress_percent"], 100)
+        self.assertEqual(response.data["last_position"]["code"], "GPS_PING_1")
+        self.assertEqual(float(response.data["pickup_latitude"]), float(self.pickup.latitude))
+
+    def test_public_tracking_exposes_progress_but_not_coordinates(self):
+        order = self.create_order()
+        order.log("dispatched", "GPS_PING_1", "Midway", self.pickup.latitude, self.pickup.longitude, city="Bhiwandi")
+        order.status = "dispatched"; order.save(update_fields=["status"])
+        response = APIClient().get(f"/api/v1/track/{order.tracking_number}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("progress_percent", response.data)
+        self.assertEqual(response.data["last_position"]["city"], "Bhiwandi")
+        self.assertNotIn("latitude", response.data["last_position"])
+
     def test_order_list_supports_filtering_and_search(self):
         first = self.create_order()
         self.create_order(order_type="ptl")
@@ -255,6 +288,77 @@ class EpodWorkflowTests(OrderLifecycleTests):
         order.pod_required = False
         order.save(update_fields=["pod_required"])
         self.assertEqual(self.client.post(f"/api/v1/orders/{order.id}/complete/", {}, format="json").status_code, 200)
+
+
+class PhysicalPodCourierTests(OrderLifecycleTests):
+    """The signed physical copy a consignee insists on, tracked back to the office by courier."""
+
+    def capture(self, order):
+        self.client.post(f"/api/v1/orders/{order.id}/assign/", {"driver": self.driver.id, "vehicle": self.vehicle.id}, format="json")
+        self.client.post(f"/api/v1/orders/{order.id}/dispatch/")
+        issued = self.client.post(f"/api/v1/orders/{order.id}/pod-request/", {}, format="json")
+        submitted = self.client.post(f"/api/v1/orders/{order.id}/pod-submit/",
+                                     {"receiver_name": "Store manager", "otp": issued.data["otp"]}, format="json")
+        return submitted.data["id"]
+
+    def test_dispatch_requires_a_courier_and_awb(self):
+        order = self.create_order()
+        proof_id = self.capture(order)
+        missing = self.client.post(f"/api/v1/proofs/{proof_id}/courier-dispatch/", {"courier_name": "Blue Dart"}, format="json")
+        self.assertEqual(missing.status_code, 400)
+        self.assertEqual(ProofOfDelivery.objects.get(pk=proof_id).courier_status, "not_sent")
+
+    def test_full_courier_round_trip(self):
+        order = self.create_order()
+        proof_id = self.capture(order)
+
+        dispatched = self.client.post(f"/api/v1/proofs/{proof_id}/courier-dispatch/", {
+            "courier_name": "Blue Dart", "awb_number": "BD77410238842",
+            "expected_by": str(timezone.localdate() + timedelta(days=4))}, format="json")
+        self.assertEqual(dispatched.status_code, 200, dispatched.data)
+        self.assertEqual(dispatched.data["courier_status"], "dispatched")
+        self.assertTrue(dispatched.data["physical_copy_required"])
+        self.assertEqual([a.code for a in order.activities.all()][0], "POD_COURIER_DISPATCHED")
+
+        pending = self.client.get("/api/v1/proofs/couriers-pending/")
+        self.assertEqual(pending.data["count"], 1)
+
+        transit = self.client.post(f"/api/v1/proofs/{proof_id}/courier-transit/", {}, format="json")
+        self.assertEqual(transit.data["courier_status"], "in_transit")
+
+        received = self.client.post(f"/api/v1/proofs/{proof_id}/courier-received/", {}, format="json")
+        self.assertEqual(received.status_code, 200)
+        self.assertEqual(received.data["courier_status"], "delivered")
+        self.assertIsNotNone(received.data["courier_received_at"])
+        self.assertEqual([a.code for a in order.activities.all()][0], "POD_COURIER_RECEIVED")
+
+        # Once received it drops off the pending queue.
+        self.assertEqual(self.client.get("/api/v1/proofs/couriers-pending/").data["count"], 0)
+
+    def test_a_copy_can_be_reported_lost(self):
+        order = self.create_order()
+        proof_id = self.capture(order)
+        self.client.post(f"/api/v1/proofs/{proof_id}/courier-dispatch/",
+                         {"courier_name": "DTDC", "awb_number": "DT99201847756"}, format="json")
+        lost = self.client.post(f"/api/v1/proofs/{proof_id}/courier-lost/", {"remarks": "Consignment misplaced at the hub"}, format="json")
+        self.assertEqual(lost.data["courier_status"], "lost")
+        self.assertEqual([a.code for a in order.activities.all()][0], "POD_COURIER_LOST")
+        # Lost is not resolved - it still needs a human decision, so it stays on the watchlist.
+        self.assertEqual(self.client.get("/api/v1/proofs/couriers-pending/").data["count"], 1)
+
+    def test_transit_and_receipt_need_a_prior_dispatch(self):
+        order = self.create_order()
+        proof_id = self.capture(order)
+        self.assertEqual(self.client.post(f"/api/v1/proofs/{proof_id}/courier-transit/", {}, format="json").status_code, 400)
+        self.assertEqual(self.client.post(f"/api/v1/proofs/{proof_id}/courier-received/", {}, format="json").status_code, 400)
+        self.assertEqual(self.client.post(f"/api/v1/proofs/{proof_id}/courier-lost/", {}, format="json").status_code, 400)
+
+    def test_overdue_flag_only_applies_while_still_out(self):
+        proof = ProofOfDelivery.objects.create(order=self.create_order())
+        proof.dispatch_by_courier("India Post", "IP4471023", expected_by=timezone.localdate() - timedelta(days=2))
+        self.assertTrue(proof.courier_overdue)
+        proof.receive_from_courier()
+        self.assertFalse(proof.courier_overdue)   # back at the office, lateness no longer matters
 
 
 class AutomaticInvoiceTests(OrderLifecycleTests):

@@ -120,7 +120,7 @@ class SettlementViewSet(viewsets.ModelViewSet):
 
 
 # --- Fleetbase FleetOps inspired endpoints ---------------------------------
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from uuid import uuid4
 from django.db.models import Avg, Count, F, Q
@@ -498,7 +498,7 @@ class TrackingActivityViewSet(FilterableViewSet):
 class ProofOfDeliveryViewSet(FilterableViewSet):
     queryset = ProofOfDelivery.objects.select_related("order", "order__customer", "order__dropoff").all()
     serializer_class = ProofOfDeliverySerializer
-    filter_fields = ["order", "proof_type", "status", "damage_reported"]
+    filter_fields = ["order", "proof_type", "status", "damage_reported", "physical_copy_required", "courier_status"]
     search_fields = ["receiver_name", "receiver_phone", "order__number", "order__tracking_number"]
 
     @action(detail=False, methods=["get"])
@@ -534,6 +534,59 @@ class ProofOfDeliveryViewSet(FilterableViewSet):
         proof.verified_by = ""
         proof.save(update_fields=["status", "rejection_reason", "verified_at", "verified_by", "updated_at"])
         proof.order.log(proof.order.status, "POD_REJECTED", reason[:240])
+        return Response(self.get_serializer(proof).data)
+
+    # --- physical copy by courier -------------------------------------------
+    # Some consignees only sign a physical LR/POD. The driver collects it and sends it back by
+    # courier - tracked here as state this office updates by hand, with no live courier API.
+
+    @action(detail=False, methods=["get"], url_path="couriers-pending")
+    def couriers_pending(self, request):
+        """Physical copies still out with a courier, oldest dispatch first."""
+        records = self.get_queryset().filter(physical_copy_required=True).exclude(courier_status="delivered").order_by("courier_dispatched_at")
+        return Response({"count": records.count(), "proofs": self.get_serializer(records, many=True).data})
+
+    @action(detail=True, methods=["post"], url_path="courier-dispatch")
+    def courier_dispatch(self, request, pk=None):
+        proof = self.get_object()
+        name = (request.data.get("courier_name") or "").strip()
+        awb = (request.data.get("awb_number") or "").strip()
+        if not name or not awb:
+            raise ValidationError("Courier name and AWB number are required to dispatch the physical POD.")
+        expected_by = request.data.get("expected_by") or None
+        if expected_by:
+            try:
+                expected_by = date.fromisoformat(str(expected_by))
+            except ValueError:
+                raise ValidationError("expected_by must be a date in YYYY-MM-DD format.")
+        proof.dispatch_by_courier(name, awb, expected_by=expected_by, remarks=request.data.get("remarks", ""))
+        proof.order.log(proof.order.status, "POD_COURIER_DISPATCHED", f"Physical POD sent via {name}, AWB {awb}")
+        return Response(self.get_serializer(proof).data)
+
+    @action(detail=True, methods=["post"], url_path="courier-transit")
+    def courier_transit(self, request, pk=None):
+        proof = self.get_object()
+        if proof.courier_status not in ("dispatched", "in_transit"):
+            raise ValidationError("This physical copy has not been dispatched by courier yet.")
+        proof.mark_courier_in_transit()
+        return Response(self.get_serializer(proof).data)
+
+    @action(detail=True, methods=["post"], url_path="courier-received")
+    def courier_received(self, request, pk=None):
+        proof = self.get_object()
+        if proof.courier_status == "not_sent":
+            raise ValidationError("This physical copy has not been dispatched by courier yet.")
+        proof.receive_from_courier()
+        proof.order.log(proof.order.status, "POD_COURIER_RECEIVED", f"Physical POD received back from {proof.courier_name}")
+        return Response(self.get_serializer(proof).data)
+
+    @action(detail=True, methods=["post"], url_path="courier-lost")
+    def courier_lost(self, request, pk=None):
+        proof = self.get_object()
+        if proof.courier_status == "not_sent":
+            raise ValidationError("This physical copy has not been dispatched by courier yet.")
+        proof.mark_courier_lost(request.data.get("remarks", ""))
+        proof.order.log(proof.order.status, "POD_COURIER_LOST", f"Physical POD lost in transit with {proof.courier_name}")
         return Response(self.get_serializer(proof).data)
 
 

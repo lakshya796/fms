@@ -399,6 +399,36 @@ class Order(Timestamped):
         return TrackingActivity.objects.create(order=self, status=status, code=code, details=details,
                                                latitude=latitude, longitude=longitude, city=city, recorded_at=timezone.now())
 
+    def current_position(self):
+        """The most recent tracking activity that carries a GPS fix, if any.
+
+        `activities` is ordered newest first, so the first hit is the latest ping -
+        not every activity carries coordinates (a status change logged from the desk
+        usually does not), so this skips past the ones that don't.
+        """
+        for activity in self.activities.all():
+            if activity.latitude is not None and activity.longitude is not None:
+                return activity
+        return None
+
+    @property
+    def progress_percent(self):
+        """How far along the lane the last GPS fix puts the truck, 0-100.
+
+        A straight-line estimate against the lane's own straight-line distance (both
+        computed with the same haversine formula), so it is consistent even though
+        neither is the actual road distance.
+        """
+        if self.status == "completed":
+            return 100
+        if self.status in ("created", "cancelled") or not self.distance_km:
+            return 0
+        position = self.current_position()
+        if not position or self.pickup.latitude is None or self.pickup.longitude is None:
+            return 0
+        covered = haversine_km(self.pickup.latitude, self.pickup.longitude, position.latitude, position.longitude)
+        return max(0, min(100, round(covered / float(self.distance_km) * 100)))
+
     def __str__(self):
         return self.number
 
@@ -445,6 +475,9 @@ class TrackingActivity(Timestamped):
 POD_STATUSES = [("awaiting", "Awaiting delivery"), ("submitted", "Submitted, awaiting review"),
                 ("verified", "Verified"), ("rejected", "Rejected")]
 
+COURIER_STATUSES = [("not_sent", "Not sent"), ("dispatched", "Dispatched"), ("in_transit", "In transit"),
+                    ("delivered", "Received at office"), ("lost", "Lost in transit")]
+
 
 class ProofOfDelivery(Timestamped):
     """ePOD for a consignment: an OTP issued to the consignee, what the driver captured
@@ -473,9 +506,21 @@ class ProofOfDelivery(Timestamped):
     verified_by = models.CharField(max_length=150, blank=True)
     rejection_reason = models.CharField(max_length=240, blank=True)
 
+    # Some consignees will only sign a physical copy, so the driver collects it and it comes
+    # back to the office by courier - a second, slower channel alongside the digital ePOD above,
+    # tracked here rather than with a live courier-API integration.
+    physical_copy_required = models.BooleanField(default=False, help_text="A signed physical POD/LR must also come back by courier")
+    courier_name = models.CharField(max_length=80, blank=True, help_text="e.g. India Post, Blue Dart, DTDC, Professional Couriers")
+    courier_awb_number = models.CharField(max_length=40, blank=True, help_text="The courier's own tracking / AWB number")
+    courier_status = models.CharField(max_length=20, choices=COURIER_STATUSES, default="not_sent")
+    courier_dispatched_at = models.DateTimeField(null=True, blank=True)
+    courier_expected_by = models.DateField(null=True, blank=True)
+    courier_received_at = models.DateTimeField(null=True, blank=True)
+    courier_remarks = models.CharField(max_length=240, blank=True)
+
     class Meta:
         ordering = ["-created_at"]
-        indexes = [models.Index(fields=["status", "-created_at"])]
+        indexes = [models.Index(fields=["status", "-created_at"]), models.Index(fields=["courier_status"])]
         verbose_name_plural = "proofs of delivery"
 
     OTP_VALID_FOR = timedelta(hours=24)
@@ -513,6 +558,40 @@ class ProofOfDelivery(Timestamped):
         else:
             self.status = "submitted"
         return self.status
+
+    def dispatch_by_courier(self, courier_name, awb_number, expected_by=None, remarks=""):
+        """The driver has handed the signed physical copy to a courier."""
+        self.physical_copy_required = True
+        self.courier_name = courier_name
+        self.courier_awb_number = awb_number
+        self.courier_expected_by = expected_by
+        self.courier_remarks = remarks or self.courier_remarks
+        self.courier_status = "dispatched"
+        self.courier_dispatched_at = timezone.now()
+        self.courier_received_at = None
+        self.save(update_fields=["physical_copy_required", "courier_name", "courier_awb_number", "courier_expected_by",
+                                 "courier_remarks", "courier_status", "courier_dispatched_at", "courier_received_at", "updated_at"])
+
+    def mark_courier_in_transit(self):
+        self.courier_status = "in_transit"
+        self.save(update_fields=["courier_status", "updated_at"])
+
+    def receive_from_courier(self):
+        """The physical copy has reached the office."""
+        self.courier_status = "delivered"
+        self.courier_received_at = timezone.now()
+        self.save(update_fields=["courier_status", "courier_received_at", "updated_at"])
+
+    def mark_courier_lost(self, remarks=""):
+        self.courier_status = "lost"
+        self.courier_remarks = remarks or self.courier_remarks
+        self.save(update_fields=["courier_status", "courier_remarks", "updated_at"])
+
+    @property
+    def courier_overdue(self):
+        """Past its expected date and still out with the courier."""
+        return (self.courier_status in ("dispatched", "in_transit") and bool(self.courier_expected_by)
+                and self.courier_expected_by < timezone.localdate())
 
     def __str__(self):
         return f"POD {self.order_id} ({self.status})"
