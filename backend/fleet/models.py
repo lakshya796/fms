@@ -1,4 +1,5 @@
 from datetime import timedelta
+from secrets import randbelow
 from uuid import uuid4
 from decimal import Decimal, ROUND_HALF_UP
 from math import asin, cos, radians, sin, sqrt
@@ -63,9 +64,21 @@ class TrackingEvent(Timestamped):
 
 class Invoice(Timestamped):
     number=models.CharField(max_length=30,unique=True); customer=models.ForeignKey(Customer,on_delete=models.PROTECT,related_name="invoices")
-    trip=models.ForeignKey(Trip,on_delete=models.PROTECT,related_name="invoices"); freight_amount=models.DecimalField(max_digits=12,decimal_places=2)
+    trip=models.ForeignKey(Trip,on_delete=models.PROTECT,related_name="invoices",null=True,blank=True)
+    freight_amount=models.DecimalField(max_digits=12,decimal_places=2,default=0)
     additional_charges=models.DecimalField(max_digits=12,decimal_places=2,default=0); tax_amount=models.DecimalField(max_digits=12,decimal_places=2,default=0)
-    total_amount=models.DecimalField(max_digits=12,decimal_places=2); due_date=models.DateField(); status=models.CharField(max_length=20,default="draft")
+    total_amount=models.DecimalField(max_digits=12,decimal_places=2,default=0); due_date=models.DateField(); status=models.CharField(max_length=20,default="draft")
+    order=models.ForeignKey("Order",on_delete=models.SET_NULL,null=True,blank=True,related_name="invoices",
+                           help_text="The consignment this bills. Freight and GST are taken from it.")
+    gst_percent=models.DecimalField(max_digits=5,decimal_places=2,default=0)
+    reverse_charge=models.BooleanField(default=False,help_text="GST payable by the consignee under RCM")
+    place_of_supply=models.CharField(max_length=80,blank=True)
+
+    def save(self,*args,**kwargs):
+        # The total is always the sum of its parts; typing it by hand invites mistakes.
+        self.total_amount = money(self.freight_amount) + money(self.additional_charges) + money(self.tax_amount)
+        super().save(*args,**kwargs)
+
     def __str__(self): return self.number
 
 class Settlement(Timestamped):
@@ -429,28 +442,80 @@ class TrackingActivity(Timestamped):
         return f"{self.order_id} {self.code}"
 
 
+POD_STATUSES = [("awaiting", "Awaiting delivery"), ("submitted", "Submitted, awaiting review"),
+                ("verified", "Verified"), ("rejected", "Rejected")]
+
+
 class ProofOfDelivery(Timestamped):
-    """ePOD captured at a stop: signature, photo or delivery OTP (Fleetbase Proof)."""
+    """ePOD for a consignment: an OTP issued to the consignee, what the driver captured
+    at the drop, and the office review that follows.
+
+    An order that requires proof cannot be completed, and cannot be invoiced, until a
+    proof here reaches `verified`.
+    """
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="proofs")
     waypoint = models.ForeignKey(Waypoint, on_delete=models.SET_NULL, null=True, blank=True, related_name="proofs")
     proof_type = models.CharField(max_length=20, default="signature")
     receiver_name = models.CharField(max_length=120, blank=True)
     receiver_phone = models.CharField(max_length=20, blank=True)
     remarks = models.CharField(max_length=240, blank=True)
-    file_url = models.URLField(blank=True)
-    otp = models.CharField(max_length=6, blank=True)
+    file_url = models.URLField(blank=True, help_text="Signature image, photo of the signed LR, or scanned POD")
+    otp = models.CharField(max_length=6, blank=True, help_text="Issued to the consignee, quoted back by the driver")
+    otp_issued_at = models.DateTimeField(null=True, blank=True)
     otp_verified = models.BooleanField(default=False)
     shortage_kg = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     damage_reported = models.BooleanField(default=False)
     latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    captured_at = models.DateTimeField(default=timezone.now)
+    captured_at = models.DateTimeField(null=True, blank=True, help_text="When the driver submitted it")
+    status = models.CharField(max_length=20, choices=POD_STATUSES, default="awaiting")
+    verified_at = models.DateTimeField(null=True, blank=True)
+    verified_by = models.CharField(max_length=150, blank=True)
+    rejection_reason = models.CharField(max_length=240, blank=True)
 
     class Meta:
-        ordering = ["-captured_at"]
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["status", "-created_at"])]
+        verbose_name_plural = "proofs of delivery"
+
+    OTP_VALID_FOR = timedelta(hours=24)
+
+    def issue_otp(self):
+        """Generate the code the consignee quotes to the driver at the drop."""
+        self.otp = f"{randbelow(1000000):06d}"
+        self.otp_issued_at = timezone.now()
+        self.otp_verified = False
+        self.status = "awaiting"
+        self.save(update_fields=["otp", "otp_issued_at", "otp_verified", "status", "updated_at"])
+        return self.otp
+
+    @property
+    def otp_expired(self):
+        return bool(self.otp_issued_at) and timezone.now() - self.otp_issued_at > self.OTP_VALID_FOR
+
+    @property
+    def is_clean(self):
+        """No shortage and no damage, so it can clear review without a second look."""
+        return not self.damage_reported and not self.shortage_kg
+
+    def settle(self):
+        """Decide where a fresh capture lands.
+
+        An OTP the consignee quoted back, or a signed POD on file, with nothing short
+        and nothing damaged, clears on its own. Everything else waits for the office,
+        because a shortage becomes a deduction on the bill.
+        """
+        confirmed = self.otp_verified or bool(self.file_url)
+        if confirmed and self.is_clean:
+            self.status = "verified"
+            self.verified_at = timezone.now()
+            self.verified_by = self.verified_by or "Confirmed at delivery"
+        else:
+            self.status = "submitted"
+        return self.status
 
     def __str__(self):
-        return f"POD {self.order_id}"
+        return f"POD {self.order_id} ({self.status})"
 
 
 class FuelEntry(Timestamped):

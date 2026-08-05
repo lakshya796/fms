@@ -5,7 +5,7 @@ import { UNAUTHORISED_EVENT, fmsRequest, login, logout } from "./lib/fms-api";
 
 const navGroups: { label: string; items: [string, string][] }[] = [
   { label: "WORKSPACE", items: [["Overview", "⌂"], ["Analytics", "◎"]] },
-  { label: "TRANSPORT", items: [["Indents", "◰"], ["Dispatch", "▦"], ["Orders", "◈"], ["Tracking", "⌖"], ["Operations", "▤"]] },
+  { label: "TRANSPORT", items: [["Indents", "◰"], ["Dispatch", "▦"], ["Orders", "◈"], ["ePOD", "✍"], ["Tracking", "⌖"], ["Operations", "▤"]] },
   { label: "COMMERCIAL", items: [["Customers", "◇"], ["Sales", "↗"], ["Rates", "⚖"], ["Invoices", "▥"]] },
   { label: "FLEET", items: [["Fleet", "▱"], ["Fleets", "▩"], ["Drivers", "♙"], ["Maintenance", "⚒"], ["Compliance", "▣"], ["Fuel", "⛽"], ["Issues", "⚠"]] },
   { label: "NETWORK", items: [["Vendors", "⌸"], ["Places", "⌂"], ["Service areas", "◫"], ["Zones", "◍"]] },
@@ -124,8 +124,8 @@ const modules: Record<string, { eyebrow: string; title: string; action: string; 
   Invoices: {
     eyebrow: "BILLING & COLLECTIONS", title: "Customer invoices", action: "+ Generate invoice", actionType: "invoice",
     stats: [["Unbilled trips", "₹3.2L", "7 PODs received"], ["Outstanding", "₹12.8L", "₹5.6L overdue"], ["Collected this month", "₹18.6L", "92% of target"]],
-    columns: ["Invoice", "Customer", "Invoice date", "Amount", "Payment status"],
-    rows: [["INV-2026-0842", "Tata Consumer", "02 Aug 2026", "₹2,48,600", "Payment due"], ["INV-2026-0838", "Asian Paints", "30 Jul 2026", "₹1,86,250", "Paid"], ["INV-2026-0831", "V-Guard", "26 Jul 2026", "₹3,12,400", "Overdue"], ["INV-2026-0824", "Havells India", "18 Jul 2026", "₹2,74,800", "Part paid"]]
+    blurb: "Raised from the consignment, so freight and GST always match the rate card. Bill a delivered order from its drawer on the Orders board.",
+    columns: ["Invoice", "Customer", "Against", "Due date", "Amount", "Payment status"],
   }
 };
 
@@ -696,7 +696,7 @@ const liveModules: Record<string, { endpoint: string; map: (record: any) => stri
   Operations: { endpoint: "lorry-receipts/", map: r => [r.number, r.consignor + " → " + r.consignee, r.origin + " → " + r.destination, r.eway_bill_number || "—", r.status] },
   Fleet: { endpoint: "vehicles/", map: r => [r.registration_number, r.vehicle_type, r.ownership, Number(r.capacity_kg).toLocaleString("en-IN") + " kg", r.status] },
   Settlements: { endpoint: "settlements/", map: r => [r.driver_name, "Trip #" + r.trip, "₹" + Number(r.advance_amount).toLocaleString("en-IN"), "₹" + Number(r.approved_expenses).toLocaleString("en-IN"), r.status] },
-  Invoices: { endpoint: "invoices/", map: r => [r.number, r.customer_name, r.due_date, "₹" + Number(r.total_amount).toLocaleString("en-IN"), r.status] },
+  Invoices: { endpoint: "invoices/", map: r => [r.number, r.customer_name, r.order_number || r.trip_number || "manual", r.due_date, rupees(r.total_amount), r.status] },
   Vendors: { endpoint: "vendors/", map: r => [r.name, r.vendor_type, r.city || "—", r.gstin || "—", r.status] },
   Places: { endpoint: "places/", map: r => [r.name, r.place_type, r.city, r.pincode || "—", r.status] },
   "Service areas": { endpoint: "service-areas/", map: r => [r.name, r.code, r.states || "—", String(r.zone_count ?? 0), r.status] },
@@ -996,6 +996,36 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
     } finally { setBusy(false); }
   };
 
+  // Both of these answer with something other than the order, so they refresh the drawer
+  // from the consignment itself rather than from the response.
+  const reopen = async (order: any) => { try { setSelected(await fmsRequest<any>(`orders/${order.id}/`)); } catch { setSelected(null); } load(); };
+
+  const issueOtp = async (order: any) => {
+    setBusy(true);
+    try {
+      const result = await fmsRequest<any>(`orders/${order.id}/pod-request/`, { method: "POST", body: "{}" });
+      onAction(`Delivery OTP ${result.otp} issued · valid ${result.valid_hours}h`);
+      await reopen(order);
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 120) : "Could not issue the OTP", "warn");
+    } finally { setBusy(false); }
+  };
+
+  const raiseInvoice = async (order: any) => {
+    setBusy(true);
+    try {
+      const result = await fmsRequest<any>(`orders/${order.id}/invoice/`, { method: "POST", body: "{}" });
+      const bill = result.invoice;
+      onAction(result.created
+        ? `Invoice ${bill.number} raised for ${rupees(bill.total_amount)}${result.journal_entry ? ` · voucher ${result.journal_entry.number}` : ""}`
+        : `Already billed on ${bill.number}`);
+      if (result.ledger_error) onAction(result.ledger_error.slice(0, 120), "warn");
+      await reopen(order);
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 120) : "Could not raise the invoice", "warn");
+    } finally { setBusy(false); }
+  };
+
   const totalValue = orders.reduce((sum, order) => sum + Number(order.total_amount || 0), 0);
   const active = orders.filter(order => !["completed", "cancelled"].includes(order.status));
 
@@ -1063,12 +1093,18 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
         {(selected.waypoints || []).map((point: any) => <div key={point.id}><i /><span><strong>{point.sequence}. {point.place_name}</strong><small>{point.waypoint_type} · {point.city}</small></span><time>{point.status}</time></div>)}
         {!(selected.waypoints || []).length && <div><i /><span><strong>Direct movement</strong><small>Pickup to drop without intermediate stops</small></span><time>—</time></div>}
       </div>
+      <div className="record-timeline"><p className="eyebrow">PROOF OF DELIVERY</p>
+        {(selected.proofs || []).map((proof: any) => <div key={proof.id}><i /><span><strong>{proof.receiver_name || "Awaiting the drop"}</strong><small>{proof.status}{proof.otp ? ` · OTP ${proof.otp}` : ""}{Number(proof.shortage_kg) ? ` · ${Number(proof.shortage_kg)} kg short` : ""}{proof.damage_reported ? " · damage" : ""}</small></span><time>{proof.captured_at ? new Date(proof.captured_at).toLocaleDateString("en-IN") : "—"}</time></div>)}
+        {!(selected.proofs || []).length && <div><i /><span><strong>No proof yet</strong><small>{selected.pod_required ? "Issue the delivery OTP when the truck nears the drop" : "This consignment does not need proof"}</small></span><time>—</time></div>}
+        <button className="secondary full-button" disabled={busy || ["cancelled", "completed"].includes(selected.status)} onClick={() => issueOtp(selected)}>Issue delivery OTP</button>
+      </div>
       <div className="record-timeline"><p className="eyebrow">TRACKING ACTIVITY</p>
         {(selected.activities || []).map((activity: any) => <div key={activity.id}><i /><span><strong>{activity.code.replaceAll("_", " ")}</strong><small>{activity.details || activity.status}{activity.city ? ` · ${activity.city}` : ""}</small></span><time>{new Date(activity.recorded_at).toLocaleString("en-IN")}</time></div>)}
       </div>
       <div className="record-actions">
         <button className="secondary" disabled={busy || selected.status === "cancelled"} onClick={() => run(selected, "cancel", { reason: "Cancelled from dispatch desk" })}>Cancel order</button>
-        <button className="primary" disabled={busy || !selected.service_rate} onClick={() => run(selected, "reprice")}>Reprice</button>
+        <button className="secondary" disabled={busy || !selected.service_rate} onClick={() => run(selected, "reprice")}>Reprice</button>
+        <button className="primary" disabled={busy || selected.status !== "completed"} onClick={() => raiseInvoice(selected)}>Raise invoice</button>
       </div>
     </aside></div>}
   </div>;
@@ -1077,19 +1113,33 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
 function RatesView({ reloadKey, onAction, openAction }: { reloadKey: number; onAction: Notify; openAction: (type: string) => void }) {
   const [rates, setRates] = useState<any[]>([]);
   const [quote, setQuote] = useState<any>(null);
+  const [projection, setProjection] = useState<any>(null);
+  const [mode, setMode] = useState<"freight" | "margin">("freight");
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => { fmsRequest<any>(wholeSet("service-rates/")).then(payload => setRates(asList(payload))).catch(() => undefined); }, [reloadKey]);
 
   const estimate = async (event: React.FormEvent) => {
     event.preventDefault();
-    setWorking(true); setError(""); setQuote(null);
+    setWorking(true); setError(""); setQuote(null); setProjection(null);
     const form = new FormData(event.currentTarget as HTMLFormElement);
+    const lane = {
+      service_rate: Number(form.get("service_rate")),
+      distance_km: Number(form.get("distance_km") || 0), weight_kg: Number(form.get("weight_kg") || 0),
+      halt_days: Number(form.get("halt_days") || 0), other_charges: Number(form.get("other_charges") || 0),
+    };
     try {
+      if (mode === "margin") {
+        const payload = await fmsRequest<any>("service-rates/project/", { method: "POST", body: JSON.stringify({
+          ...lane, trips_per_month: Number(form.get("trips_per_month") || 1),
+          ...(form.get("diesel_price") ? { diesel_price: Number(form.get("diesel_price")) } : {}),
+          ...(form.get("mileage_kmpl") ? { mileage_kmpl: Number(form.get("mileage_kmpl")) } : {}) }) });
+        setProjection(payload); setQuote(payload.breakdown);
+        onAction(`Projected margin ${payload.margin_percent}% on this lane`);
+        return;
+      }
       const payload = await fmsRequest<any>("service-rates/quote/", { method: "POST", body: JSON.stringify({
-        service_rate: Number(form.get("service_rate")), origin: String(form.get("origin") || ""), destination: String(form.get("destination") || ""),
-        distance_km: Number(form.get("distance_km") || 0), weight_kg: Number(form.get("weight_kg") || 0),
-        halt_days: Number(form.get("halt_days") || 0), other_charges: Number(form.get("other_charges") || 0),
+        ...lane, origin: String(form.get("origin") || ""), destination: String(form.get("destination") || ""),
         save_quote: form.get("save_quote") === "on" }) });
       setQuote(payload.breakdown);
       onAction(payload.quote ? `Quote ${payload.quote.number} saved` : "Freight estimated");
@@ -1114,24 +1164,45 @@ function RatesView({ reloadKey, onAction, openAction }: { reloadKey: number; onA
           </tr>)}</tbody></table></div>
       </section>
       <aside className="quote-card">
-        <p className="eyebrow">FREIGHT ESTIMATOR</p><h3>Price a lane</h3>
+        <p className="eyebrow">{mode === "margin" ? "LANE PROJECTION" : "FREIGHT ESTIMATOR"}</p><h3>{mode === "margin" ? "Will this lane pay?" : "Price a lane"}</h3>
+        <div className="mode-chips">
+          <button className={mode === "freight" ? "chip active" : "chip"} onClick={() => setMode("freight")}>Freight</button>
+          <button className={mode === "margin" ? "chip active" : "chip"} onClick={() => setMode("margin")}>Margin projection</button>
+        </div>
         <form className="action-form quote-form" onSubmit={estimate}>
           <label>Rate card<select name="service_rate" required>{rates.map(rate => <option key={rate.id} value={rate.id}>{rate.name}</option>)}</select></label>
           <div className="form-grid">
-            <label>Origin<input name="origin" defaultValue="Bhiwandi" /></label>
-            <label>Destination<input name="destination" defaultValue="Chakan" /></label>
+            {mode === "freight" && <label>Origin<input name="origin" defaultValue="Bhiwandi" /></label>}
+            {mode === "freight" && <label>Destination<input name="destination" defaultValue="Chakan" /></label>}
             <label>Distance (km)<input name="distance_km" type="number" step="any" defaultValue="150" /></label>
             <label>Weight (kg)<input name="weight_kg" type="number" step="any" defaultValue="12400" /></label>
             <label>Halting days<input name="halt_days" type="number" step="any" defaultValue="0" /></label>
             <label>Other charges<input name="other_charges" type="number" step="any" defaultValue="0" /></label>
+            {mode === "margin" && <label>Trips a month<input name="trips_per_month" type="number" min="1" defaultValue="20" /></label>}
+            {mode === "margin" && <label>Diesel ₹/litre<input name="diesel_price" type="number" step="any" placeholder="from history" /></label>}
+            {mode === "margin" && <label>Mileage km/l<input name="mileage_kmpl" type="number" step="any" placeholder="from history" /></label>}
           </div>
-          <label className="checkbox-row"><input type="checkbox" name="save_quote" /> Save as a quotation</label>
+          {mode === "freight" && <label className="checkbox-row"><input type="checkbox" name="save_quote" /> Save as a quotation</label>}
           {error && <div className="form-error">{error}</div>}
-          <button className="primary full-button" disabled={working || !rates.length}>{working ? "Pricing…" : "Calculate freight"}</button>
+          <button className="primary full-button" disabled={working || !rates.length}>{working ? "Working…" : mode === "margin" ? "Project margin" : "Calculate freight"}</button>
         </form>
         {quote && <div className="quote-result">
           {[["Freight", quote.freight], ["Fuel surcharge", quote.fuel_surcharge], ["Loading & unloading", quote.handling_charges], ["Other charges", quote.other_charges], ["Taxable value", quote.taxable_value], [quote.reverse_charge ? "GST (reverse charge)" : `GST @ ${quote.gst_percent}%`, quote.gst_amount]].map(row => <div className="quote-line" key={String(row[0])}><span>{row[0]}</span><strong>{rupees(row[1])}</strong></div>)}
-          <div className="invoice-total"><span>Total payable</span><strong>{rupees(quote.total)}</strong><small>{quote.reverse_charge ? "GST payable by consignee under RCM" : "Inclusive of GST"}</small></div>
+          {projection && [["Diesel for the run", projection.fuel_cost], ["On-road cash costs", projection.on_road_cost], ["Cost to run the lane", projection.total_cost]].map(row => <div className="quote-line" key={String(row[0])}><span>{row[0]}</span><strong>{rupees(row[1])}</strong></div>)}
+          {projection ? <>
+            <div className="invoice-total"><span>Margin a trip</span><strong>{rupees(projection.margin)}</strong><small>{projection.margin_percent}% of freight, GST excluded</small></div>
+            <div className="margin-strip">
+              <div><span>Revenue / km</span><strong>₹{projection.revenue_per_km}</strong></div>
+              <div><span>Cost / km</span><strong>₹{projection.cost_per_km}</strong></div>
+              <div><span>Break even</span><strong className={projection.revenue_per_km >= projection.break_even_rate_per_km ? "good" : "bad"}>₹{projection.break_even_rate_per_km}</strong></div>
+              <div><span>Monthly revenue</span><strong>{rupees(projection.monthly.revenue)}</strong></div>
+              <div><span>Monthly cost</span><strong>{rupees(projection.monthly.cost)}</strong></div>
+              <div><span>Monthly margin</span><strong className={projection.monthly.margin >= 0 ? "good" : "bad"}>{rupees(projection.monthly.margin)}</strong></div>
+            </div>
+            <p className="basis-note">{projection.basis.from_history
+              ? `Costed from the last ${projection.basis.sample_days} days: ${projection.basis.mileage_kmpl} km/l at ₹${projection.basis.diesel_price} a litre over ${Number(projection.basis.km_run).toLocaleString("en-IN")} km run, and ₹${projection.basis.on_road_cost_per_km}/km of toll, bhatta and handling.`
+              : `No fuel history yet, so this uses ${projection.basis.mileage_kmpl} km/l at ₹${projection.basis.diesel_price} a litre. Record a few diesel fills and the projection costs itself.`}</p>
+          </> : <div className="invoice-total"><span>Total payable</span><strong>{rupees(quote.total)}</strong><small>{quote.reverse_charge ? "GST payable by consignee under RCM" : "Inclusive of GST"}</small></div>}
         </div>}
       </aside>
     </div>
@@ -1190,6 +1261,130 @@ function ComplianceView({ reloadKey, openAction }: { reloadKey: number; openActi
         </tr>)}</tbody></table></div>
       {!loading && !due.length && <div className="data-state">No preventive service is due right now.</div>}
     </section>
+  </div>;
+}
+
+const podFilters: [string, string][] = [["", "All"], ["awaiting", "Awaiting delivery"], ["submitted", "In review"],
+                                        ["verified", "Verified"], ["rejected", "Rejected"]];
+
+function EpodView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify }) {
+  const [proofs, setProofs] = useState<any[]>([]);
+  const [filter, setFilter] = useState("");
+  const [selected, setSelected] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [reason, setReason] = useState("");
+
+  const load = () => {
+    setLoading(true);
+    fmsRequest<any>(wholeSet("proofs/")).then(payload => setProofs(asList(payload)))
+      .catch(() => undefined).finally(() => setLoading(false));
+  };
+  useEffect(load, [reloadKey]);
+
+  // Keep the drawer looking at the record the server just returned.
+  const refresh = (updated: any) => {
+    setSelected((current: any) => (current && updated?.id ? updated : current));
+    load();
+  };
+
+  const call = async (path: string, body: Record<string, unknown>, message: string) => {
+    setBusy(true);
+    try {
+      const updated = await fmsRequest<any>(path, { method: "POST", body: JSON.stringify(body) });
+      onAction(message);
+      refresh(updated.proof || updated);
+      setReason("");
+      return updated;
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 120) : "Action failed", "warn");
+    } finally { setBusy(false); }
+  };
+
+  const issue = (proof: any) => call(`orders/${proof.order}/pod-request/`, {}, "Delivery OTP issued");
+  const capture = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget as HTMLFormElement);
+    await call(`orders/${selected.order}/pod-submit/`, {
+      receiver_name: String(form.get("receiver_name") || ""), otp: String(form.get("otp") || ""),
+      file_url: String(form.get("file_url") || ""), remarks: String(form.get("remarks") || ""),
+      shortage_kg: Number(form.get("shortage_kg") || 0), damage_reported: form.get("damage_reported") === "on",
+    }, "ePOD captured");
+  };
+
+  const shown = filter ? proofs.filter(proof => proof.status === filter) : proofs;
+  const counts = (status: string) => proofs.filter(proof => proof.status === status).length;
+
+  return <div className="module-page">
+    <div className="module-title"><div><p className="eyebrow">ELECTRONIC PROOF OF DELIVERY</p><h2>ePOD</h2><p>Issue the delivery OTP, capture what the driver hands back, and clear it for billing. A consignment cannot be invoiced until its proof is verified.</p></div></div>
+    <div className="module-stats">
+      <div className="module-stat"><span>Awaiting delivery</span><strong>{loading ? "—" : counts("awaiting")}</strong><small>OTP issued, truck still running</small></div>
+      <div className="module-stat warn"><span>In review</span><strong>{loading ? "—" : counts("submitted")}</strong><small>Held by a shortage or damage</small></div>
+      <div className="module-stat"><span>Verified</span><strong>{loading ? "—" : counts("verified")}</strong><small>Cleared for invoicing</small></div>
+    </div>
+    <section className="module-table-card">
+      <div className="module-toolbar"><div><strong>Delivery proofs</strong><span>{shown.length} of {proofs.length}</span></div>
+        <div className="toolbar-actions">{podFilters.map(([value, label]) => <button key={value} className={value === filter ? "chip active" : "chip"} onClick={() => setFilter(value)}>{label}</button>)}</div></div>
+      <div className="table-wrap"><table><thead><tr><th>Consignment</th><th>Customer</th><th>Drop</th><th>Received by</th><th>Captured</th><th>Exception</th><th>Status</th></tr></thead>
+        <tbody>{shown.map(proof => <tr key={proof.id} className="clickable" onClick={() => { setSelected(proof); setReason(""); }}>
+          <td><strong>{proof.order_number}</strong><small>{proof.tracking_number}</small></td>
+          <td>{proof.customer_name}</td>
+          <td>{proof.destination || "—"}</td>
+          <td>{proof.receiver_name || "—"}</td>
+          <td>{proof.captured_at ? new Date(proof.captured_at).toLocaleString("en-IN") : "—"}</td>
+          <td>{proof.is_clean ? "Clean" : [Number(proof.shortage_kg) ? `${Number(proof.shortage_kg)} kg short` : "", proof.damage_reported ? "damage" : ""].filter(Boolean).join(" · ")}</td>
+          <td><span className={"status " + proof.status}>{proof.status}</span></td>
+        </tr>)}</tbody></table></div>
+      {!loading && !shown.length && <div className="data-state">No delivery proofs in this state.</div>}
+    </section>
+
+    {selected && <div className="record-backdrop" onMouseDown={() => setSelected(null)}><aside className="record-drawer" onMouseDown={event => event.stopPropagation()}>
+      <div className="record-head"><div><p className="eyebrow">ePOD {selected.tracking_number}</p><h2>{selected.order_number}</h2><span className={"status " + selected.status}>{selected.status}</span></div><button className="panel-close" onClick={() => setSelected(null)}>×</button></div>
+      <div className="record-fields">
+        <div className="record-field"><span>Customer</span><strong>{selected.customer_name}</strong></div>
+        <div className="record-field"><span>Drop</span><strong>{selected.destination || "—"}</strong></div>
+        <div className="record-field"><span>Received by</span><strong>{selected.receiver_name || "—"}{selected.receiver_phone ? ` · ${selected.receiver_phone}` : ""}</strong></div>
+        <div className="record-field"><span>Proof type</span><strong>{selected.proof_type}</strong></div>
+        <div className="record-field"><span>Shortage</span><strong>{Number(selected.shortage_kg) ? `${Number(selected.shortage_kg)} kg` : "None"}</strong></div>
+        <div className="record-field"><span>Damage</span><strong>{selected.damage_reported ? "Reported" : "None"}</strong></div>
+        <div className="record-field"><span>Captured</span><strong>{selected.captured_at ? new Date(selected.captured_at).toLocaleString("en-IN") : "Not yet"}</strong></div>
+        <div className="record-field"><span>Verified</span><strong>{selected.verified_at ? `${new Date(selected.verified_at).toLocaleDateString("en-IN")} · ${selected.verified_by}` : "—"}</strong></div>
+      </div>
+      {selected.remarks && <p className="pod-note">{selected.remarks}</p>}
+      {selected.rejection_reason && <p className="pod-note warn">Rejected: {selected.rejection_reason}</p>}
+      {selected.file_url && <p className="pod-note"><a href={selected.file_url} target="_blank" rel="noreferrer">Open the signed POD</a></p>}
+
+      <div className="allocate-box">
+        <p className="eyebrow">DELIVERY OTP</p>
+        <div className="tracking-grid">
+          <div><span>Code</span><strong className="otp-code">{selected.otp || "not issued"}</strong></div>
+          <div><span>State</span><strong>{selected.otp_verified ? "Quoted back by the consignee" : selected.otp_expired ? "Expired" : selected.otp ? "Issued, awaiting the drop" : "—"}</strong></div>
+        </div>
+        <button className="secondary full-button" disabled={busy || selected.status === "verified"} onClick={() => issue(selected)}>{selected.otp ? "Issue a fresh OTP" : "Issue delivery OTP"}</button>
+      </div>
+
+      {["awaiting", "rejected"].includes(selected.status) && <form className="action-form pod-capture" onSubmit={capture}>
+        <p className="eyebrow">RECORD THE CAPTURE</p>
+        <div className="form-grid">
+          <label>Received by<input name="receiver_name" defaultValue={selected.receiver_name} required /></label>
+          <label>OTP quoted<input name="otp" defaultValue="" maxLength={6} /></label>
+          <label>Shortage (kg)<input name="shortage_kg" type="number" step="any" defaultValue="0" /></label>
+          <label>Signed POD link<input name="file_url" type="url" placeholder="https://…" /></label>
+        </div>
+        <label>Remarks<input name="remarks" defaultValue="" /></label>
+        <label className="checkbox-row"><input type="checkbox" name="damage_reported" /> Damage reported at the drop</label>
+        <button className="primary full-button" disabled={busy}>Save ePOD</button>
+      </form>}
+
+      {selected.status === "submitted" && <div className="allocate-box">
+        <p className="eyebrow">OFFICE REVIEW</p>
+        <label className="reject-reason">Reason, if you are sending it back<input value={reason} onChange={event => setReason(event.target.value)} placeholder="Shortage not signed by the consignee" /></label>
+      </div>}
+      <div className="record-actions">
+        <button className="secondary" disabled={busy || !selected.captured_at || selected.status === "rejected"} onClick={() => call(`proofs/${selected.id}/reject/`, { reason }, "ePOD sent back")}>Reject</button>
+        <button className="primary" disabled={busy || !selected.captured_at || selected.status === "verified"} onClick={() => call(`proofs/${selected.id}/verify/`, {}, "ePOD verified")}>Verify</button>
+      </div>
+    </aside></div>}
   </div>;
 }
 
@@ -1703,7 +1898,7 @@ export default function Home() {
             <div className="section-heading"><div><p className="eyebrow">ACTIVE MOVEMENT</p><h2>Recent trips</h2></div><button className="link-button" onClick={() => show("All trips opened")}>View all trips →</button></div>
             <div className="table-wrap"><table><thead><tr><th>Trip & route</th><th>Vehicle</th><th>Driver</th><th>Status</th><th>ETA / POD</th><th>Revenue</th></tr></thead><tbody>{(dashboard?.recent_trips || []).map((t: any) => <tr key={t.id}><td><strong>{t.number}</strong><small>{t.origin} → {t.destination}</small></td><td>{t.vehicle_number}</td><td>{t.driver_name}</td><td><span className={`status ${t.status.toLowerCase().replaceAll("_","-")}`}>{t.status.replaceAll("_"," ")}</span></td><td>{t.planned_departure ? new Date(t.planned_departure).toLocaleString("en-IN") : "—"}</td><td><strong>₹{Number(t.estimated_cost || 0).toLocaleString("en-IN")}</strong></td></tr>)}</tbody></table></div>
           </section>
-        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
+        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
       </section>
       {action && <ActionPanel type={action} onClose={() => setAction("")} onCreated={() => setDataVersion(v => v + 1)} onDone={(message) => { show(message); if (action !== "tracking") setAction(""); }} />}
       {toast && <div className={"toast " + toast.tone}>{toast.tone === "warn" ? "⚠" : "✓"} {toast.text}</div>}

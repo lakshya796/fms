@@ -133,7 +133,9 @@ from .serializers import (VendorSerializer, ServiceAreaSerializer, ZoneSerialize
                           ServiceRateSerializer, ServiceQuoteSerializer, OrderSerializer, WaypointSerializer,
                           TrackingActivitySerializer, ProofOfDeliverySerializer, PublicOrderTrackingSerializer,
                           FuelEntrySerializer, TripExpenseSerializer, IssueSerializer, ComplianceDocumentSerializer,
-                          MaintenanceScheduleSerializer, QuoteRequestSerializer)
+                          MaintenanceScheduleSerializer, QuoteRequestSerializer, ProjectionRequestSerializer)
+from .billing import BillingError, build_invoice_from_order, project_lane
+from accounting.services import PostingError, post_customer_invoice
 
 
 class FilterableViewSet(viewsets.ModelViewSet):
@@ -243,6 +245,23 @@ class ServiceRateViewSet(FilterableViewSet):
             payload["quote"] = ServiceQuoteSerializer(quote).data
         return Response(payload)
 
+    @action(detail=False, methods=["post"])
+    def project(self, request):
+        """Project what a lane earns against what it costs to run.
+
+        The cost side comes from this fleet's own diesel and on-road spend, so the
+        margin is the one the owner would actually see, not a guess.
+        """
+        form = ProjectionRequestSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        data = form.validated_data
+        return Response(project_lane(
+            data["service_rate"], distance_km=data.get("distance_km") or 0, weight_kg=data.get("weight_kg") or 0,
+            hours=data.get("hours") or 0, halt_days=data.get("halt_days") or 0,
+            other_charges=data.get("other_charges") or 0, trips_per_month=data.get("trips_per_month") or 1,
+            vehicle=data.get("vehicle"), diesel_price=data.get("diesel_price"),
+            mileage_kmpl=data.get("mileage_kmpl"), days=data.get("days") or 90))
+
 
 class ServiceQuoteViewSet(FilterableViewSet):
     required_permission = "rates.view"; required_write_permission = "rates.manage"
@@ -315,19 +334,94 @@ class OrderViewSet(FilterableViewSet):
             order.save(update_fields=["status", "updated_at"])
         return Response(TrackingActivitySerializer(activity).data, status=http_status.HTTP_201_CREATED)
 
+    # --- ePOD ---------------------------------------------------------------
+
+    @staticmethod
+    def _open_proof(order):
+        """The proof still in play for this order, if there is one."""
+        return order.proofs.filter(status__in=["awaiting", "rejected"]).order_by("-created_at").first()
+
+    @staticmethod
+    def _capture(proof, data):
+        """Record what the driver captured at the drop and settle its review state."""
+        supplied = str(data.get("otp") or "").strip()
+        if proof.otp:
+            if proof.otp_expired:
+                raise ValidationError("The delivery OTP has expired. Issue a fresh one before capturing the ePOD.")
+            if supplied != proof.otp:
+                raise ValidationError("That OTP does not match the one issued to the consignee.")
+            proof.otp_verified = True
+        elif supplied:
+            # No OTP was issued for this drop, so an office-side code cannot be trusted;
+            # the capture stands on the signature or photo instead.
+            proof.otp = supplied
+        for field in ("proof_type", "receiver_name", "receiver_phone", "remarks", "file_url"):
+            if data.get(field) is not None:
+                setattr(proof, field, data.get(field) or getattr(proof, field))
+        if data.get("shortage_kg") is not None:
+            proof.shortage_kg = data.get("shortage_kg") or 0
+        if data.get("damage_reported") is not None:
+            proof.damage_reported = bool(data.get("damage_reported"))
+        proof.latitude = data.get("latitude") or proof.latitude
+        proof.longitude = data.get("longitude") or proof.longitude
+        proof.rejection_reason = ""
+        proof.captured_at = timezone.now()
+        proof.settle()
+        proof.save()
+        return proof
+
+    @action(detail=True, methods=["post"], url_path="pod-request")
+    def pod_request(self, request, pk=None):
+        """Issue the delivery OTP the consignee will quote back to the driver.
+
+        The code is returned so the console can read it out or an SMS gateway can
+        forward it; only signed-in staff can reach this endpoint.
+        """
+        order = self.get_object()
+        if order.status == "cancelled":
+            raise ValidationError("A cancelled consignment has nothing to deliver.")
+        proof = self._open_proof(order)
+        if proof is None:
+            proof = ProofOfDelivery.objects.create(
+                order=order, waypoint_id=request.data.get("waypoint") or None,
+                proof_type=request.data.get("proof_type", "signature"),
+                receiver_name=request.data.get("receiver_name", ""),
+                receiver_phone=request.data.get("receiver_phone", ""))
+        otp = proof.issue_otp()
+        order.log(order.status, "POD_OTP_ISSUED",
+                  f"Delivery OTP sent to {proof.receiver_phone or 'the consignee'}", city=order.dropoff.city)
+        return Response({"proof": ProofOfDeliverySerializer(proof).data, "otp": otp,
+                         "valid_hours": int(ProofOfDelivery.OTP_VALID_FOR.total_seconds() // 3600)})
+
+    @action(detail=True, methods=["post"], url_path="pod-submit")
+    @transaction.atomic
+    def pod_submit(self, request, pk=None):
+        """What the driver captures at the drop: receiver, OTP, signature, shortage, damage."""
+        order = self.get_object()
+        if not request.data.get("receiver_name") and not request.data.get("file_url"):
+            raise ValidationError("Record who took delivery, or attach the signed POD.")
+        proof = self._open_proof(order) or ProofOfDelivery.objects.create(order=order)
+        self._capture(proof, request.data)
+        order.log(order.status, "POD_CAPTURED",
+                  f"Received by {proof.receiver_name or 'consignee'}"
+                  + (f" · short {proof.shortage_kg} kg" if proof.shortage_kg else "")
+                  + (" · damage reported" if proof.damage_reported else ""),
+                  proof.latitude, proof.longitude, order.dropoff.city)
+        return Response(ProofOfDeliverySerializer(proof).data, status=http_status.HTTP_201_CREATED)
+
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def complete(self, request, pk=None):
-        """Close the order, capturing ePOD details when the consignee signs."""
+        """Close the order. A consignment that needs proof cannot close without it."""
         order = self.get_object()
         proof = None
         if order.pod_required:
-            proof = ProofOfDelivery.objects.create(
-                order=order, proof_type=request.data.get("proof_type", "signature"),
-                receiver_name=request.data.get("receiver_name", ""), receiver_phone=request.data.get("receiver_phone", ""),
-                remarks=request.data.get("remarks", ""), file_url=request.data.get("file_url", ""),
-                shortage_kg=request.data.get("shortage_kg") or 0, damage_reported=bool(request.data.get("damage_reported")),
-                otp=request.data.get("otp", ""), otp_verified=bool(request.data.get("otp")))
+            # Delivering straight from the board captures the ePOD in the same call.
+            if any(request.data.get(field) for field in ("receiver_name", "file_url", "otp")):
+                proof = self._capture(self._open_proof(order) or ProofOfDelivery.objects.create(order=order), request.data)
+            proof = proof or order.proofs.filter(captured_at__isnull=False).order_by("-created_at").first()
+            if proof is None:
+                raise ValidationError("This consignment needs an ePOD. Capture who took delivery before completing it.")
         order.status = "completed"
         order.completed_at = timezone.now()
         order.save()
@@ -355,6 +449,30 @@ class OrderViewSet(FilterableViewSet):
             raise ValidationError("Link a rate card to this order before repricing.")
         return Response({"order": self.get_serializer(order).data, "breakdown": breakdown})
 
+    @action(detail=True, methods=["post"])
+    @transaction.atomic
+    def invoice(self, request, pk=None):
+        """Bill the consignment. Freight, GST and the total all come from the rate card,
+        and the invoice is posted to the ledger in the same step."""
+        order = self.get_object()
+        try:
+            invoice, created = build_invoice_from_order(
+                order, due_days=request.data.get("due_days", 15),
+                additional_charges=request.data.get("additional_charges"))
+        except BillingError as error:
+            raise ValidationError(str(error))
+        ledger, ledger_error = None, ""
+        if request.data.get("post_to_ledger", True):
+            try:
+                entry = post_customer_invoice(invoice, branch=order.branch, created_by=request.user.get_username())
+                ledger = {"number": entry.number, "id": entry.pk}
+            except PostingError as error:
+                ledger_error = str(error)
+        return Response({"invoice": InvoiceSerializer(invoice).data, "created": created,
+                         "journal_entry": ledger, "ledger_error": ledger_error,
+                         "order": self.get_serializer(order).data},
+                        status=http_status.HTTP_201_CREATED if created else http_status.HTTP_200_OK)
+
 
 class WaypointViewSet(FilterableViewSet):
     queryset = Waypoint.objects.select_related("order", "place").all()
@@ -378,9 +496,45 @@ class TrackingActivityViewSet(FilterableViewSet):
 
 
 class ProofOfDeliveryViewSet(FilterableViewSet):
-    queryset = ProofOfDelivery.objects.select_related("order").all()
+    queryset = ProofOfDelivery.objects.select_related("order", "order__customer", "order__dropoff").all()
     serializer_class = ProofOfDeliverySerializer
-    filter_fields = ["order", "proof_type", "damage_reported"]
+    filter_fields = ["order", "proof_type", "status", "damage_reported"]
+    search_fields = ["receiver_name", "receiver_phone", "order__number", "order__tracking_number"]
+
+    @action(detail=False, methods=["get"])
+    def pending(self, request):
+        """The office review queue: captures held back by a shortage or damage."""
+        records = self.get_queryset().filter(status="submitted")
+        return Response({"count": records.count(), "proofs": self.get_serializer(records, many=True).data})
+
+    @action(detail=True, methods=["post"])
+    def verify(self, request, pk=None):
+        """Clear a capture for billing."""
+        proof = self.get_object()
+        if not proof.captured_at:
+            raise ValidationError("Nothing has been captured against this proof yet.")
+        proof.status = "verified"
+        proof.verified_at = timezone.now()
+        proof.verified_by = request.data.get("verified_by") or request.user.get_username()
+        proof.rejection_reason = ""
+        proof.save(update_fields=["status", "verified_at", "verified_by", "rejection_reason", "updated_at"])
+        proof.order.log(proof.order.status, "POD_VERIFIED", f"ePOD cleared by {proof.verified_by}")
+        return Response(self.get_serializer(proof).data)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        """Send a capture back to the driver, with the reason recorded against it."""
+        proof = self.get_object()
+        reason = (request.data.get("reason") or "").strip()
+        if not reason:
+            raise ValidationError("Say why the ePOD is being rejected so the driver can correct it.")
+        proof.status = "rejected"
+        proof.rejection_reason = reason[:240]
+        proof.verified_at = None
+        proof.verified_by = ""
+        proof.save(update_fields=["status", "rejection_reason", "verified_at", "verified_by", "updated_at"])
+        proof.order.log(proof.order.status, "POD_REJECTED", reason[:240])
+        return Response(self.get_serializer(proof).data)
 
 
 class FuelEntryViewSet(FilterableViewSet):

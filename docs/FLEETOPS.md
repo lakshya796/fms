@@ -22,7 +22,7 @@ settlements) are unchanged. FleetOps sits alongside them and adds the operationa
 | `Order`, `Payload` | `Order` | Consignment order from booking to ePOD, with its own tracking number |
 | `Waypoint` | `Waypoint` | Ordered multi-drop stops |
 | `TrackingNumber`, `TrackingStatus` | `Order.tracking_number`, `TrackingActivity` | Consignee-facing activity feed |
-| `Proof` | `ProofOfDelivery` | Signature, photo or delivery OTP, with shortage and damage capture |
+| `Proof` | `ProofOfDelivery` | Full ePOD workflow: OTP to the consignee, driver capture with shortage and damage, office review |
 | `FuelReport` | `FuelEntry` | Diesel fill-ups with automatic mileage (km/l) against the previous odometer reading |
 | `Issue` | `Issue` | Breakdowns, tyre failures, accidents, check-post delays |
 | `MaintenanceSchedule` | `MaintenanceSchedule` | Preventive service by odometer and/or calendar interval |
@@ -74,7 +74,10 @@ POST /api/v1/orders/                      # book (number, tracking number, dista
 POST /api/v1/orders/{id}/assign/          # {"driver": 1, "vehicle": 2}
 POST /api/v1/orders/{id}/dispatch/        # marks vehicle and driver on-trip
 POST /api/v1/orders/{id}/activity/        # {"status": "in_transit", "code": "GPS_PING", "city": "Panvel"}
-POST /api/v1/orders/{id}/complete/        # captures ePOD: receiver, OTP, shortage, damage
+POST /api/v1/orders/{id}/pod-request/     # issue the delivery OTP to the consignee
+POST /api/v1/orders/{id}/pod-submit/      # driver capture: receiver, OTP, signature, shortage, damage
+POST /api/v1/orders/{id}/complete/        # close the consignment (needs a capture when proof is required)
+POST /api/v1/orders/{id}/invoice/         # bill it: freight and GST from the rate card, posted to the ledger
 POST /api/v1/orders/{id}/cancel/
 POST /api/v1/orders/{id}/reprice/         # recompute freight and GST from the rate card
 ```
@@ -82,7 +85,30 @@ POST /api/v1/orders/{id}/reprice/         # recompute freight and GST from the r
 If the order has a rate card and both places have coordinates, the lane distance and the full
 freight breakdown are computed on creation.
 
-### Freight estimator
+### ePOD
+
+Delivery proof is a small state machine rather than a free-text field, because a shortage on
+one consignment is a deduction on the next invoice.
+
+```
+awaiting  --(driver captures)-->  submitted  --(office clears)-->  verified
+                                      ^                                |
+                                      +----------(rejected)------------+
+```
+
+- `pod-request` generates a six digit code, valid 24 hours, that the consignee quotes back to
+  the driver. Asking again refreshes the same proof instead of opening a second one.
+- `pod-submit` records who took delivery, the OTP, the signed POD, and any shortage or damage.
+  A wrong or expired OTP is refused.
+- A capture that is **confirmed** (OTP quoted back, or a signed POD attached) and **clean**
+  (nothing short, nothing damaged) clears itself. Anything else waits for the office.
+- `POST /api/v1/proofs/{id}/verify/` and `/reject/` are the office review;
+  `GET /api/v1/proofs/pending/` is the queue.
+
+An order whose `pod_required` is set cannot be completed without a capture, and cannot be
+invoiced until a proof reaches `verified`.
+
+### Freight estimator and lane projection
 
 ```
 POST /api/v1/service-rates/quote/
@@ -91,6 +117,29 @@ POST /api/v1/service-rates/quote/
 
 Returns freight, fuel surcharge, loading/unloading, taxable value, GST (or the RCM flag) and the
 total. With `save_quote` it also persists a `ServiceQuote`.
+
+```
+POST /api/v1/service-rates/project/
+{ "service_rate": 1, "distance_km": 150, "weight_kg": 12400, "trips_per_month": 20 }
+```
+
+The same freight breakdown, plus what the lane costs this fleet to run: diesel priced from the
+average paid over the last 90 days at the fleet's own recorded mileage, and on-road cash costs
+per kilometre from actual toll, bhatta and handling spend. It answers with margin per trip and
+per month, revenue and cost per km, and the break-even rate per km — the number to argue a
+contract with. `diesel_price`, `mileage_kmpl`, `vehicle` and `days` override the defaults;
+without any history it falls back to 4 km/l at ₹94 and says so.
+
+### Automatic invoicing
+
+`POST /api/v1/orders/{id}/invoice/` raises the customer invoice from the consignment: it
+reprices from the rate card first, so a mid-contract revision is picked up, then carries the
+freight, other charges, GST percentage, RCM flag and place of supply onto the bill. The total
+is always recomputed from its parts and can never be typed. The invoice is posted to the ledger
+(Dr Sundry debtors, Cr Freight income, Cr Output GST) in the same call.
+
+It refuses a consignment that is not delivered, or whose ePOD is not verified, and billing the
+same order twice returns the invoice already raised rather than a second one.
 
 ### Operational lookups
 
@@ -122,7 +171,12 @@ New workspace sections in the Next.js console:
   panel because an order cannot be assigned without naming a driver and a vehicle. Anything
   else simply records the new status with a tracking activity, so the movement history still
   shows what happened and when.
-- **Rates** — rate cards plus a freight estimator that shows the full GST breakdown.
+  The drawer also carries the consignment's delivery proofs, an **Issue delivery OTP** button,
+  and **Raise invoice** once it is delivered.
+- **ePOD** — the delivery desk: awaiting, in review, verified and rejected, with the OTP, the
+  capture form and the verify/reject decision in one drawer.
+- **Rates** — rate cards, a freight estimator with the full GST breakdown, and a **margin
+  projection** that costs the lane against the fleet's own diesel and on-road spend.
 - **Compliance** — expiry watchlist over 15/30/60/90 days, plus preventive services that are due.
 - **Fleets, Vendors, Places, Zones, Fuel, Expenses, Issues** — live master-data tables with create
   forms.
@@ -149,5 +203,8 @@ python manage.py test fleet
 ```
 
 Covers rate-card arithmetic (including minimum charge and reverse charge), geofence containment,
-the full order lifecycle, ePOD, public tracking, mileage and odometer roll-up, expense summaries,
-document expiry windows, maintenance intervals, fleet assignment and the analytics endpoint.
+the full order lifecycle, the ePOD workflow (OTP issue, wrong and expired codes, shortage review,
+verify and reject, and the gate on completion), automatic invoicing and its idempotency, lane
+projection against recorded fuel and expense history, public tracking, mileage and odometer
+roll-up, expense summaries, document expiry windows, maintenance intervals, fleet assignment and
+the analytics endpoint.

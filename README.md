@@ -6,10 +6,12 @@ layer modelled on the open-source [Fleetbase](https://github.com/fleetbase/fleet
 
 ## FleetOps modules
 
-Consignment orders with waypoints and ePOD, public consignment tracking, service areas and
-geofenced zones, places, vendors and attached fleets, GST-aware rate cards with a freight
-estimator, diesel and mileage tracking, on-road expenses, driver-reported issues, statutory
-compliance documents with renewal alerts, and preventive maintenance schedules.
+Consignment orders with waypoints, a full ePOD workflow (delivery OTP, driver capture with
+shortage and damage, office review), invoices raised automatically from the rate card, public
+consignment tracking, service areas and geofenced zones, places, vendors and attached fleets,
+GST-aware rate cards with a freight estimator and a lane margin projection, diesel and mileage
+tracking, on-road expenses, driver-reported issues, statutory compliance documents with renewal
+alerts, and preventive maintenance schedules.
 
 See [docs/FLEETOPS.md](docs/FLEETOPS.md) for the API, the Fleetbase mapping and the India-specific
 behaviour (GST/RCM, e-way bill, FASTag, RTO paperwork, driver bhatta).
