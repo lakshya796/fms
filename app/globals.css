@@ -181,3 +181,27 @@ body.dragging-card .dispatch-card{cursor:grabbing}
 .toast.warn{background:#7a3325}
 .sign-out{border:1px solid #2c3a33;background:#1a2721;color:#9fb0a7;border-radius:8px;width:30px;height:30px;font-size:13px;cursor:pointer;flex:none}
 .sign-out:hover{background:#dff77d;color:#152019;border-color:#dff77d}
+
+/* ePOD review, and the projection panel on the rate desk */
+.status.submitted,.status.raised,.status.issued{background:#e9f1fb;color:#3a6e9d}
+.status.awaiting{background:#fff4df;color:#9a6b22}
+.status.rejected{background:#ffebe7;color:#b95544}
+tr.clickable{cursor:pointer}
+tr.clickable:hover td{background:#f8faf7}
+.otp-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:2px;font-size:15px!important;color:#0d5f45}
+.pod-note{margin:0 0 12px;font-size:11px;color:#66716b;background:#f5f8f4;border-radius:10px;padding:12px}
+.pod-note.warn{background:#ffebe7;color:#8f4436}
+.pod-note a{color:#0d5f45}
+.pod-capture{padding:18px 0 0;border-top:1px solid var(--line);margin-top:18px}
+.pod-capture .full-button{width:100%;height:42px;margin-top:16px}
+.reject-reason{display:flex;flex-direction:column;gap:7px;font-size:10px;font-weight:750;color:#606b65;margin-top:12px}
+.reject-reason input{width:100%;border:1px solid #dfe4df;border-radius:9px;padding:11px 12px;font-size:11px;outline:none}
+.mode-chips{display:flex;gap:8px;margin-bottom:14px}
+.margin-strip{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:16px}
+.margin-strip div{border:1px solid var(--line);border-radius:11px;padding:12px;display:flex;flex-direction:column;gap:5px}
+.margin-strip span{font-size:9px;text-transform:uppercase;letter-spacing:.5px;color:#8b9590}
+.margin-strip strong{font-size:14px}
+.margin-strip strong.good{color:#347257}
+.margin-strip strong.bad{color:#b95544}
+.basis-note{margin:14px 0 0;font-size:10px;color:#8b948f;line-height:1.6}
+.record-actions button{white-space:nowrap;padding:0 10px;font-size:11px}

@@ -28,7 +28,12 @@ class TripSerializer(serializers.ModelSerializer):
         extra_kwargs = {"lorry_receipts": {"required": False, "allow_empty": True}}
 class InvoiceSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source="customer.name", read_only=True)
-    class Meta: model = Invoice; fields = "__all__"
+    order_number = serializers.CharField(source="order.number", read_only=True, default="")
+    trip_number = serializers.CharField(source="trip.number", read_only=True, default="")
+    class Meta:
+        model = Invoice; fields = "__all__"
+        # Derived in Invoice.save from freight + charges + tax, so it can never disagree.
+        read_only_fields = ["total_amount"]
 class SettlementSerializer(serializers.ModelSerializer):
     driver_name = serializers.CharField(source="driver.name", read_only=True)
     class Meta: model = Settlement; fields = "__all__"
@@ -92,7 +97,16 @@ class TrackingActivitySerializer(serializers.ModelSerializer):
 
 
 class ProofOfDeliverySerializer(serializers.ModelSerializer):
-    class Meta: model = ProofOfDelivery; fields = "__all__"
+    order_number = serializers.CharField(source="order.number", read_only=True)
+    tracking_number = serializers.CharField(source="order.tracking_number", read_only=True)
+    customer_name = serializers.CharField(source="order.customer.name", read_only=True)
+    destination = serializers.CharField(source="order.dropoff.city", read_only=True, default="")
+    is_clean = serializers.BooleanField(read_only=True)
+    otp_expired = serializers.BooleanField(read_only=True)
+    class Meta:
+        model = ProofOfDelivery; fields = "__all__"
+        # The office issues and clears these; they are never set by hand on the record.
+        read_only_fields = ["otp", "otp_issued_at", "otp_verified", "status", "verified_at", "verified_by"]
 
 
 class OrderSerializer(serializers.ModelSerializer):
@@ -177,6 +191,15 @@ class QuoteRequestSerializer(serializers.Serializer):
     other_charges = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, default=0)
     customer = serializers.PrimaryKeyRelatedField(queryset=Customer.objects.all(), required=False, allow_null=True)
     save_quote = serializers.BooleanField(required=False, default=False)
+
+
+class ProjectionRequestSerializer(QuoteRequestSerializer):
+    """Input for the lane projection: the quote inputs, plus what it costs to run."""
+    trips_per_month = serializers.IntegerField(required=False, default=1, min_value=1)
+    vehicle = serializers.PrimaryKeyRelatedField(queryset=Vehicle.objects.all(), required=False, allow_null=True)
+    diesel_price = serializers.DecimalField(max_digits=8, decimal_places=2, required=False, allow_null=True)
+    mileage_kmpl = serializers.DecimalField(max_digits=6, decimal_places=2, required=False, allow_null=True)
+    days = serializers.IntegerField(required=False, default=90, min_value=1, max_value=730)
 
 
 from .models import Indent

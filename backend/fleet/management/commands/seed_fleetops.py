@@ -13,7 +13,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from fleet.models import (Customer, Driver, Vehicle, Vendor, ServiceArea, Zone, Place, Fleet, ServiceRate, Order,
-                          Trip, Waypoint, Indent, FuelEntry, TripExpense, Issue, ComplianceDocument,
+                          Trip, Waypoint, Indent, ProofOfDelivery, FuelEntry, TripExpense, Issue, ComplianceDocument,
                           MaintenanceSchedule)
 
 SERVICE_AREAS = [
@@ -182,6 +182,30 @@ class Command(BaseCommand):
                           city=places[pickup].city)
             orders.append(order)
 
+        # ePOD: one drop already cleared, one truck approaching its drop with the OTP
+        # issued, and one capture held back by a shortage so the review queue is not empty.
+        for order in orders:
+            if order.status == "completed":
+                proof, _ = ProofOfDelivery.objects.update_or_create(order=order, defaults={
+                    "proof_type": "signature", "receiver_name": "Mahesh Rao", "receiver_phone": "+919845012233",
+                    "file_url": "https://phloz.example/pod/demo-signed-lr.jpg", "otp": "204813",
+                    "otp_issued_at": timezone.now() - timedelta(days=1, hours=2), "otp_verified": True,
+                    "captured_at": timezone.now() - timedelta(days=1), "status": "verified",
+                    "verified_at": timezone.now() - timedelta(hours=20), "verified_by": "Confirmed at delivery",
+                    "latitude": order.dropoff.latitude, "longitude": order.dropoff.longitude,
+                    "remarks": "Delivered in full, seal intact"})
+            elif order.status == "in_transit":
+                ProofOfDelivery.objects.update_or_create(order=order, defaults={
+                    "proof_type": "otp", "receiver_phone": "+919820044556", "otp": "778120",
+                    "otp_issued_at": timezone.now() - timedelta(hours=1), "status": "awaiting"})
+            elif order.status == "dispatched":
+                ProofOfDelivery.objects.update_or_create(order=order, defaults={
+                    "proof_type": "photo", "receiver_name": "Gate supervisor", "receiver_phone": "+919930077889",
+                    "otp": "551204", "otp_issued_at": timezone.now() - timedelta(hours=5), "otp_verified": True,
+                    "captured_at": timezone.now() - timedelta(hours=4), "status": "submitted",
+                    "shortage_kg": Decimal("120.00"), "damage_reported": True,
+                    "remarks": "Two cartons crushed, 120 kg short against the LR"})
+
         for index, (registration, vehicle) in enumerate(vehicles.items()):
             # Two fills 1,000 km apart on 260 litres works out to a realistic 3.8 km/l for a loaded 32 ft truck.
             base_odometer = vehicle.current_odometer_km - 2000
@@ -250,11 +274,15 @@ class Command(BaseCommand):
                         number=f"TRP-{order.number[-6:]}", vehicle=order.vehicle, driver=order.driver,
                         origin=order.pickup.city, destination=order.dropoff.city,
                         planned_departure=order.scheduled_at or timezone.now(), status="closed")
+                # Freight and GST come from the consignment, exactly as the invoice action does.
                 invoice, _ = Invoice.objects.update_or_create(
                     number=f"INV-{order.number[-6:]}", defaults={
-                        "customer": order.customer, "trip": trip, "freight_amount": order.freight_amount,
-                        "additional_charges": 0, "tax_amount": order.tax_amount,
-                        "total_amount": order.total_amount,
+                        "customer": order.customer, "trip": trip, "order": order,
+                        "freight_amount": order.freight_amount,
+                        "additional_charges": order.other_charges, "tax_amount": order.tax_amount,
+                        "gst_percent": order.service_rate.gst_percent if order.service_rate else 0,
+                        "reverse_charge": bool(order.service_rate and order.service_rate.reverse_charge),
+                        "place_of_supply": order.dropoff.state,
                         "due_date": today + timedelta(days=30), "status": "issued"})
                 accounting_services.post_customer_invoice(invoice)
             for expense in TripExpense.objects.all()[:12]:

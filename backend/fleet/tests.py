@@ -3,12 +3,15 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth.models import User
+from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from .models import (ComplianceDocument, Customer, Driver, Fleet, FuelEntry, Issue, MaintenanceSchedule, Order, Place,
-                     ProofOfDelivery, ServiceArea, ServiceRate, TripExpense, Vehicle, Vendor, Waypoint, Zone, haversine_km)
+from accounting.models import JournalEntry
+from .models import (ComplianceDocument, Customer, Driver, Fleet, FuelEntry, Invoice, Issue, MaintenanceSchedule, Order,
+                     Place, ProofOfDelivery, ServiceArea, ServiceRate, TripExpense, Vehicle, Vendor, Waypoint, Zone,
+                     haversine_km)
 
 
 class BaseFleetOpsTest(TestCase):
@@ -126,8 +129,10 @@ class OrderLifecycleTests(BaseFleetOpsTest):
         self.assertEqual(self.vehicle.status, "on_trip")
         self.assertEqual(self.driver.status, "on_trip")
 
+        issued = self.client.post(f"/api/v1/orders/{order.id}/pod-request/", {"receiver_phone": "9820011223"}, format="json")
+        self.assertEqual(issued.status_code, 200)
         completed = self.client.post(f"/api/v1/orders/{order.id}/complete/",
-                                     {"receiver_name": "Store manager", "otp": "451209"}, format="json")
+                                     {"receiver_name": "Store manager", "otp": issued.data["otp"]}, format="json")
         self.assertEqual(completed.status_code, 200)
         order.refresh_from_db(); self.vehicle.refresh_from_db(); self.driver.refresh_from_db()
         self.assertEqual(order.status, "completed")
@@ -136,6 +141,7 @@ class OrderLifecycleTests(BaseFleetOpsTest):
         self.assertEqual(self.driver.status, "available")
         proof = ProofOfDelivery.objects.get(order=order)
         self.assertTrue(proof.otp_verified)
+        self.assertEqual(proof.status, "verified")
         self.assertEqual([a.code for a in order.activities.all()][0], "ORDER_COMPLETED")
 
     def test_activity_endpoint_validates_status(self):
@@ -172,6 +178,193 @@ class OrderLifecycleTests(BaseFleetOpsTest):
         self.assertEqual(filtered.data["count"], 1)
         searched = self.client.get("/api/v1/orders/", {"search": first.tracking_number})
         self.assertEqual(searched.data["count"], 1)
+
+
+class EpodWorkflowTests(OrderLifecycleTests):
+    """OTP issue, driver capture, office review, and the gate they put on billing."""
+
+    def deliver(self, order):
+        self.client.post(f"/api/v1/orders/{order.id}/assign/",
+                         {"driver": self.driver.id, "vehicle": self.vehicle.id}, format="json")
+        self.client.post(f"/api/v1/orders/{order.id}/dispatch/")
+
+    def test_otp_is_issued_once_and_confirms_a_clean_delivery(self):
+        order = self.create_order()
+        self.deliver(order)
+        issued = self.client.post(f"/api/v1/orders/{order.id}/pod-request/",
+                                  {"receiver_phone": "9820011223"}, format="json")
+        self.assertEqual(issued.status_code, 200)
+        self.assertEqual(len(issued.data["otp"]), 6)
+        proof = ProofOfDelivery.objects.get(order=order)
+        self.assertEqual(proof.status, "awaiting")
+
+        # A second request refreshes the same proof rather than opening another one.
+        again = self.client.post(f"/api/v1/orders/{order.id}/pod-request/", {}, format="json")
+        self.assertEqual(ProofOfDelivery.objects.filter(order=order).count(), 1)
+
+        submitted = self.client.post(f"/api/v1/orders/{order.id}/pod-submit/", {
+            "receiver_name": "Store manager", "otp": again.data["otp"]}, format="json")
+        self.assertEqual(submitted.status_code, 201, submitted.data)
+        self.assertEqual(submitted.data["status"], "verified")
+        self.assertTrue(submitted.data["otp_verified"])
+
+    def test_a_wrong_or_expired_otp_is_refused(self):
+        order = self.create_order()
+        self.deliver(order)
+        self.client.post(f"/api/v1/orders/{order.id}/pod-request/", {}, format="json")
+        wrong = self.client.post(f"/api/v1/orders/{order.id}/pod-submit/",
+                                 {"receiver_name": "Gate", "otp": "000000"}, format="json")
+        self.assertEqual(wrong.status_code, 400)
+
+        proof = ProofOfDelivery.objects.get(order=order)
+        proof.otp_issued_at = timezone.now() - timedelta(hours=30)
+        proof.save(update_fields=["otp_issued_at"])
+        stale = self.client.post(f"/api/v1/orders/{order.id}/pod-submit/",
+                                 {"receiver_name": "Gate", "otp": proof.otp}, format="json")
+        self.assertEqual(stale.status_code, 400)
+        self.assertIn("expired", str(stale.data).lower())
+
+    def test_a_shortage_holds_the_capture_for_the_office(self):
+        order = self.create_order()
+        self.deliver(order)
+        issued = self.client.post(f"/api/v1/orders/{order.id}/pod-request/", {}, format="json")
+        submitted = self.client.post(f"/api/v1/orders/{order.id}/pod-submit/", {
+            "receiver_name": "Store manager", "otp": issued.data["otp"], "shortage_kg": 120}, format="json")
+        self.assertEqual(submitted.data["status"], "submitted")
+
+        queue = self.client.get("/api/v1/proofs/pending/")
+        self.assertEqual(queue.data["count"], 1)
+
+        proof_id = submitted.data["id"]
+        rejected = self.client.post(f"/api/v1/proofs/{proof_id}/reject/", {"reason": "Shortage not signed by the consignee"}, format="json")
+        self.assertEqual(rejected.data["status"], "rejected")
+        self.assertEqual(self.client.post(f"/api/v1/proofs/{proof_id}/reject/", {}, format="json").status_code, 400)
+
+        verified = self.client.post(f"/api/v1/proofs/{proof_id}/verify/", {}, format="json")
+        self.assertEqual(verified.data["status"], "verified")
+        self.assertEqual(verified.data["verified_by"], "fleetadmin")
+        self.assertEqual([a.code for a in order.activities.all()][0], "POD_VERIFIED")
+
+    def test_completion_needs_a_capture_when_proof_is_required(self):
+        order = self.create_order()
+        self.deliver(order)
+        refused = self.client.post(f"/api/v1/orders/{order.id}/complete/", {}, format="json")
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("ePOD", str(refused.data))
+
+        order.pod_required = False
+        order.save(update_fields=["pod_required"])
+        self.assertEqual(self.client.post(f"/api/v1/orders/{order.id}/complete/", {}, format="json").status_code, 200)
+
+
+class AutomaticInvoiceTests(OrderLifecycleTests):
+    """The bill is derived from the consignment, never typed."""
+
+    def setUp(self):
+        super().setUp()
+        call_command("seed_accounting")
+
+    def deliver(self, order, **capture):
+        self.client.post(f"/api/v1/orders/{order.id}/assign/",
+                         {"driver": self.driver.id, "vehicle": self.vehicle.id}, format="json")
+        self.client.post(f"/api/v1/orders/{order.id}/dispatch/")
+        issued = self.client.post(f"/api/v1/orders/{order.id}/pod-request/", {}, format="json")
+        payload = {"receiver_name": "Store manager", "otp": issued.data["otp"], **capture}
+        self.client.post(f"/api/v1/orders/{order.id}/pod-submit/", payload, format="json")
+        return self.client.post(f"/api/v1/orders/{order.id}/complete/", {}, format="json")
+
+    def test_invoice_takes_freight_and_gst_from_the_rate_card(self):
+        order = self.create_order()
+        self.deliver(order)
+        response = self.client.post(f"/api/v1/orders/{order.id}/invoice/", {}, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        order.refresh_from_db()
+        invoice = response.data["invoice"]
+        self.assertEqual(float(invoice["freight_amount"]), float(order.freight_amount))
+        self.assertEqual(float(invoice["tax_amount"]), float(order.tax_amount))
+        # The bill is the rate card priced over this lane, to the paisa.
+        self.assertEqual(float(invoice["total_amount"]),
+                         self.rate.quote(distance_km=order.distance_km, weight_kg=order.weight_kg)["total"])
+        self.assertEqual(float(invoice["total_amount"]), float(order.total_amount))
+        self.assertEqual(float(invoice["gst_percent"]), 5.0)
+        self.assertEqual(invoice["place_of_supply"], "Maharashtra")
+        self.assertEqual(invoice["order_number"], order.number)
+        self.assertTrue(response.data["journal_entry"]["number"].startswith("JV-"))
+
+    def test_billing_the_same_consignment_twice_returns_the_same_invoice(self):
+        order = self.create_order()
+        self.deliver(order)
+        first = self.client.post(f"/api/v1/orders/{order.id}/invoice/", {}, format="json")
+        second = self.client.post(f"/api/v1/orders/{order.id}/invoice/", {}, format="json")
+        self.assertEqual(second.status_code, 200)
+        self.assertFalse(second.data["created"])
+        self.assertEqual(first.data["invoice"]["number"], second.data["invoice"]["number"])
+        self.assertEqual(Invoice.objects.filter(order=order).count(), 1)
+        self.assertEqual(JournalEntry.objects.filter(reference_type="invoice").count(), 1)
+
+    def test_an_undelivered_or_unverified_consignment_cannot_be_billed(self):
+        order = self.create_order()
+        early = self.client.post(f"/api/v1/orders/{order.id}/invoice/", {}, format="json")
+        self.assertEqual(early.status_code, 400)
+        self.assertIn("delivered", str(early.data))
+
+        self.deliver(order, shortage_kg=90)         # held for review, so it stays unbillable
+        held = self.client.post(f"/api/v1/orders/{order.id}/invoice/", {}, format="json")
+        self.assertEqual(held.status_code, 400)
+        self.assertIn("ePOD", str(held.data))
+
+        proof = ProofOfDelivery.objects.get(order=order)
+        self.client.post(f"/api/v1/proofs/{proof.id}/verify/", {}, format="json")
+        self.assertEqual(self.client.post(f"/api/v1/orders/{order.id}/invoice/", {}, format="json").status_code, 201)
+
+    def test_the_total_is_always_the_sum_of_its_parts(self):
+        invoice = Invoice.objects.create(number="INV-MANUAL-1", customer=self.customer, freight_amount=10000,
+                                         additional_charges=500, tax_amount=525, total_amount=1,
+                                         due_date=timezone.localdate())
+        self.assertEqual(invoice.total_amount, Decimal("11025.00"))
+
+
+class LaneProjectionTests(BaseFleetOpsTest):
+    """What a lane earns against what this fleet actually spends to run it."""
+
+    def record_history(self):
+        FuelEntry.objects.create(vehicle=self.vehicle, odometer_km=268400, volume_litres=Decimal("250"),
+                                 rate_per_litre=Decimal("90.00"))
+        FuelEntry.objects.create(vehicle=self.vehicle, odometer_km=269400, volume_litres=Decimal("250"),
+                                 rate_per_litre=Decimal("90.00"))       # 1000 km on 250 litres -> 4 km/l
+        TripExpense.objects.create(vehicle=self.vehicle, category="toll", amount=4000)
+
+    def test_projection_uses_recorded_diesel_and_on_road_spend(self):
+        self.record_history()
+        response = self.client.post("/api/v1/service-rates/project/", {
+            "service_rate": self.rate.id, "distance_km": 150, "weight_kg": 12400, "trips_per_month": 20}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.data
+        self.assertTrue(data["basis"]["from_history"])
+        self.assertEqual(data["basis"]["mileage_kmpl"], 4.0)
+        self.assertEqual(data["basis"]["diesel_price"], 90.0)
+        self.assertEqual(data["fuel_cost"], 3375.0)                     # 150 km at 22.50/km
+        self.assertEqual(data["on_road_cost"], 600.0)                   # 4000 over 1000 km, 150 km of it
+        self.assertEqual(data["total_cost"], 3975.0)
+        self.assertEqual(data["revenue"], 13339.5)                      # taxable value, GST excluded
+        self.assertEqual(data["margin"], 9364.5)
+        self.assertEqual(data["monthly"]["margin"], 187290.0)
+        self.assertEqual(data["break_even_rate_per_km"], 26.5)
+
+    def test_overrides_beat_history_and_history_is_optional(self):
+        cold = self.client.post("/api/v1/service-rates/project/", {
+            "service_rate": self.rate.id, "distance_km": 100}, format="json")
+        self.assertFalse(cold.data["basis"]["from_history"])
+        self.assertEqual(cold.data["on_road_cost"], 0.0)
+
+        self.record_history()
+        overridden = self.client.post("/api/v1/service-rates/project/", {
+            "service_rate": self.rate.id, "distance_km": 150, "diesel_price": "100.00", "mileage_kmpl": "5.00"}, format="json")
+        self.assertEqual(overridden.data["basis"]["mileage_kmpl"], 5.0)
+        self.assertEqual(overridden.data["fuel_cost"], 3000.0)          # 150 km at 20/km
+
+    def test_a_projection_needs_a_rate_card(self):
+        self.assertEqual(self.client.post("/api/v1/service-rates/project/", {"distance_km": 150}, format="json").status_code, 400)
 
 
 class FuelAndExpenseTests(BaseFleetOpsTest):

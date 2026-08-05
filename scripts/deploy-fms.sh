@@ -191,6 +191,7 @@ from rest_framework.authtoken.models import Token
 print(Token.objects.get_or_create(user=User.objects.get(username='$ADMIN_USER'))[0].key)
 \"" | tail -1)
 for path in orders indents trips fleets vendors places zones service-rates compliance-documents \
+            proofs proofs/pending invoices \
             accounting/accounts accounting/journal-entries accounting/reports/trial-balance \
             iam/users iam/roles iam/branches; do
   printf '  %-38s ' "$path"

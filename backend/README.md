@@ -8,9 +8,10 @@ Django REST backend for the Phloz fleet-owner platform.
 sales quotations, maintenance work orders, invoices and driver settlements.
 
 **FleetOps** (modelled on [Fleetbase](https://github.com/fleetbase/fleetbase)) — vendors, places,
-service areas, geofenced zones, fleets, rate cards and quotes, consignment orders with waypoints,
-tracking activity and ePOD, fuel entries with mileage, on-road trip expenses, issues, statutory
-compliance documents and preventive maintenance schedules.
+service areas, geofenced zones, fleets, rate cards with a freight estimator and lane margin
+projection, consignment orders with waypoints, tracking activity, the ePOD workflow, invoices
+raised from the consignment and posted to the ledger, fuel entries with mileage, on-road trip
+expenses, issues, statutory compliance documents and preventive maintenance schedules.
 
 **Accounting** (`/api/v1/accounting/`) — chart of accounts, cost centres, double-entry journal
 vouchers, vendor bills with TDS, receipts and payments, and reports for trial balance, P&L,
@@ -34,7 +35,7 @@ Endpoint references: [../docs/FLEETOPS.md](../docs/FLEETOPS.md) and
 
 ## Tests
 
-`python manage.py test fleet`
+`python manage.py test` — 107 tests across fleet, accounting and iam.
 
 ## EC2 deployment
 
