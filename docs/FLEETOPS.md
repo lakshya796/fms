@@ -108,6 +108,31 @@ awaiting  --(driver captures)-->  submitted  --(office clears)-->  verified
 An order whose `pod_required` is set cannot be completed without a capture, and cannot be
 invoiced until a proof reaches `verified`.
 
+### Physical POD by courier
+
+Some consignees will only sign a physical copy, so the driver collects it and it comes back to
+the office by courier - a second, slower channel alongside the digital ePOD above, with no live
+courier-API integration behind it. State is updated by hand as the office hears from the courier:
+
+```
+not_sent --(dispatch)--> dispatched --(in transit)--> in_transit --(received)--> delivered
+                              |                             |
+                              +----------(lost)-------------+
+                                          |
+                                          +--(received, if it turns up after all)--> delivered
+```
+
+- `POST /api/v1/proofs/{id}/courier-dispatch/` - `courier_name` and `awb_number` are required;
+  `expected_by` (a date) is optional and drives the overdue flag.
+- `POST /api/v1/proofs/{id}/courier-transit/`, `/courier-received/`, `/courier-lost/`.
+- `GET /api/v1/proofs/couriers-pending/` - everything out with a courier and not yet delivered,
+  oldest dispatch first. A copy reported lost stays on this list; it still needs a decision.
+- `courier_overdue` (on the proof) is true once `courier_expected_by` has passed and the copy is
+  still `dispatched` or `in_transit`.
+
+This is independent of the digital ePOD's own `status` - a proof can be `verified` for billing
+purposes while its physical copy is still in the post.
+
 ### Freight estimator and lane projection
 
 ```
@@ -191,7 +216,10 @@ New workspace sections in the Next.js console:
   The drawer also carries the consignment's delivery proofs, an **Issue delivery OTP** button,
   and **Raise invoice** once it is delivered.
 - **ePOD** — the delivery desk: awaiting, in review, verified and rejected, with the OTP, the
-  capture form and the verify/reject decision in one drawer.
+  capture form and the verify/reject decision in one drawer. Each proof also carries its
+  physical-copy courier status - a "Physical copy pending" filter, a stat card that turns red
+  when one is overdue, and a section in the drawer to dispatch, mark in transit, receive or
+  report a physical POD lost.
 - **Tracking** — every trackable consignment in one list, filterable by status and by "running
   late" (past its scheduled time and not yet delivered), with a route panel per shipment: a
   progress bar and vehicle position along the lane, distance covered, an approximate ETA at
@@ -228,6 +256,11 @@ movement to show rather than just a booking event. The in-transit lane is delibe
 scheduled in the past, so there is always a "running late" shipment to see, and one of its
 checkpoints is a check-post hold rather than a plain ping.
 
+Two of the seeded proofs also carry a physical-copy courier trail: the completed order's is a
+closed loop (Blue Dart, dispatched and already received back), and the dispatched order's is
+still out and overdue (DTDC, five days gone, expected two days ago) - so the "physical copy
+pending" watchlist on the ePOD page is never empty on a fresh seed.
+
 ## Tests
 
 ```
@@ -236,9 +269,11 @@ python manage.py test fleet
 
 Covers rate-card arithmetic (including minimum charge and reverse charge), geofence containment,
 the full order lifecycle, the ePOD workflow (OTP issue, wrong and expired codes, shortage review,
-verify and reject, and the gate on completion), automatic invoicing and its idempotency, lane
-projection against recorded fuel and expense history, live tracking (progress against the most
-recent GPS fix, a desk status change never shadowing a real one, and the public endpoint
-exposing progress without coordinates), public tracking, mileage and odometer roll-up, expense
-summaries, document expiry windows, maintenance intervals, fleet assignment and the analytics
-endpoint.
+verify and reject, and the gate on completion), the physical-copy courier trail (dispatch needs a
+courier and AWB, transit and receipt need a prior dispatch, a lost copy can still be marked
+received later, the overdue flag, and the pending watchlist), automatic invoicing and its
+idempotency, lane projection against recorded fuel and expense history, live tracking (progress
+against the most recent GPS fix, a desk status change never shadowing a real one, and the public
+endpoint exposing progress without coordinates), public tracking, mileage and odometer roll-up,
+expense summaries, document expiry windows, maintenance intervals, fleet assignment and the
+analytics endpoint.

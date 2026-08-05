@@ -147,7 +147,9 @@ New sections in the sidebar:
   detail drawer on click; dropping onto "allocated" opens the truck allocation panel, and
   "converted" creates the priced order
 - **TRANSPORT → ePOD** — the delivery desk: issue the OTP, record what the driver captured,
-  and verify or reject it. Consignments held by a shortage or damage sit in one queue
+  and verify or reject it. Consignments held by a shortage or damage sit in one queue, and each
+  proof also tracks the signed physical copy some consignees insist on, couriered back to the
+  office and marked dispatched, in transit, received or lost by hand
 - **TRANSPORT → Tracking** — every trackable consignment, filterable by status or "running
   late", with a route view, movement history, the geofence its last fix falls inside, a
   checkpoint form for dispatchers with no telematics feed, and a link to share with the
@@ -171,7 +173,7 @@ sign-in screen rather than leaving a workspace that can no longer load.
 ## 5. Tests
 
 ```
-python manage.py test          # 113 tests across fleet, accounting and iam
+python manage.py test          # 127 tests across fleet, accounting and iam
 ```
 
 Covering: rating and GST, geofencing, the order and indent lifecycle, the ePOD workflow,

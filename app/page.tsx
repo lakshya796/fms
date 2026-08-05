@@ -1255,6 +1255,8 @@ function EpodView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [reason, setReason] = useState("");
+  const [lostReason, setLostReason] = useState("");
+  const [courierOnly, setCourierOnly] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -1293,8 +1295,25 @@ function EpodView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify
     }, "ePOD captured");
   };
 
-  const shown = filter ? proofs.filter(proof => proof.status === filter) : proofs;
+  const sendByCourier = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget as HTMLFormElement);
+    await call(`proofs/${selected.id}/courier-dispatch/`, {
+      courier_name: String(form.get("courier_name") || ""), awb_number: String(form.get("awb_number") || ""),
+      expected_by: String(form.get("expected_by") || "") || undefined, remarks: String(form.get("courier_note") || ""),
+    }, "Physical POD dispatch recorded");
+  };
+  const reportLost = async () => {
+    await call(`proofs/${selected.id}/courier-lost/`, { remarks: lostReason }, "Marked lost in transit");
+    setLostReason("");
+  };
+
+  const courierPending = (proof: any) => proof.physical_copy_required && proof.courier_status !== "delivered";
+  const shown = (filter ? proofs.filter(proof => proof.status === filter) : proofs)
+    .filter(proof => !courierOnly || courierPending(proof));
   const counts = (status: string) => proofs.filter(proof => proof.status === status).length;
+  const courierPendingCount = proofs.filter(courierPending).length;
+  const courierOverdueCount = proofs.filter(proof => proof.courier_overdue).length;
 
   return <div className="module-page">
     <div className="module-title"><div><p className="eyebrow">ELECTRONIC PROOF OF DELIVERY</p><h2>ePOD</h2><p>Issue the delivery OTP, capture what the driver hands back, and clear it for billing. A consignment cannot be invoiced until its proof is verified.</p></div></div>
@@ -1302,12 +1321,14 @@ function EpodView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify
       <div className="module-stat"><span>Awaiting delivery</span><strong>{loading ? "—" : counts("awaiting")}</strong><small>OTP issued, truck still running</small></div>
       <div className="module-stat warn"><span>In review</span><strong>{loading ? "—" : counts("submitted")}</strong><small>Held by a shortage or damage</small></div>
       <div className="module-stat"><span>Verified</span><strong>{loading ? "—" : counts("verified")}</strong><small>Cleared for invoicing</small></div>
+      <div className={"module-stat" + (courierOverdueCount ? " alert" : "")}><span>Physical copy by courier</span><strong>{loading ? "—" : courierPendingCount}</strong><small>{courierOverdueCount ? `${courierOverdueCount} overdue` : "Out with a courier"}</small></div>
     </div>
     <section className="module-table-card">
       <div className="module-toolbar"><div><strong>Delivery proofs</strong><span>{shown.length} of {proofs.length}</span></div>
-        <div className="toolbar-actions">{podFilters.map(([value, label]) => <button key={value} className={value === filter ? "chip active" : "chip"} onClick={() => setFilter(value)}>{label}</button>)}</div></div>
-      <div className="table-wrap"><table><thead><tr><th>Consignment</th><th>Customer</th><th>Drop</th><th>Received by</th><th>Captured</th><th>Exception</th><th>Status</th></tr></thead>
-        <tbody>{shown.map(proof => <tr key={proof.id} className="clickable" onClick={() => { setSelected(proof); setReason(""); }}>
+        <div className="toolbar-actions wrap">{podFilters.map(([value, label]) => <button key={value} className={value === filter ? "chip active" : "chip"} onClick={() => setFilter(value)}>{label}</button>)}
+          <button className={courierOnly ? "chip active" : "chip"} onClick={() => setCourierOnly(v => !v)}>Physical copy pending</button></div></div>
+      <div className="table-wrap"><table><thead><tr><th>Consignment</th><th>Customer</th><th>Drop</th><th>Received by</th><th>Captured</th><th>Exception</th><th>Status</th><th>Physical copy</th></tr></thead>
+        <tbody>{shown.map(proof => <tr key={proof.id} className="clickable" onClick={() => { setSelected(proof); setReason(""); setLostReason(""); }}>
           <td><strong>{proof.order_number}</strong><small>{proof.tracking_number}</small></td>
           <td>{proof.customer_name}</td>
           <td>{proof.destination || "—"}</td>
@@ -1315,6 +1336,7 @@ function EpodView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify
           <td>{proof.captured_at ? new Date(proof.captured_at).toLocaleString("en-IN") : "—"}</td>
           <td>{proof.is_clean ? "Clean" : [Number(proof.shortage_kg) ? `${Number(proof.shortage_kg)} kg short` : "", proof.damage_reported ? "damage" : ""].filter(Boolean).join(" · ")}</td>
           <td><span className={"status " + proof.status}>{proof.status}</span></td>
+          <td>{proof.physical_copy_required ? <span className={"status " + (proof.courier_overdue ? "cancelled" : String(proof.courier_status).replaceAll("_", "-"))}>{proof.courier_overdue ? "overdue" : proof.courier_status.replaceAll("_", " ")}</span> : "—"}</td>
         </tr>)}</tbody></table></div>
       {!loading && !shown.length && <div className="data-state">No delivery proofs in this state.</div>}
     </section>
@@ -1364,6 +1386,43 @@ function EpodView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify
       <div className="record-actions">
         <button className="secondary" disabled={busy || !selected.captured_at || selected.status === "rejected"} onClick={() => call(`proofs/${selected.id}/reject/`, { reason }, "ePOD sent back")}>Reject</button>
         <button className="primary" disabled={busy || !selected.captured_at || selected.status === "verified"} onClick={() => call(`proofs/${selected.id}/verify/`, {}, "ePOD verified")}>Verify</button>
+      </div>
+
+      <div className="allocate-box">
+        <p className="eyebrow">PHYSICAL POD BY COURIER</p>
+        {selected.courier_status === "not_sent" ? <>
+          <p className="pod-note">Some consignees will only sign a physical copy. If the driver collected one, send it back here.</p>
+          <form className="action-form pod-capture" onSubmit={sendByCourier}>
+            <div className="form-grid">
+              <label>Courier<input name="courier_name" list="courier-names" placeholder="Blue Dart" required /></label>
+              <label>AWB / tracking number<input name="awb_number" required /></label>
+              <label>Expected by<input name="expected_by" type="date" /></label>
+              <label>Note<input name="courier_note" placeholder="Optional" /></label>
+            </div>
+            <datalist id="courier-names"><option value="India Post" /><option value="Blue Dart" /><option value="DTDC" /><option value="Professional Couriers" /><option value="Delhivery" /><option value="Ecom Express" /></datalist>
+            <button className="primary full-button" disabled={busy}>Send by courier</button>
+          </form>
+        </> : <>
+          <div className="tracking-grid">
+            <div><span>Courier</span><strong>{selected.courier_name}</strong></div>
+            <div><span>AWB</span><strong>{selected.courier_awb_number}</strong></div>
+            <div><span>Dispatched</span><strong>{selected.courier_dispatched_at ? new Date(selected.courier_dispatched_at).toLocaleDateString("en-IN") : "—"}</strong></div>
+            <div><span>Expected by</span><strong className={selected.courier_overdue ? "text-late" : ""}>{selected.courier_expected_by || "—"}{selected.courier_overdue ? " · overdue" : ""}</strong></div>
+          </div>
+          <p className={"pod-note" + (selected.courier_status === "lost" ? " warn" : "")}>
+            {selected.courier_status === "delivered" ? `Received back at the office${selected.courier_received_at ? ` on ${new Date(selected.courier_received_at).toLocaleString("en-IN")}` : ""}.`
+              : selected.courier_status === "lost" ? `Reported lost in transit.${selected.courier_remarks ? ` ${selected.courier_remarks}` : ""}`
+              : selected.courier_status === "in_transit" ? "In transit with the courier."
+              : "Dispatched, not yet marked in transit."}
+          </p>
+          {selected.courier_status !== "lost" && selected.courier_status !== "delivered" &&
+            <label className="reject-reason">If it goes missing, note why<input value={lostReason} onChange={event => setLostReason(event.target.value)} placeholder="Misplaced at the hub" /></label>}
+          {selected.courier_status !== "delivered" && <div className="record-actions">
+            {selected.courier_status === "dispatched" && <button className="secondary" disabled={busy} onClick={() => call(`proofs/${selected.id}/courier-transit/`, {}, "Marked in transit")}>In transit</button>}
+            {selected.courier_status !== "lost" && <button className="secondary" disabled={busy} onClick={reportLost}>Report lost</button>}
+            <button className="primary" disabled={busy} onClick={() => call(`proofs/${selected.id}/courier-received/`, {}, "Physical POD received")}>Mark received</button>
+          </div>}
+        </>}
       </div>
     </aside></div>}
   </div>;

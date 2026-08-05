@@ -101,9 +101,9 @@ h1 { margin:0; font-size:24px; letter-spacing:-.7px; }
 .chip{border:1px solid #dfe4df;background:#fff;border-radius:20px;padding:7px 12px;font-size:10px;font-weight:700;cursor:pointer;color:#4c574f}
 .chip.active{background:#16231d;color:#fff;border-color:#16231d}
 .compliance-second{margin-top:16px}
-.status.valid,.status.active,.status.completed,.status.approved,.status.resolved{background:#e9f6ee;color:#347257}
-.status.expiring,.status.assigned,.status.open,.status.created,.status.dispatched{background:#fff4df;color:#9a6b22}
-.status.expired,.status.cancelled,.status.critical{background:#ffebe7;color:#b95544}
+.status.valid,.status.active,.status.completed,.status.approved,.status.resolved,.status.delivered{background:#e9f6ee;color:#347257}
+.status.expiring,.status.assigned,.status.open,.status.created,.status.dispatched,.status.not-sent{background:#fff4df;color:#9a6b22}
+.status.expired,.status.cancelled,.status.critical,.status.lost{background:#ffebe7;color:#b95544}
 .status.in-transit,.status.high{background:#e9f1fb;color:#3a6e9d}
 .data-state{padding:34px;text-align:center;color:#8b948f;font-size:11px}
 .data-state.error{color:#b95544}

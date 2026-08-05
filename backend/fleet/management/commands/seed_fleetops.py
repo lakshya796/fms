@@ -219,6 +219,8 @@ class Command(BaseCommand):
         # issued, and one capture held back by a shortage so the review queue is not empty.
         for order in orders:
             if order.status == "completed":
+                # The consignee only signs a physical copy, so the driver couriered it back -
+                # already received at the office, a closed loop.
                 proof, _ = ProofOfDelivery.objects.update_or_create(order=order, defaults={
                     "proof_type": "signature", "receiver_name": "Mahesh Rao", "receiver_phone": "+919845012233",
                     "file_url": "https://phloz.example/pod/demo-signed-lr.jpg", "otp": "204813",
@@ -226,18 +228,28 @@ class Command(BaseCommand):
                     "captured_at": timezone.now() - timedelta(days=1), "status": "verified",
                     "verified_at": timezone.now() - timedelta(hours=20), "verified_by": "Confirmed at delivery",
                     "latitude": order.dropoff.latitude, "longitude": order.dropoff.longitude,
-                    "remarks": "Delivered in full, seal intact"})
+                    "remarks": "Delivered in full, seal intact",
+                    "physical_copy_required": True, "courier_name": "Blue Dart", "courier_awb_number": "BD77410238842",
+                    "courier_status": "delivered", "courier_dispatched_at": timezone.now() - timedelta(hours=20),
+                    "courier_expected_by": timezone.localdate() - timedelta(days=1),
+                    "courier_received_at": timezone.now() - timedelta(hours=2)})
             elif order.status == "in_transit":
                 ProofOfDelivery.objects.update_or_create(order=order, defaults={
                     "proof_type": "otp", "receiver_phone": "+919820044556", "otp": "778120",
                     "otp_issued_at": timezone.now() - timedelta(hours=1), "status": "awaiting"})
             elif order.status == "dispatched":
+                # Held for review over a shortage, and its physical copy is overdue from the
+                # courier too - two independent problems the office needs to chase.
                 ProofOfDelivery.objects.update_or_create(order=order, defaults={
                     "proof_type": "photo", "receiver_name": "Gate supervisor", "receiver_phone": "+919930077889",
                     "otp": "551204", "otp_issued_at": timezone.now() - timedelta(hours=5), "otp_verified": True,
                     "captured_at": timezone.now() - timedelta(hours=4), "status": "submitted",
                     "shortage_kg": Decimal("120.00"), "damage_reported": True,
-                    "remarks": "Two cartons crushed, 120 kg short against the LR"})
+                    "remarks": "Two cartons crushed, 120 kg short against the LR",
+                    "physical_copy_required": True, "courier_name": "DTDC", "courier_awb_number": "DT99201847756",
+                    "courier_status": "dispatched", "courier_dispatched_at": timezone.now() - timedelta(days=5),
+                    "courier_expected_by": timezone.localdate() - timedelta(days=2),
+                    "courier_remarks": "Consignee's stores clerk was to countersign before dispatch"})
 
         for index, (registration, vehicle) in enumerate(vehicles.items()):
             # Two fills 1,000 km apart on 260 litres works out to a realistic 3.8 km/l for a loaded 32 ft truck.

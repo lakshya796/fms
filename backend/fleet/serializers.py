@@ -103,10 +103,12 @@ class ProofOfDeliverySerializer(serializers.ModelSerializer):
     destination = serializers.CharField(source="order.dropoff.city", read_only=True, default="")
     is_clean = serializers.BooleanField(read_only=True)
     otp_expired = serializers.BooleanField(read_only=True)
+    courier_overdue = serializers.BooleanField(read_only=True)
     class Meta:
         model = ProofOfDelivery; fields = "__all__"
         # The office issues and clears these; they are never set by hand on the record.
-        read_only_fields = ["otp", "otp_issued_at", "otp_verified", "status", "verified_at", "verified_by"]
+        read_only_fields = ["otp", "otp_issued_at", "otp_verified", "status", "verified_at", "verified_by",
+                           "courier_status", "courier_dispatched_at", "courier_received_at"]
 
 
 class OrderSerializer(serializers.ModelSerializer):
