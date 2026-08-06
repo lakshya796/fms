@@ -230,8 +230,9 @@ New workspace sections in the Next.js console:
 - **Rates** — rate cards, a freight estimator with the full GST breakdown, and a **margin
   projection** that costs the lane against the fleet's own diesel and on-road spend.
 - **Compliance** — expiry watchlist over 15/30/60/90 days, plus preventive services that are due.
-- **Fleets, Vendors, Places, Zones, Fuel, Expenses, Issues** — live master-data tables with create
-  forms.
+- **Fleets** — click a fleet to assign or remove vehicles and drivers, backed by
+  `fleets/{id}/assign/`, with chips showing who is in it and a dropdown of who isn't yet.
+- **Vendors, Places, Zones, Fuel, Expenses, Issues** — live master-data tables with create forms.
 - **Analytics** — utilisation, cost per km, average mileage, on-time delivery, diesel and expense
   split for the last 30 days.
 - **`/track`** — the public page behind the copied link. A consignee enters a tracking number,

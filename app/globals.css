@@ -231,3 +231,13 @@ tr.clickable:hover td{background:#f8faf7}
 .city.finish-city{right:12%;top:33%}
 .text-late{color:#b95544}
 @media(max-width:1050px){.tracking-page-layout{grid-template-columns:1fr}}
+
+/* Fleets: assign vehicles and drivers to a fleet group */
+.chip-list{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.chip.removable{display:inline-flex;align-items:center;gap:7px;cursor:default}
+.chip.removable button{border:0;background:transparent;color:#8a938e;font-size:13px;line-height:1;padding:0;cursor:pointer}
+.chip.removable button:hover{color:#b95544}
+.chip.removable button:disabled{opacity:.5;cursor:default}
+.assign-row{display:flex;gap:8px}
+.assign-row select{flex:1;border:1px solid #dfe4df;border-radius:9px;padding:9px 11px;font-size:11px;background:#fff;outline:none}
+.assign-row button{white-space:nowrap;width:auto;height:auto;padding:9px 14px}
