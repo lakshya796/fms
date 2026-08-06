@@ -600,18 +600,33 @@ const recordForms: Record<string, FormSpec> = {
   },
 };
 
-function RecordForm({ spec, onClose, onSaved }: { spec: FormSpec; onClose: () => void; onSaved: (reference: string, created: any) => void }) {
+// Edit reuses the same field spec as creation. A field's current value on the record beats
+// the spec's default, but only once every `source` dropdown has loaded - an uncontrolled
+// <select>'s defaultValue only ever applies on its first render, so if the options for a
+// vehicle/customer/etc. dropdown arrive after the field has already mounted empty, the
+// record's real value would never visibly get selected.
+function RecordForm({ spec, record, onClose, onSaved }: { spec: FormSpec; record?: any; onClose: () => void; onSaved: (reference: string, saved: any) => void }) {
   const [options, setOptions] = useState<Record<string, any[]>>({});
   const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
+  const sources = Array.from(new Set(spec.fields.map(field => field.source).filter(Boolean) as string[]));
   useEffect(() => {
-    const sources = Array.from(new Set(spec.fields.map(field => field.source).filter(Boolean) as string[]));
+    setOptions({});
     sources.forEach(source => {
       fmsRequest<any>(wholeSet(source)).then(payload => {
         setOptions(current => ({ ...current, [source]: asList(payload) }));
       }).catch(() => undefined);
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spec]);
+  const ready = sources.every(source => Boolean(options[source]));
+
+  const defaultFor = (field: FormField): string => {
+    const raw = record ? record[field.name] : undefined;
+    if (raw === undefined || raw === null) return field.value || (field.type === "select" && !field.source ? (field.options || [["", ""]])[0][0] : "");
+    if (field.type === "datetime") return String(raw).slice(0, 16);
+    return String(raw);
+  };
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -632,25 +647,28 @@ function RecordForm({ spec, onClose, onSaved }: { spec: FormSpec; onClose: () =>
       payload[field.name] = field.type === "number" || field.source ? Number(raw) : raw;
     }
     try {
-      const created = await fmsRequest<any>(spec.endpoint, { method: "POST", body: JSON.stringify(payload) });
-      onSaved(spec.reference(values, created), created);
+      const endpoint = record ? `${spec.endpoint}${record.id}/` : spec.endpoint;
+      const saved = await fmsRequest<any>(endpoint, { method: record ? "PATCH" : "POST", body: JSON.stringify(payload) });
+      onSaved(spec.reference(values, saved), saved);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Unable to save record");
     } finally { setWorking(false); }
   };
 
+  if (!ready) return <div className="action-form"><div className="data-state">Loading form…</div></div>;
+
   return <form className="action-form" onSubmit={submit}>
     <div className="form-grid">{spec.fields.filter(field => field.type !== "textarea").map(field => <label key={field.name}>{field.label}
-      {field.source ? <select name={field.name} required={field.required} multiple={field.multiple} defaultValue={field.multiple ? [] : ""}>
+      {field.source ? <select name={field.name} required={field.required} multiple={field.multiple} defaultValue={field.multiple ? (record?.[field.name] || []).map(String) : defaultFor(field)}>
         {!field.multiple && <option value="">{(options[field.source] || []).length ? "Select…" : "Loading…"}</option>}
-        {(options[field.source] || []).map(record => <option key={record.id} value={record.id}>{sourceLabel[field.source!] ? sourceLabel[field.source!](record) : record.name}</option>)}
+        {(options[field.source] || []).map(option => <option key={option.id} value={option.id}>{sourceLabel[field.source!] ? sourceLabel[field.source!](option) : option.name}</option>)}
       </select>
-      : field.type === "select" ? <select name={field.name} defaultValue={field.value || (field.options || [["", ""]])[0][0]}>{(field.options || []).map(option => <option key={option[0]} value={option[0]}>{option[1]}</option>)}</select>
-      : <input name={field.name} type={field.type === "number" ? "number" : field.type === "date" ? "date" : field.type === "datetime" ? "datetime-local" : "text"} step={field.type === "number" ? "any" : undefined} defaultValue={field.value || ""} required={field.required} />}
+      : field.type === "select" ? <select name={field.name} defaultValue={defaultFor(field)}>{(field.options || []).map(option => <option key={option[0]} value={option[0]}>{option[1]}</option>)}</select>
+      : <input name={field.name} type={field.type === "number" ? "number" : field.type === "date" ? "date" : field.type === "datetime" ? "datetime-local" : "text"} step={field.type === "number" ? "any" : undefined} defaultValue={defaultFor(field)} required={field.required} />}
     </label>)}</div>
-    {spec.fields.filter(field => field.type === "textarea").map(field => <label key={field.name}>{field.label}<textarea name={field.name} defaultValue={field.value || ""} /></label>)}
+    {spec.fields.filter(field => field.type === "textarea").map(field => <label key={field.name}>{field.label}<textarea name={field.name} defaultValue={defaultFor(field)} /></label>)}
     {error && <div className="form-error">{error}</div>}
-    <div className="form-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" type="submit" disabled={working}>{working ? "Saving…" : spec.button}</button></div>
+    <div className="form-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" type="submit" disabled={working}>{working ? "Saving…" : record ? "Save changes" : spec.button}</button></div>
   </form>;
 }
 
@@ -690,35 +708,49 @@ const liveModules: Record<string, { endpoint: string; map: (record: any) => stri
 function ModuleView({ name, onAction, reloadKey, openAction }: { name: string; onAction: Notify; reloadKey: number; openAction: (type: string) => void }) {
   const data = modules[name];
   const [query, setQuery] = useState("");
-  const [rows, setRows] = useState<string[][]>([]);
+  const [records, setRecords] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
-  const [selectedRow, setSelectedRow] = useState<string[] | null>(null);
-  useEffect(() => {
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [editing, setEditing] = useState(false);
+  const editSpec = data.actionType ? recordForms[data.actionType] : undefined;
+
+  const load = () => {
     let active = true; setLoading(true); setLoadError("");
     fmsRequest<any>(wholeSet(liveModules[name].endpoint)).then(payload => {
       if (!active) return;
-      const records = asList(payload);
-      setRows(records.map(liveModules[name].map));
-      setTotal(asCount(payload, records));
+      const items = asList(payload);
+      setRecords(items);
+      setTotal(asCount(payload, items));
     }).catch(error => { if (active) setLoadError(error instanceof Error ? error.message : "Unable to load records"); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [name, reloadKey]);
-  const visibleRows = rows.filter(row => row.join(" ").toLowerCase().includes(query.toLowerCase()));
+  };
+  useEffect(load, [name, reloadKey]);
+
+  const rows = records.map(record => ({ record, cells: liveModules[name].map(record) }));
+  const visibleRows = rows.filter(row => row.cells.join(" ").toLowerCase().includes(query.toLowerCase()));
+  const selected = records.find(record => record.id === selectedId) || null;
+  const selectedCells = selected ? liveModules[name].map(selected) : null;
+
+  const closeDrawer = () => { setSelectedId(null); setEditing(false); };
+
   return <div className="module-page">
     <div className="module-title"><div><p className="eyebrow">{data.eyebrow}</p><h2>{data.title}</h2><p>{data.blurb || "Live records from the Phloz fleet database."}</p></div>{data.action ? <button className="primary module-action" onClick={() => data.actionType ? openAction(data.actionType) : onAction(data.action.replace("+ ", "") + " opened")}>{data.action}</button> : null}</div>
     <div className="module-stats"><div className="module-stat"><span>Total records</span><strong>{loading ? "—" : total}</strong><small>{!loading && total > rows.length ? `Showing the first ${rows.length}` : "Stored in the live database"}</small></div><div className="module-stat"><span>Data source</span><strong>Live</strong><small>EC2 fleet API</small></div><div className="module-stat"><span>Last synchronised</span><strong>Now</strong><small>Refreshes after every save</small></div></div>
-    <section className="module-table-card"><div className="module-toolbar"><div><strong>All {name.toLowerCase()}</strong><span>{loading ? "Loading live records…" : visibleRows.length + " live records"}</span></div><div className="toolbar-actions"><input aria-label={"Search " + name} placeholder={"Search " + name.toLowerCase() + "..."} value={query} onChange={e => setQuery(e.target.value)} /><button onClick={() => onAction("Live data refreshed")}>↻ Refresh</button><button onClick={() => onAction("Report exported")}>⇩ Export</button></div></div>
+    <section className="module-table-card"><div className="module-toolbar"><div><strong>All {name.toLowerCase()}</strong><span>{loading ? "Loading live records…" : visibleRows.length + " live records"}</span></div><div className="toolbar-actions"><input aria-label={"Search " + name} placeholder={"Search " + name.toLowerCase() + "..."} value={query} onChange={e => setQuery(e.target.value)} /><button onClick={load}>↻ Refresh</button><button onClick={() => onAction("Report exported")}>⇩ Export</button></div></div>
       {loadError ? <div className="data-state error">{loadError}</div> : loading ? <div className="data-state">Loading records from EC2…</div> : visibleRows.length === 0 ? <div className="data-state">No records found. Use the action button to create one.</div> :
-      <div className="table-wrap"><table><thead><tr>{data.columns.map(col => <th key={col}>{col}</th>)}<th>Action</th></tr></thead><tbody>{visibleRows.map((row, i) => <tr key={row[0] + i}>{row.map((cell, j) => <td key={j}>{j === 0 ? <strong>{cell}</strong> : j === row.length - 1 ? <span className={"status " + cell.toLowerCase().replaceAll(" ", "-")}>{cell}</span> : cell}</td>)}<td><button className="row-action" onClick={() => setSelectedRow(row)}>View →</button></td></tr>)}</tbody></table></div>}
+      <div className="table-wrap"><table><thead><tr>{data.columns.map(col => <th key={col}>{col}</th>)}<th>Action</th></tr></thead><tbody>{visibleRows.map(row => <tr key={row.record.id}>{row.cells.map((cell, j) => <td key={j}>{j === 0 ? <strong>{cell}</strong> : j === row.cells.length - 1 ? <span className={"status " + cell.toLowerCase().replaceAll(" ", "-")}>{cell}</span> : cell}</td>)}<td><button className="row-action" onClick={() => { setSelectedId(row.record.id); setEditing(false); }}>View →</button></td></tr>)}</tbody></table></div>}
     </section>
-    {selectedRow && <div className="record-backdrop" onMouseDown={() => setSelectedRow(null)}><aside className="record-drawer" onMouseDown={e => e.stopPropagation()}>
-      <div className="record-head"><div><p className="eyebrow">{data.eyebrow}</p><h2>{selectedRow[0]}</h2><span className={"status " + selectedRow[selectedRow.length - 1].toLowerCase().replaceAll(" ", "-")}>{selectedRow[selectedRow.length - 1]}</span></div><button className="panel-close" onClick={() => setSelectedRow(null)}>×</button></div>
-      <div className="record-fields">{data.columns.map((column, index) => <div className="record-field" key={column}><span>{column}</span><strong>{selectedRow[index] || "—"}</strong></div>)}</div>
-      <div className="record-timeline"><p className="eyebrow">RECORD ACTIVITY</p><div><i/><span><strong>Record loaded</strong><small>Live data from EC2 fleet API</small></span><time>Now</time></div><div><i/><span><strong>Last synchronised</strong><small>Changes are persisted automatically</small></span><time>Live</time></div></div>
-      <div className="record-actions"><button className="secondary" onClick={() => setSelectedRow(null)}>Close</button><button className="primary" onClick={() => onAction("Edit workflow opened for " + selectedRow[0])}>Edit record</button></div>
+    {selected && selectedCells && <div className="record-backdrop" onMouseDown={closeDrawer}><aside className="record-drawer" onMouseDown={e => e.stopPropagation()}>
+      <div className="record-head"><div><p className="eyebrow">{data.eyebrow}</p><h2>{selectedCells[0]}</h2><span className={"status " + selectedCells[selectedCells.length - 1].toLowerCase().replaceAll(" ", "-")}>{selectedCells[selectedCells.length - 1]}</span></div><button className="panel-close" onClick={closeDrawer}>×</button></div>
+      {editing && editSpec ? <RecordForm spec={editSpec} record={selected} onClose={() => setEditing(false)}
+        onSaved={() => { onAction(`${selectedCells[0]} updated`); setEditing(false); load(); }} /> : <>
+        <div className="record-fields">{data.columns.map((column, index) => <div className="record-field" key={column}><span>{column}</span><strong>{selectedCells[index] || "—"}</strong></div>)}</div>
+        <div className="record-timeline"><p className="eyebrow">RECORD ACTIVITY</p><div><i/><span><strong>Record loaded</strong><small>Live data from EC2 fleet API</small></span><time>Now</time></div><div><i/><span><strong>Last synchronised</strong><small>Changes are persisted automatically</small></span><time>Live</time></div></div>
+        <div className="record-actions"><button className="secondary" onClick={closeDrawer}>Close</button>{editSpec && <button className="primary" onClick={() => setEditing(true)}>Edit record</button>}</div>
+      </>}
     </aside></div>}
   </div>;
 }
