@@ -51,11 +51,6 @@ const modules: Record<string, { eyebrow: string; title: string; action: string; 
     blurb: "Circular geofences used for allocation, rate cards and arrival detection.",
     columns: ["Zone", "Service area", "Centre", "Radius", "Type"],
   },
-  Fleets: {
-    eyebrow: "FLEET GROUPS", title: "Fleets", action: "+ Create fleet", actionType: "fleet",
-    blurb: "Group owned and attached vehicles with their drivers under a service area.",
-    columns: ["Fleet", "Service area", "Vehicles", "Drivers", "Status"],
-  },
   Fuel: {
     eyebrow: "FUEL & MILEAGE", title: "Diesel entries", action: "+ Log fuel entry", actionType: "fuel",
     blurb: "Every fill-up with automatic mileage calculation against the previous odometer reading.",
@@ -683,7 +678,6 @@ const liveModules: Record<string, { endpoint: string; map: (record: any) => stri
   Places: { endpoint: "places/", map: r => [r.name, r.place_type, r.city, r.pincode || "—", r.status] },
   "Service areas": { endpoint: "service-areas/", map: r => [r.name, r.code, r.states || "—", String(r.zone_count ?? 0), r.status] },
   Zones: { endpoint: "zones/", map: r => [r.name, r.service_area_name, Number(r.center_latitude).toFixed(3) + ", " + Number(r.center_longitude).toFixed(3), r.radius_km + " km", r.zone_type] },
-  Fleets: { endpoint: "fleets/", map: r => [r.name, r.service_area_name || "—", String(r.vehicle_count), String(r.driver_count), r.status] },
   Fuel: { endpoint: "fuel-entries/", map: r => [r.vehicle_number, r.entry_date, Number(r.volume_litres).toFixed(2) + " L", Number(r.mileage_kmpl) ? Number(r.mileage_kmpl).toFixed(2) + " km/l" : "—", r.payment_method] },
   Expenses: { endpoint: "trip-expenses/", map: r => [r.category.replaceAll("_", " "), r.vehicle_number || "—", r.expense_date, "₹" + Number(r.amount).toLocaleString("en-IN"), r.status] },
   Issues: { endpoint: "issues/", map: r => [r.number, r.vehicle_number || "—", r.issue_type, r.priority, r.status] },
@@ -729,6 +723,105 @@ function ModuleView({ name, onAction, reloadKey, openAction }: { name: string; o
   </div>;
 }
 
+function FleetsView({ reloadKey, onAction, openAction }: { reloadKey: number; onAction: Notify; openAction: (type: string) => void }) {
+  const [fleets, setFleets] = useState<any[]>([]);
+  const [vehicles, setVehicles] = useState<any[]>([]);
+  const [drivers, setDrivers] = useState<any[]>([]);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [addVehicle, setAddVehicle] = useState("");
+  const [addDriver, setAddDriver] = useState("");
+
+  const load = () => {
+    setLoading(true);
+    fmsRequest<any>(wholeSet("fleets/")).then(payload => setFleets(asList(payload))).finally(() => setLoading(false));
+  };
+  useEffect(load, [reloadKey]);
+  useEffect(() => {
+    fmsRequest<any>(wholeSet("vehicles/")).then(payload => setVehicles(asList(payload))).catch(() => undefined);
+    fmsRequest<any>(wholeSet("drivers/")).then(payload => setDrivers(asList(payload))).catch(() => undefined);
+  }, []);
+
+  const selected = fleets.find(fleet => fleet.id === selectedId) || null;
+  const vehicleLabel = (id: number) => { const v = vehicles.find(record => record.id === id); return v ? `${v.registration_number} · ${v.vehicle_type}` : `#${id}`; };
+  const driverLabel = (id: number) => { const d = drivers.find(record => record.id === id); return d ? d.name : `#${id}`; };
+  const unassignedVehicles = vehicles.filter(v => !(selected?.vehicles || []).includes(v.id));
+  const unassignedDrivers = drivers.filter(d => !(selected?.drivers || []).includes(d.id));
+
+  const mutate = async (body: Record<string, unknown>, message: string) => {
+    setBusy(true);
+    try {
+      await fmsRequest(`fleets/${selectedId}/assign/`, { method: "POST", body: JSON.stringify(body) });
+      onAction(message);
+      load();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 120) : "Action failed", "warn");
+    } finally { setBusy(false); }
+  };
+
+  return <div className="module-page">
+    <div className="module-title"><div><p className="eyebrow">FLEET GROUPS</p><h2>Fleets</h2><p>Group owned and attached vehicles with their drivers. Click a fleet to assign vehicles and drivers.</p></div><button className="primary module-action" onClick={() => openAction("fleet")}>＋ Create fleet</button></div>
+    <div className="module-stats">
+      <div className="module-stat"><span>Fleets</span><strong>{loading ? "—" : fleets.length}</strong><small>Owned and attached groups</small></div>
+      <div className="module-stat"><span>Vehicles</span><strong>{vehicles.length}</strong><small>Across the whole fleet</small></div>
+      <div className="module-stat"><span>Drivers</span><strong>{drivers.length}</strong><small>Across the whole fleet</small></div>
+    </div>
+    <section className="module-table-card">
+      <div className="module-toolbar"><div><strong>All fleets</strong><span>{fleets.length} groups</span></div></div>
+      <div className="table-wrap"><table><thead><tr><th>Fleet</th><th>Service area</th><th>Vendor</th><th>Vehicles</th><th>Drivers</th><th>Status</th></tr></thead>
+        <tbody>{fleets.map(fleet => <tr key={fleet.id} className="clickable" onClick={() => { setSelectedId(fleet.id); setAddVehicle(""); setAddDriver(""); }}>
+          <td><strong>{fleet.name}</strong><small>{fleet.code}</small></td>
+          <td>{fleet.service_area_name || "—"}</td>
+          <td>{fleet.vendor_name || "Owned"}</td>
+          <td>{fleet.vehicle_count}</td>
+          <td>{fleet.driver_count}</td>
+          <td><span className={"status " + fleet.status}>{fleet.status}</span></td>
+        </tr>)}</tbody></table></div>
+      {!loading && !fleets.length && <div className="data-state">No fleets yet. Create one to start grouping vehicles and drivers.</div>}
+    </section>
+
+    {selected && <div className="record-backdrop" onMouseDown={() => setSelectedId(null)}><aside className="record-drawer" onMouseDown={event => event.stopPropagation()}>
+      <div className="record-head"><div><p className="eyebrow">FLEET {selected.code}</p><h2>{selected.name}</h2><span className={"status " + selected.status}>{selected.status}</span></div><button className="panel-close" onClick={() => setSelectedId(null)}>×</button></div>
+      <div className="record-fields">
+        <div className="record-field"><span>Service area</span><strong>{selected.service_area_name || "—"}</strong></div>
+        <div className="record-field"><span>Vendor</span><strong>{selected.vendor_name || "Owned fleet"}</strong></div>
+        <div className="record-field"><span>Manager</span><strong>{selected.manager || "—"}</strong></div>
+        <div className="record-field"><span>Vehicles · drivers</span><strong>{selected.vehicle_count} · {selected.driver_count}</strong></div>
+      </div>
+
+      <div className="allocate-box">
+        <p className="eyebrow">VEHICLES</p>
+        <div className="chip-list">
+          {(selected.vehicles || []).map((id: number) => <span className="chip removable" key={id}>{vehicleLabel(id)}<button disabled={busy} onClick={() => mutate({ vehicles: [id], remove: true }, "Vehicle removed from fleet")}>×</button></span>)}
+          {!(selected.vehicles || []).length && <p className="pod-note">No vehicles assigned yet.</p>}
+        </div>
+        <div className="assign-row">
+          <select value={addVehicle} onChange={event => setAddVehicle(event.target.value)}>
+            <option value="">Add a vehicle…</option>
+            {unassignedVehicles.map(v => <option key={v.id} value={v.id}>{v.registration_number} · {v.vehicle_type}</option>)}
+          </select>
+          <button className="secondary" disabled={busy || !addVehicle} onClick={() => { mutate({ vehicles: [Number(addVehicle)] }, "Vehicle assigned to fleet"); setAddVehicle(""); }}>Add</button>
+        </div>
+      </div>
+
+      <div className="allocate-box">
+        <p className="eyebrow">DRIVERS</p>
+        <div className="chip-list">
+          {(selected.drivers || []).map((id: number) => <span className="chip removable" key={id}>{driverLabel(id)}<button disabled={busy} onClick={() => mutate({ drivers: [id], remove: true }, "Driver removed from fleet")}>×</button></span>)}
+          {!(selected.drivers || []).length && <p className="pod-note">No drivers assigned yet.</p>}
+        </div>
+        <div className="assign-row">
+          <select value={addDriver} onChange={event => setAddDriver(event.target.value)}>
+            <option value="">Add a driver…</option>
+            {unassignedDrivers.map(d => <option key={d.id} value={d.id}>{d.name} · {d.phone}</option>)}
+          </select>
+          <button className="secondary" disabled={busy || !addDriver} onClick={() => { mutate({ drivers: [Number(addDriver)] }, "Driver assigned to fleet"); setAddDriver(""); }}>Add</button>
+        </div>
+      </div>
+    </aside></div>}
+  </div>;
+}
 
 const fleetOpsPages = ["Dispatch", "Drivers", "Maintenance", "Analytics"];
 
@@ -2096,7 +2189,7 @@ export default function Home() {
             <div className="section-heading"><div><p className="eyebrow">ACTIVE MOVEMENT</p><h2>Recent trips</h2></div><button className="link-button" onClick={() => show("All trips opened")}>View all trips →</button></div>
             <div className="table-wrap"><table><thead><tr><th>Trip & route</th><th>Vehicle</th><th>Driver</th><th>Status</th><th>ETA / POD</th><th>Revenue</th></tr></thead><tbody>{(dashboard?.recent_trips || []).map((t: any) => <tr key={t.id}><td><strong>{t.number}</strong><small>{t.origin} → {t.destination}</small></td><td>{t.vehicle_number}</td><td>{t.driver_name}</td><td><span className={`status ${t.status.toLowerCase().replaceAll("_","-")}`}>{t.status.replaceAll("_"," ")}</span></td><td>{t.planned_departure ? new Date(t.planned_departure).toLocaleString("en-IN") : "—"}</td><td><strong>₹{Number(t.estimated_cost || 0).toLocaleString("en-IN")}</strong></td></tr>)}</tbody></table></div>
           </section>
-        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Tracking" ? <TrackingView reloadKey={dataVersion} onAction={show} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
+        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Tracking" ? <TrackingView reloadKey={dataVersion} onAction={show} /> : active === "Fleets" ? <FleetsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
       </section>
       {action && <ActionPanel type={action} onClose={() => setAction("")} onCreated={() => setDataVersion(v => v + 1)} />}
       {toast && <div className={"toast " + toast.tone}>{toast.tone === "warn" ? "⚠" : "✓"} {toast.text}</div>}
