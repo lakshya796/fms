@@ -747,8 +747,10 @@ function ModuleView({ name, onAction, reloadKey, openAction }: { name: string; o
       <div className="record-head"><div><p className="eyebrow">{data.eyebrow}</p><h2>{selectedCells[0]}</h2><span className={"status " + selectedCells[selectedCells.length - 1].toLowerCase().replaceAll(" ", "-")}>{selectedCells[selectedCells.length - 1]}</span></div><button className="panel-close" onClick={closeDrawer}>×</button></div>
       {editing && editSpec ? <RecordForm spec={editSpec} record={selected} onClose={() => setEditing(false)}
         onSaved={() => { onAction(`${selectedCells[0]} updated`); setEditing(false); load(); }} /> : <>
-        <div className="record-fields">{data.columns.map((column, index) => <div className="record-field" key={column}><span>{column}</span><strong>{selectedCells[index] || "—"}</strong></div>)}</div>
-        <div className="record-timeline"><p className="eyebrow">RECORD ACTIVITY</p><div><i/><span><strong>Record loaded</strong><small>Live data from EC2 fleet API</small></span><time>Now</time></div><div><i/><span><strong>Last synchronised</strong><small>Changes are persisted automatically</small></span><time>Live</time></div></div>
+        <div className="record-fields">{data.columns.map((column, index) => <div className="record-field" key={column}><span>{column}</span><strong>{selectedCells[index] || "—"}</strong></div>)}
+          <div className="record-field"><span>Created</span><strong>{stamp(selected.created_at)}</strong></div>
+          <div className="record-field"><span>Last updated</span><strong>{stamp(selected.updated_at)}</strong></div>
+        </div>
         <div className="record-actions"><button className="secondary" onClick={closeDrawer}>Close</button>{editSpec && <button className="primary" onClick={() => setEditing(true)}>Edit record</button>}</div>
       </>}
     </aside></div>}
@@ -820,6 +822,8 @@ function FleetsView({ reloadKey, onAction, openAction }: { reloadKey: number; on
         <div className="record-field"><span>Vendor</span><strong>{selected.vendor_name || "Owned fleet"}</strong></div>
         <div className="record-field"><span>Manager</span><strong>{selected.manager || "—"}</strong></div>
         <div className="record-field"><span>Vehicles · drivers</span><strong>{selected.vehicle_count} · {selected.driver_count}</strong></div>
+        <div className="record-field"><span>Created</span><strong>{stamp(selected.created_at)}</strong></div>
+        <div className="record-field"><span>Last updated</span><strong>{stamp(selected.updated_at)}</strong></div>
       </div>
 
       <div className="allocate-box">
@@ -914,7 +918,8 @@ function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string;
                ["Planned departure", tripDetail.planned_departure ? new Date(tripDetail.planned_departure).toLocaleString("en-IN") : ""],
                ["Actual departure", tripDetail.actual_departure ? new Date(tripDetail.actual_departure).toLocaleString("en-IN") : ""],
                ["Arrived", tripDetail.arrival_at ? new Date(tripDetail.arrival_at).toLocaleString("en-IN") : ""],
-               ["Trip advance", rupees(tripDetail.advance_amount)], ["Estimated cost", rupees(tripDetail.estimated_cost)]]}
+               ["Trip advance", rupees(tripDetail.advance_amount)], ["Estimated cost", rupees(tripDetail.estimated_cost)],
+               ["Created", stamp(tripDetail.created_at)], ["Last updated", stamp(tripDetail.updated_at)]]}
       sections={[{ label: "GPS EVENTS", rows: (tripDetail.tracking_events || []).slice(0, 8).map((event: any) => ({
         key: String(event.id), primary: event.description || event.event_type,
         secondary: `${event.speed_kph} km/h`, meta: new Date(event.recorded_at).toLocaleString("en-IN") })) }]}
@@ -956,6 +961,7 @@ const asCount = (payload: any, records: any[]): number => (typeof payload?.count
 // Board and watchlist screens render a whole working set, so they ask for a larger page.
 const wholeSet = (endpoint: string) => endpoint + (endpoint.includes("?") ? "&" : "?") + "page_size=500";
 const rupees = (value: any) => "₹" + Number(value || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+const stamp = (value: any) => (value ? new Date(value).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : "—");
 const orderColumns: [string, string][] = [["created", "Booked"], ["assigned", "Allocated"], ["dispatched", "Dispatched"], ["in_transit", "In transit"], ["completed", "Delivered"]];
 
 // --- Kanban plumbing ------------------------------------------------------
@@ -1186,6 +1192,8 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
         <div className="record-field"><span>Freight + GST</span><strong>{rupees(selected.freight_amount)} + {rupees(selected.tax_amount)}</strong></div>
         <div className="record-field"><span>Total</span><strong>{rupees(selected.total_amount)}</strong></div>
         <div className="record-field"><span>E-way bill</span><strong>{selected.eway_bill_number || "—"}</strong></div>
+        <div className="record-field"><span>Created</span><strong>{stamp(selected.created_at)}</strong></div>
+        <div className="record-field"><span>Last updated</span><strong>{stamp(selected.updated_at)}</strong></div>
       </div>
       {selected.status === "created" || !selected.driver ? <div className="allocate-box">
         <p className="eyebrow">ALLOCATE VEHICLE & DRIVER</p>
@@ -1477,6 +1485,8 @@ function EpodView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify
         <div className="record-field"><span>Damage</span><strong>{selected.damage_reported ? "Reported" : "None"}</strong></div>
         <div className="record-field"><span>Captured</span><strong>{selected.captured_at ? new Date(selected.captured_at).toLocaleString("en-IN") : "Not yet"}</strong></div>
         <div className="record-field"><span>Verified</span><strong>{selected.verified_at ? `${new Date(selected.verified_at).toLocaleDateString("en-IN")} · ${selected.verified_by}` : "—"}</strong></div>
+        <div className="record-field"><span>Created</span><strong>{stamp(selected.created_at)}</strong></div>
+        <div className="record-field"><span>Last updated</span><strong>{stamp(selected.updated_at)}</strong></div>
       </div>
       {selected.remarks && <p className="pod-note">{selected.remarks}</p>}
       {selected.rejection_reason && <p className="pod-note warn">Rejected: {selected.rejection_reason}</p>}
@@ -1686,6 +1696,8 @@ function TrackingView({ reloadKey, onAction }: { reloadKey: number; onAction: No
           <div><span>Vehicle · driver</span><strong>{selected.vehicle_number || "—"} · {selected.driver_name || "—"}</strong></div>
           <div><span>Distance</span><strong>{Number(selected.distance_km).toFixed(0)} km · {selected.progress_percent || 0}% covered</strong></div>
           <div><span>{eta ? "Est. arrival" : "Scheduled"}</span><strong className={isDelayed(selected) ? "text-late" : ""}>{eta ? eta.toLocaleString("en-IN") : selected.scheduled_at ? new Date(selected.scheduled_at).toLocaleString("en-IN") : "—"}</strong></div>
+          <div><span>Created</span><strong>{stamp(selected.created_at)}</strong></div>
+          <div><span>Last updated</span><strong>{stamp(selected.updated_at)}</strong></div>
         </div>
         {isDelayed(selected) && <p className="pod-note warn">Running behind its scheduled time of {new Date(selected.scheduled_at).toLocaleString("en-IN")}.</p>}
         {position && <p className="pod-note">Last seen near <strong>{position.city || "an unnamed point"}</strong>{zone ? `, inside the ${zone.name} zone` : ""} · {new Date(position.recorded_at).toLocaleString("en-IN")}</p>}
@@ -2095,7 +2107,8 @@ function IndentsView({ reloadKey, onAction, openAction }: { reloadKey: number; o
                ["Expected freight", rupees(detail.expected_rate)],
                ["Required by", detail.required_at ? new Date(detail.required_at).toLocaleString("en-IN") : ""],
                ["Allocated truck", detail.vehicle_number], ["Driver", detail.driver_name],
-               ["Order", detail.order_number], ["Remarks", detail.remarks]]}
+               ["Order", detail.order_number], ["Remarks", detail.remarks],
+               ["Created", stamp(detail.created_at)], ["Last updated", stamp(detail.updated_at)]]}
       actions={<>
         <button className="secondary" onClick={() => setDetail(null)}>Close</button>
         {detail.status === "open" && <button className="primary" onClick={() => { setSelected(detail); setDetail(null); setVehicle(""); setDriver(""); }}>Allocate a truck</button>}
