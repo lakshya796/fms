@@ -26,9 +26,18 @@ priced consignment order. Logins carry a role and a branch, with a full audit tr
 Built for a 1000+ vehicle operation — see
 [docs/ACCOUNTING-AND-ADMIN.md](docs/ACCOUNTING-AND-ADMIN.md).
 
+## Gift Voucher Desk (ADCOOP retail)
+
+A separate, publicly accessible page for generating and issuing ADCOOP retail gift vouchers —
+unrelated to the fleet domain, sharing this deployment purely for convenience. No login: create
+a numbered voucher series with a value and validity window, issue vouchers with an optional
+phone number, and print each one as a PDF with its barcode. See
+[docs/GIFT-VOUCHERS.md](docs/GIFT-VOUCHERS.md).
+
 ## Repository layout
 
-- `app/` — Next.js console (`/` workspace, `/track` public consignment tracking)
+- `app/` — Next.js console (`/` workspace, `/track` public consignment tracking, `/vouchers`
+  public gift voucher desk)
 - `backend/` — Django REST API (`/api/v1/`), see [backend/README.md](backend/README.md)
 
 ## Deploying the API

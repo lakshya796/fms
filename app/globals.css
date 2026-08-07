@@ -240,4 +240,40 @@ tr.clickable:hover td{background:#f8faf7}
 .chip.removable button:disabled{opacity:.5;cursor:default}
 .assign-row{display:flex;gap:8px}
 .assign-row select{flex:1;border:1px solid #dfe4df;border-radius:9px;padding:9px 11px;font-size:11px;background:#fff;outline:none}
+
+/* Gift Voucher Desk (ADCOOP retail) - a standalone public page, not the fleet console.
+   Uses ADCOOP's own brand colours rather than the fleet green theme. */
+:root{--voucher-purple:#4E327D;--voucher-lime:#E2E151;--voucher-ink:#231B36;--voucher-muted:#6B6480;--voucher-line:#DCD7E8}
+.voucher-page{min-height:100vh;padding:32px 20px 60px;max-width:1080px;margin:0 auto;background:#faf9fc}
+.voucher-topbar{display:flex;align-items:center;gap:16px;margin-bottom:24px}
+.voucher-logo{height:44px;width:auto}
+.voucher-eyebrow{margin:0 0 4px;color:var(--voucher-purple);font-size:9px;letter-spacing:1.6px;font-weight:800}
+.voucher-topbar h1{margin:0;font-size:24px;letter-spacing:-.6px;color:var(--voucher-ink)}
+.voucher-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+.voucher-stats div{background:#fff;border:1px solid var(--voucher-line);border-radius:14px;padding:16px}
+.voucher-stats span{display:block;font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:var(--voucher-muted);margin-bottom:6px}
+.voucher-stats strong{font-size:22px;color:var(--voucher-ink)}
+.voucher-card{background:#fff;border:1px solid var(--voucher-line);border-radius:16px;padding:20px 22px;margin-bottom:18px}
+.voucher-card-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.voucher-card-head h2{margin:0;font-size:15px;color:var(--voucher-ink)}
+.voucher-form{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.voucher-form label{display:flex;flex-direction:column;gap:6px;font-size:10px;font-weight:700;color:var(--voucher-muted)}
+.voucher-form label small{font-weight:500;text-transform:none;letter-spacing:0}
+.voucher-form input{border:1px solid var(--voucher-line);border-radius:9px;padding:10px 11px;font-size:12px;outline:none;color:var(--voucher-ink)}
+.voucher-form input:focus{border-color:var(--voucher-purple);box-shadow:0 0 0 3px #4e327d1a}
+.voucher-form-wide{grid-column:1 / -1}
+.voucher-form button.primary{background:var(--voucher-purple);height:42px}
+.voucher-success{margin-top:14px;padding:12px 14px;border-radius:10px;background:#f1eefa;color:var(--voucher-purple);font-size:11px}
+.voucher-search{display:flex;gap:8px}
+.voucher-search input{border:1px solid var(--voucher-line);border-radius:9px;padding:9px 11px;font-size:11px;outline:none;min-width:200px}
+.voucher-tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.voucher-page .chip.active{background:var(--voucher-purple);color:#fff;border-color:var(--voucher-purple)}
+.voucher-actions{display:flex;align-items:center;gap:10px;white-space:nowrap}
+.voucher-issue-inline{display:flex;align-items:center;gap:6px;position:relative}
+.voucher-issue-inline input{border:1px solid var(--voucher-line);border-radius:8px;padding:7px 9px;font-size:11px;width:140px;outline:none}
+.voucher-issue-error{position:absolute;top:100%;left:0;margin-top:4px;color:#b95544;font-size:9px;white-space:normal;width:180px}
+.voucher-pagination{display:flex;justify-content:center;align-items:center;gap:14px;margin-top:16px;font-size:11px;color:var(--voucher-muted)}
+.voucher-footer{display:block;text-align:center;margin-top:10px;color:var(--voucher-muted);font-size:9px}
+.status.unassigned{background:#fff4df;color:#9a6b22}
+@media(max-width:700px){.voucher-stats{grid-template-columns:repeat(2,1fr)}.voucher-form{grid-template-columns:1fr}}
 .assign-row button{white-space:nowrap;width:auto;height:auto;padding:9px 14px}
