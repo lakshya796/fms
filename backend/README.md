@@ -35,7 +35,7 @@ Endpoint references: [../docs/FLEETOPS.md](../docs/FLEETOPS.md) and
 
 ## Tests
 
-`python manage.py test` — 127 tests across fleet, accounting and iam.
+`python manage.py test` — 148 tests across fleet, accounting, iam and vouchers.
 
 ## EC2 deployment
 
