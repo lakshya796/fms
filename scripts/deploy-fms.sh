@@ -49,7 +49,7 @@ REPO=${REPO:-lakshya796/fms}
 SEED=${SEED:-true}
 RUN_AS=${RUN_AS:-ec2-user}
 ALLOWED_HOSTS=${ALLOWED_HOSTS:-api-test.phloz.app,localhost,127.0.0.1}
-CORS_ORIGINS=${CORS_ORIGINS:-https://track.phloz.app}
+CORS_ORIGINS=${CORS_ORIGINS:-https://track.phloz.app,https://main.d12iaal63qqmzf.amplifyapp.com}
 ADMIN_USER=${ADMIN_USER:-fleetadmin}
 ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
 
