@@ -38,7 +38,7 @@ Two guards enforce that boundary, both tested against a real server:
 | `SEED` | `true` | `SEED=false` to skip the demo dataset |
 | `ADMIN_PASSWORD` | generated | for the `fleetadmin` login |
 | `ALLOWED_HOSTS` | `api-test.phloz.app,localhost,127.0.0.1` | |
-| `CORS_ORIGINS` | `https://track.phloz.app` | no trailing slash |
+| `CORS_ORIGINS` | `https://track.phloz.app,https://main.d12iaal63qqmzf.amplifyapp.com` | comma-separated, no trailing slash on any origin |
 
 ## What it does
 
