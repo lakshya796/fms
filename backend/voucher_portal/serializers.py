@@ -4,9 +4,19 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from .models import Department, PortalBatch, PortalVoucher, VoucherPrefix, VoucherTemplate, VoucherType
+from .validators import ArtworkError, validate_artwork
 
+
+# DRF's auto-generated BooleanField for a model field with default=True still
+# resolves to False when the key is simply omitted from a multipart upload -
+# BooleanField's default_empty_html treats a missing key like an unchecked HTML
+# checkbox. Declaring `default=True` explicitly on every is_active field below
+# makes "just don't send it" behave like the model actually intends, instead of
+# silently creating an inactive row that then can't be selected anywhere.
 
 class DepartmentSerializer(serializers.ModelSerializer):
+    is_active = serializers.BooleanField(default=True)
+
     class Meta:
         model = Department
         fields = ["id", "code", "name", "is_active"]
@@ -14,6 +24,7 @@ class DepartmentSerializer(serializers.ModelSerializer):
 
 class VoucherTypeSerializer(serializers.ModelSerializer):
     department_name = serializers.CharField(source="department.name", read_only=True)
+    is_active = serializers.BooleanField(default=True)
 
     class Meta:
         model = VoucherType
@@ -23,6 +34,7 @@ class VoucherTypeSerializer(serializers.ModelSerializer):
 class VoucherPrefixSerializer(serializers.ModelSerializer):
     department_name = serializers.CharField(source="department.name", read_only=True)
     voucher_type_name = serializers.CharField(source="voucher_type.name", read_only=True)
+    is_active = serializers.BooleanField(default=True)
 
     class Meta:
         model = VoucherPrefix
@@ -32,10 +44,22 @@ class VoucherPrefixSerializer(serializers.ModelSerializer):
 
 
 class VoucherTemplateSerializer(serializers.ModelSerializer):
+    is_active = serializers.BooleanField(default=True)
+    is_default = serializers.BooleanField(default=False)
+
     class Meta:
         model = VoucherTemplate
         fields = ["id", "name", "artwork", "page_width", "page_height", "coupon_width", "coupon_height",
                  "field_geometry", "is_default", "is_active"]
+
+    def validate_artwork(self, value):
+        if not value:
+            return value
+        try:
+            validate_artwork(value)
+        except ArtworkError as error:
+            raise serializers.ValidationError(str(error))
+        return value
 
 
 class PortalVoucherSerializer(serializers.ModelSerializer):
@@ -93,7 +117,9 @@ class BatchFormSerializer(serializers.Serializer):
     fixed_value = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
     currency = serializers.CharField(max_length=8, required=False, default="AED")
 
-    valid_from = serializers.DateField()
+    # Not collected from the user - the brief allows a stored-but-unprinted start
+    # date (§3.3), and the form doesn't ask for one. Defaults to today in validate().
+    valid_from = serializers.DateField(required=False)
     valid_to = serializers.DateField()
 
     restrictions = serializers.CharField(required=False, allow_blank=True)
@@ -103,6 +129,7 @@ class BatchFormSerializer(serializers.Serializer):
     template = serializers.PrimaryKeyRelatedField(queryset=VoucherTemplate.objects.filter(is_active=True), required=False)
 
     def validate(self, attrs):
+        attrs.setdefault("valid_from", timezone.localdate())
         if attrs["valid_to"] < attrs["valid_from"]:
             raise serializers.ValidationError({"valid_to": "Validity end date is before the start date."})
         if attrs["valid_to"] < timezone.localdate():

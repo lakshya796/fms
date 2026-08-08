@@ -263,6 +263,8 @@ tr.clickable:hover td{background:#f8faf7}
 .voucher-form textarea{resize:vertical}
 .voucher-form input:focus,.voucher-form select:focus,.voucher-form textarea:focus{border-color:var(--voucher-purple);box-shadow:0 0 0 3px #4e327d1a}
 .voucher-topbar button.secondary,.voucher-topbar button.primary{width:auto;padding:0 16px;height:38px}
+.voucher-artwork-preview{display:flex;align-items:center;gap:14px;margin-top:8px}
+.voucher-artwork-preview img{width:180px;height:auto;aspect-ratio:2.74/1;object-fit:cover;border-radius:8px;border:1px solid var(--voucher-line)}
 .voucher-form-wide{grid-column:1 / -1}
 .voucher-form button.primary{background:var(--voucher-purple);height:42px}
 .voucher-success{margin-top:14px;padding:12px 14px;border-radius:10px;background:#f1eefa;color:var(--voucher-purple);font-size:11px}

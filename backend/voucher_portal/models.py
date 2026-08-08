@@ -13,12 +13,22 @@ terms, prefix width, template geometry) onto its own row. Editing a Department,
 VoucherType, VoucherPrefix or VoucherTemplate afterwards must never change a
 voucher that has already been printed and handed to someone.
 """
+import copy
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
+
+from .geometry import DEFAULT_FIELD_GEOMETRY
+
+
+def default_field_geometry():
+    """A fresh copy every time - a template created with no geometry of its own
+    (e.g. uploading artwork with nothing else specified) still gets the coupon's
+    known field positions, not an empty layout with nothing drawn on it."""
+    return copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
 
 
 def money(value):
@@ -93,7 +103,7 @@ class VoucherTemplate(Timestamped):
     page_height = models.FloatField(default=792.0, help_text="Points (Letter height)")
     coupon_width = models.FloatField(default=479.52)
     coupon_height = models.FloatField(default=178.0)
-    field_geometry = models.JSONField(default=dict, blank=True)
+    field_geometry = models.JSONField(default=default_field_geometry, blank=True)
     is_default = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
 

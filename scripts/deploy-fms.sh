@@ -160,6 +160,9 @@ sudo -u "$RUN_AS" "$APP/venv/bin/pip" install -q -r "$REL/requirements.txt"
 app_run "'$APP/venv/bin/python' manage.py migrate --noinput" | tail -6
 # The chart of accounts must exist before anything posts to the ledger.
 app_run "'$APP/venv/bin/python' manage.py seed_accounting"
+# Reference data (departments, voucher types, prefixes, default template), not demo data -
+# runs every deploy, unconditionally, same as seed_accounting above.
+app_run "'$APP/venv/bin/python' manage.py seed_voucher_portal"
 if [ "$SEED" = "true" ]; then
   app_run "'$APP/venv/bin/python' manage.py seed_fleetops" | tail -1
 fi
