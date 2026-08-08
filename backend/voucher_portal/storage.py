@@ -43,7 +43,27 @@ def voucher_pdf_key(batch_id, number) -> str:
 
 
 def combined_pdf_key(batch_id) -> str:
-    return f"voucher-portal/batches/{batch_id}/combined-{uuid.uuid4().hex[:8]}.pdf"
+    # Deterministic, so a download can re-derive the key from the batch alone.
+    # Regenerating a batch overwrites its print file, which is what you want.
+    return f"voucher-portal/batches/{batch_id}/combined.pdf"
+
+
+def open_file(key):
+    """A file-like object for streaming a stored PDF back, or None if it's gone.
+
+    Downloads go through the authenticated API rather than a public media URL
+    (see views.download): these PDFs carry recipient data, and the brief
+    requires them to be reachable only by authorised users."""
+    if _S3_BUCKET:
+        client = _s3_client()
+        try:
+            return client.get_object(Bucket=_S3_BUCKET, Key=key)["Body"]
+        except client.exceptions.NoSuchKey:
+            return None
+    try:
+        return open(os.path.join(settings.MEDIA_ROOT, key), "rb")
+    except FileNotFoundError:
+        return None
 
 
 def guess_content_type(filename: str) -> str:

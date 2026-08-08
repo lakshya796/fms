@@ -1,4 +1,6 @@
 import copy
+import os
+import tempfile
 import threading
 import time
 from datetime import timedelta
@@ -6,11 +8,14 @@ from decimal import Decimal
 
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase, TransactionTestCase
+from django.conf import settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from . import storage
 from .geometry import DEFAULT_FIELD_GEOMETRY
+from .pdf import build_batch_pdf, build_voucher_pdf
 from .models import (Department, Notification, PortalBatch, PortalUserAccess, PortalVoucher, VoucherPrefix,
                      VoucherTemplate, VoucherType)
 from .services import workflow
@@ -996,3 +1001,80 @@ class AdvancedReportsTests(TestCase):
         current = timezone.localdate().strftime("%Y-%m")
         this_month = next(row for row in trend.data if row["month"] == current)
         self.assertEqual(this_month["created"], 3)  # HR's 3, not all 5
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp(prefix="voucher-download-tests-"))
+class DownloadTests(TestCase):
+    """PDFs stream through the authenticated API rather than a public media
+    URL - they carry recipient data, and the stored media path is
+    host-relative (it would resolve against the console's origin, not the
+    API's, which is how this surfaced: a download opened the login page)."""
+
+    def setUp(self):
+        self.dept, self.vtype, self.prefix, self.template = make_reference_data()
+        self.requester = User.objects.create_user("requester", password="x", is_staff=True)
+        self.approver = User.objects.create_user("approver", password="x", is_staff=True)
+        self.batch = approved_batch(self.dept, self.vtype, self.prefix, self.template,
+                                    self.requester, self.approver, quantity=2)
+        generate_vouchers(self.batch)
+        self.batch.refresh_from_db()
+        # generate_vouchers hands PDF assembly to a background thread, which in a
+        # TestCase can't see the uncommitted batch on its own connection. Do that
+        # work synchronously here so the download endpoint has the same state a
+        # finished job would leave behind.
+        vouchers = list(self.batch.vouchers.all())
+        for voucher in vouchers:
+            voucher.pdf_url = storage.store_file(
+                storage.voucher_pdf_key(self.batch.id, voucher.number),
+                build_voucher_pdf(self.batch, voucher))
+        PortalVoucher.objects.bulk_update(vouchers, ["pdf_url"])
+        self.batch.combined_pdf_url = storage.store_file(
+            storage.combined_pdf_key(self.batch.id), build_batch_pdf(self.batch, vouchers))
+        self.batch.save(update_fields=["combined_pdf_url"])
+
+        self.client = APIClient()
+        self.client.force_authenticate(self.requester)
+
+    def test_batch_download_streams_a_pdf(self):
+        response = self.client.get(f"/api/v1/voucher-portal/batches/{self.batch.id}/download/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertTrue(b"".join(response.streaming_content).startswith(b"%PDF"))
+
+    def test_voucher_download_streams_a_pdf(self):
+        voucher = self.batch.vouchers.first()
+        response = self.client.get(f"/api/v1/voucher-portal/vouchers/{voucher.id}/download/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(voucher.number, response["Content-Disposition"])
+        self.assertTrue(b"".join(response.streaming_content).startswith(b"%PDF"))
+
+    def test_download_requires_authentication(self):
+        anon = APIClient()
+        self.assertEqual(anon.get(f"/api/v1/voucher-portal/batches/{self.batch.id}/download/").status_code, 401)
+
+    def test_download_is_department_scoped(self):
+        """404 rather than 403 is intentional - the queryset is already
+        department-scoped, so another department's batch simply doesn't exist
+        for this caller and its existence isn't leaked."""
+        other_dept = Department.objects.create(code="MKT", name="Marketing")
+        outsider = User.objects.create_user("outsider", password="x")
+        grant(outsider, "requester", [other_dept])
+        client = APIClient()
+        client.force_authenticate(outsider)
+        response = client.get(f"/api/v1/voucher-portal/batches/{self.batch.id}/download/")
+        self.assertEqual(response.status_code, 404)
+
+    def test_report_viewer_cannot_download_voucher_pdfs(self):
+        viewer = User.objects.create_user("viewer", password="x")
+        grant(viewer, "report_viewer", [self.dept])
+        client = APIClient()
+        client.force_authenticate(viewer)
+        response = client.get(f"/api/v1/voucher-portal/batches/{self.batch.id}/download/")
+        self.assertEqual(response.status_code, 403)
+
+    def test_missing_file_reports_clearly_rather_than_500(self):
+        os.remove(os.path.join(settings.MEDIA_ROOT, storage.combined_pdf_key(self.batch.id)))
+        response = self.client.get(f"/api/v1/voucher-portal/batches/{self.batch.id}/download/")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("missing", str(response.data).lower())

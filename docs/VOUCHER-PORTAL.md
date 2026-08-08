@@ -177,6 +177,17 @@ or reliability requirements grow, this is the first thing to replace with a
 real queue (Django-Q or RQ against the existing Postgres avoids adding Redis).
 The frontend polls `GET batches/{id}/` every 2.5s while `status=generating`.
 
+**Downloads go through the authenticated API, not a media URL.** `GET
+batches/{id}/download/` and `GET vouchers/{id}/download/` stream the stored
+PDF back through `storage.open_file`, subject to the same role and
+department checks as everything else. Two reasons this isn't just a link:
+these PDFs carry recipient data and §13 requires them to be reachable only
+by authorised users, and the stored media URL is *host-relative* - a bare
+`<a href="/media/...">` on the console resolves against the console's own
+origin, hits Amplify's catch-all rewrite, and lands the user on the login
+screen instead of a PDF. The frontend fetches them with `fmsRequestRaw` and
+saves the blob, so the auth token travels with the request.
+
 Storage (`voucher_portal/storage.py`) is an abstraction, not a hard S3
 dependency: if `VOUCHER_PORTAL_S3_BUCKET` (and standard AWS credentials) are
 set in the environment, individual and combined PDFs upload to that bucket. If
@@ -367,7 +378,7 @@ department permissions").
 
 ## Tests
 
-`python manage.py test voucher_portal` — 80 tests: numbering (including a real
+`python manage.py test voucher_portal` — 86 tests: numbering (including a real
 concurrent-allocation test across 8 threads), discount validation, the
 preview-hash invalidation flow, the full draft → submit → approve → generate
 → issue → redeem workflow (both via `services/workflow.py` directly and
@@ -378,4 +389,6 @@ each), the template library, the geometry editor (valid moves, out-of-bounds
 and unknown-key rejection, catalogue/renderer agreement, unsaved-geometry
 preview, reset-to-default, and non-admin lockout), team-access management,
 and artwork upload (aspect ratio/size rejection, and the `is_active`
-multipart regression noted above).
+multipart regression noted above), and authenticated PDF downloads
+(streaming, auth, department scope, role gating, and a clear error when a
+stored file has gone missing).

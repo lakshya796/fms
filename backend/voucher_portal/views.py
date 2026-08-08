@@ -12,7 +12,7 @@ import io
 
 from django.contrib.auth.models import User
 from django.db.models import Q
-from django.http import HttpResponse
+from django.http import FileResponse, HttpResponse
 from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import action
@@ -29,6 +29,7 @@ from .serializers import (ApproveSerializer, BatchFormSerializer, CancelSerializ
                           ManualIssueSerializer, NotificationSerializer, PortalBatchSerializer,
                           PortalUserAccessSerializer, PortalVoucherSerializer, RecipientRowSerializer,
                           RejectSerializer, VoucherPrefixSerializer, VoucherTemplateSerializer, VoucherTypeSerializer)
+from . import storage
 from .services import reports, workflow
 from .services.access import get_access
 from .services.generation import create_draft_batch, payload_hash, render_preview, render_template_sample
@@ -291,6 +292,25 @@ class PortalBatchViewSet(viewsets.ReadOnlyModelViewSet):
         form.is_valid(raise_exception=True)
         return self._act(request, workflow.cancel_batch, reason=form.validated_data.get("reason", ""))
 
+    @action(detail=True, methods=["get"])
+    def download(self, request, pk=None):
+        """Stream the batch's print-ready PDF through the API.
+
+        Deliberately not a link to a public /media/ path: these carry
+        recipient data, and a bare media URL is both unauthenticated and
+        host-relative (it would resolve against the console's own origin,
+        not the API's)."""
+        batch = self.get_object()
+        _require(request.portal_access, "download")
+        _require_department(request.portal_access, batch.department_id)
+        if not batch.combined_pdf_url:
+            raise ValidationError("This batch's print file isn't ready yet.")
+        stream = storage.open_file(storage.combined_pdf_key(batch.id))
+        if stream is None:
+            raise ValidationError("The print file is missing from storage. Regenerate this batch.")
+        return FileResponse(stream, content_type="application/pdf", as_attachment=True,
+                            filename=f"{batch.prefix_snapshot or 'batch'}-{batch.id}-vouchers.pdf")
+
     @action(detail=True, methods=["post"], parser_classes=[MultiPartParser])
     def issue_bulk(self, request, pk=None):
         """CSV upload: name,phone,email,reference - one row per recipient.
@@ -384,6 +404,20 @@ class PortalVoucherViewSet(viewsets.ReadOnlyModelViewSet):
         for batch in {v.batch for v in vouchers}:
             batch.refresh_issue_status()
         return Response(PortalVoucherSerializer(vouchers, many=True).data)
+
+    @action(detail=True, methods=["get"])
+    def download(self, request, pk=None):
+        """Stream one voucher's PDF - same reasoning as the batch download."""
+        voucher = self.get_object()
+        _require(request.portal_access, "download")
+        _require_department(request.portal_access, voucher.batch.department_id)
+        if not voucher.pdf_url:
+            raise ValidationError("This voucher's PDF isn't ready yet.")
+        stream = storage.open_file(storage.voucher_pdf_key(voucher.batch_id, voucher.number))
+        if stream is None:
+            raise ValidationError("This voucher's PDF is missing from storage. Regenerate the batch.")
+        return FileResponse(stream, content_type="application/pdf", as_attachment=True,
+                            filename=f"{voucher.number}.pdf")
 
     @action(detail=True, methods=["post"])
     def redeem(self, request, pk=None):

@@ -67,13 +67,25 @@ function parseApiError(error: any): string {
   }
 }
 
-async function downloadBlob(path: string, filename: string) {
-  const response = await fmsRequestRaw(path);
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
+/** Fetches through fmsRequestRaw so the auth token goes with it, then saves the
+ *  bytes locally. A plain <a href> can't carry the token, and the stored media
+ *  URL is host-relative - it would resolve against this app's origin, not the
+ *  API's, and land on the console's login screen. */
+async function downloadBlob(path: string, filename: string): Promise<string | null> {
+  try {
+    const response = await fmsRequestRaw(path);
+    const url = URL.createObjectURL(await response.blob());
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Revoking synchronously can cancel the download before it starts.
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    return null;
+  } catch (error: any) {
+    return parseApiError(error);
+  }
 }
 
 export default function VoucherPortal() {
@@ -418,8 +430,14 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
         {activeBatch.rejection_reason && <div className="form-error">Rejected: {activeBatch.rejection_reason}</div>}
         {activeBatch.status === "generating" && <div className="data-state">Assembling PDFs in the background — this refreshes automatically.</div>}
         {activeBatch.status === "failed" && <div className="data-state error">Generation failed: {activeBatch.generation_error}</div>}
-        {activeBatch.combined_pdf_url && <a className="secondary voucher-download-link"
-          href={activeBatch.combined_pdf_url} target="_blank" rel="noreferrer">Download print-ready PDF (all vouchers)</a>}
+        {/* Downloaded through the authenticated API, not linked to a media path:
+            a plain <a href> sends no auth token and the stored URL is host-relative,
+            so the browser would resolve it against this app's own origin. */}
+        {activeBatch.combined_pdf_url && <button type="button" className="secondary voucher-download-link"
+          onClick={async () => setWorkflowError(await downloadBlob(
+            `voucher-portal/batches/${activeBatch.id}/download/`,
+            `${activeBatch.prefix_snapshot || "batch"}-${activeBatch.id}-vouchers.pdf`) || "")}>
+          Download print-ready PDF (all vouchers)</button>}
 
         <div className="voucher-workflow-actions">
           {activeBatch.status === "draft" && access.actions.includes("create") &&
@@ -494,7 +512,8 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
                       {v.display_status === "generated" && access.actions.includes("issue") && <button type="button" className="link-button" onClick={() => startIssue(v)}>Issue</button>}
                       {v.display_status === "issued" && access.actions.includes("issue") && <button type="button" className="link-button" onClick={() => redeemVoucher(v)}>Redeem</button>}
                       {!["cancelled", "redeemed"].includes(v.status) && access.actions.includes("admin") && <button type="button" className="link-button" onClick={() => cancelVoucher(v)}>Cancel</button>}
-                      {v.pdf_url && <a className="link-button" href={v.pdf_url} target="_blank" rel="noreferrer">PDF</a>}
+                      {v.pdf_url && <button type="button" className="link-button"
+                        onClick={async () => setIssueError(await downloadBlob(`voucher-portal/vouchers/${v.id}/download/`, `${v.number}.pdf`) || "")}>PDF</button>}
                     </>}
                   </td>
                 </tr>)}
