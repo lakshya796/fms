@@ -137,8 +137,13 @@ POSTGRES_PASSWORD=$PG_PASSWORD
 POSTGRES_CONN_MAX_AGE=60
 ENV
 fi
-chmod 600 "$ENV_FILE"; chown "$RUN_AS": "$ENV_FILE"
-grep -E '^(DJANGO_ALLOWED_HOSTS|CORS_ALLOWED_ORIGINS|POSTGRES_HOST|POSTGRES_DB|POSTGRES_USER)=' "$ENV_FILE"
+# voucher_portal artwork and PDFs need somewhere that survives a release cut - $SHARED
+# does. Added idempotently so it lands even on a rerun that skipped rewriting the whole
+# file above (no PG_ADMIN_PASSWORD given).
+grep -q '^MEDIA_ROOT=' "$ENV_FILE" 2>/dev/null || echo "MEDIA_ROOT=$SHARED/media" >> "$ENV_FILE"
+mkdir -p "$SHARED/media"
+chmod 600 "$ENV_FILE"; chown "$RUN_AS": "$ENV_FILE"; chown -R "$RUN_AS": "$SHARED/media"
+grep -E '^(DJANGO_ALLOWED_HOSTS|CORS_ALLOWED_ORIGINS|POSTGRES_HOST|POSTGRES_DB|POSTGRES_USER|MEDIA_ROOT)=' "$ENV_FILE"
 
 say "3. Cut the release"
 rm -rf /tmp/fmsbuild && mkdir -p /tmp/fmsbuild

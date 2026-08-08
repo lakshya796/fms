@@ -30,12 +30,14 @@ Endpoint references: [../docs/FLEETOPS.md](../docs/FLEETOPS.md) and
    `USE_SQLITE=true` or the `POSTGRES_*` variables.
 3. Run `python manage.py migrate` (migrations are committed; do not generate them at runtime).
 4. Run `python manage.py seed_accounting`, then `python manage.py seed_fleetops` for a
-   realistic Indian demo dataset that is also billed and posted to the ledger.
+   realistic Indian demo dataset that is also billed and posted to the ledger. Run
+   `python manage.py seed_voucher_portal` for the Voucher Portal's departments, voucher types,
+   prefixes and default template (see [../docs/VOUCHER-PORTAL.md](../docs/VOUCHER-PORTAL.md)).
 5. Run `python manage.py runserver` and open `/api/v1/health/` or `/api/v1/`.
 
 ## Tests
 
-`python manage.py test` — 148 tests across fleet, accounting, iam and vouchers.
+`python manage.py test` — 168 tests across fleet, accounting, iam, vouchers and voucher_portal.
 
 ## EC2 deployment
 

@@ -34,10 +34,18 @@ a numbered voucher series with a value and validity window, issue vouchers with 
 phone number, and print each one as a PDF with its barcode. See
 [docs/GIFT-VOUCHERS.md](docs/GIFT-VOUCHERS.md).
 
+## Voucher Portal (ADCOOP retail, staff login required)
+
+An authenticated extension of the gift voucher desk above, covering the fuller retail voucher
+workflow: percentage or fixed discounts, department/type-scoped prefixes with server-allocated
+numbering, a preview-before-you-generate step, bulk generation with an individual PDF per voucher
+plus one combined print PDF, and manual or CSV bulk issuing. A separate app from the public desk —
+neither shares a table with the other. See [docs/VOUCHER-PORTAL.md](docs/VOUCHER-PORTAL.md).
+
 ## Repository layout
 
 - `app/` — Next.js console (`/` workspace, `/track` public consignment tracking, `/vouchers`
-  public gift voucher desk)
+  public gift voucher desk, `/voucher-portal` authenticated voucher portal)
 - `backend/` — Django REST API (`/api/v1/`), see [backend/README.md](backend/README.md)
 
 ## Deploying the API

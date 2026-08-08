@@ -259,8 +259,10 @@ tr.clickable:hover td{background:#f8faf7}
 .voucher-form{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .voucher-form label{display:flex;flex-direction:column;gap:6px;font-size:10px;font-weight:700;color:var(--voucher-muted)}
 .voucher-form label small{font-weight:500;text-transform:none;letter-spacing:0}
-.voucher-form input{border:1px solid var(--voucher-line);border-radius:9px;padding:10px 11px;font-size:12px;outline:none;color:var(--voucher-ink)}
-.voucher-form input:focus{border-color:var(--voucher-purple);box-shadow:0 0 0 3px #4e327d1a}
+.voucher-form input,.voucher-form select,.voucher-form textarea{border:1px solid var(--voucher-line);border-radius:9px;padding:10px 11px;font-size:12px;outline:none;color:var(--voucher-ink);font-family:inherit;background:#fff}
+.voucher-form textarea{resize:vertical}
+.voucher-form input:focus,.voucher-form select:focus,.voucher-form textarea:focus{border-color:var(--voucher-purple);box-shadow:0 0 0 3px #4e327d1a}
+.voucher-topbar button.secondary,.voucher-topbar button.primary{width:auto;padding:0 16px;height:38px}
 .voucher-form-wide{grid-column:1 / -1}
 .voucher-form button.primary{background:var(--voucher-purple);height:42px}
 .voucher-success{margin-top:14px;padding:12px 14px;border-radius:10px;background:#f1eefa;color:var(--voucher-purple);font-size:11px}
