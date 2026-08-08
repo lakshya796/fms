@@ -1,10 +1,20 @@
-"""Preview rendering and batch generation.
+"""Preview rendering, draft creation, and post-approval generation.
 
 Preview renders one sample coupon from the submitted form without touching the
-database, and returns a hash of the canonical form payload. `generate_batch`
+database, and returns a hash of the canonical form payload. `create_draft_batch`
 requires that hash back and rejects a stale one - the server-side half of "§6:
 changing the form after preview invalidates it," not left to the browser to
 enforce alone.
+
+Creating a batch (`create_draft_batch`) and actually minting vouchers for it
+(`generate_vouchers`) are two separate steps, split by the approval workflow
+in `services/workflow.py`: a draft only exists as a row with the settings the
+requester submitted - no numbers are burned, no PDFs exist - until an approver
+signs off and `generate_vouchers` runs. Everything about a batch that's fixed
+at submission time (discount, validity, terms, prefix and template snapshots)
+is captured in `create_draft_batch`, so what gets approved is exactly what
+gets generated, even if the underlying prefix or template changes in the
+meantime.
 
 PDF assembly (one file per voucher plus the combined print file) runs in a
 background thread rather than the request. There's no task queue on this box
@@ -85,26 +95,39 @@ def render_preview(data: dict) -> bytes:
 
 
 @transaction.atomic
-def generate_batch(data: dict, created_by) -> PortalBatch:
+def create_draft_batch(data: dict, created_by) -> PortalBatch:
+    """Save a batch exactly as submitted. No numbers allocated, no vouchers
+    created, no PDFs rendered - that's `generate_vouchers`, and only runs once
+    the batch has been approved (see services/workflow.py)."""
     prefix = data["prefix"]
     template = data["template"]
-    quantity = data["quantity"]
-
-    numbers, prefix_str, seq_len = allocate(prefix.id, quantity)
 
     batch = PortalBatch.objects.create(
         name=data["name"], department=data["department"], voucher_type=data["voucher_type"],
-        description=data.get("description") or "", quantity=quantity,
+        description=data.get("description") or "", quantity=data["quantity"],
         discount_type=data["discount_type"], percentage_value=data.get("percentage_value"),
         max_discount_value=data.get("max_discount_value"), fixed_value=data.get("fixed_value"),
         currency=data.get("currency") or "AED", valid_from=data["valid_from"], valid_to=data["valid_to"],
         restrictions=data.get("restrictions") or "", terms=data.get("terms") or "",
-        prefix=prefix, prefix_snapshot=prefix_str, sequence_length_snapshot=seq_len,
+        prefix=prefix, prefix_snapshot=prefix.prefix, sequence_length_snapshot=prefix.sequence_length,
         template=template, template_snapshot=_template_snapshot(template),
-        status="generating", created_by=created_by,
+        status="draft", created_by=created_by,
     )
-    PortalVoucher.objects.bulk_create([PortalVoucher(batch=batch, number=number) for number in numbers])
-    StatusChange.objects.create(batch=batch, from_status="", to_status="generating", actor=created_by)
+    StatusChange.objects.create(batch=batch, from_status="", to_status="draft", actor=created_by)
+    return batch
+
+
+def generate_vouchers(batch: PortalBatch):
+    """Mint the actual voucher numbers and kick off PDF assembly. Only valid
+    from status=approved - the caller (the `generate` view action) is
+    responsible for enforcing that; this function trusts it."""
+    with transaction.atomic():
+        numbers, _, _ = allocate(batch.prefix_id, batch.quantity,
+                                 prefix_text=batch.prefix_snapshot, sequence_length=batch.sequence_length_snapshot)
+        PortalVoucher.objects.bulk_create([PortalVoucher(batch=batch, number=number) for number in numbers])
+        batch.status = "generating"
+        batch.save(update_fields=["status", "updated_at"])
+        StatusChange.objects.create(batch=batch, from_status="approved", to_status="generating")
 
     thread = threading.Thread(target=_run_generation, args=(batch.id,), daemon=True)
     thread.start()

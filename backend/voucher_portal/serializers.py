@@ -1,9 +1,11 @@
 from decimal import Decimal
 
+from django.contrib.auth.models import User
 from django.utils import timezone
 from rest_framework import serializers
 
-from .models import Department, PortalBatch, PortalVoucher, VoucherPrefix, VoucherTemplate, VoucherType
+from .models import (Department, Notification, PortalBatch, PortalUserAccess, PortalVoucher, VoucherPrefix,
+                     VoucherTemplate, VoucherType)
 from .validators import ArtworkError, validate_artwork
 
 
@@ -81,6 +83,7 @@ class PortalBatchSerializer(serializers.ModelSerializer):
     department_name = serializers.CharField(source="department.name", read_only=True)
     voucher_type_name = serializers.CharField(source="voucher_type.name", read_only=True)
     created_by_username = serializers.CharField(source="created_by.username", read_only=True, default="")
+    approved_by_username = serializers.CharField(source="approved_by.username", read_only=True, default="")
     generated_count = serializers.SerializerMethodField()
     issued_count = serializers.SerializerMethodField()
 
@@ -91,9 +94,11 @@ class PortalBatchSerializer(serializers.ModelSerializer):
             "quantity", "discount_type", "percentage_value", "max_discount_value", "fixed_value", "currency",
             "display_value", "valid_from", "valid_to", "restrictions", "terms", "prefix", "prefix_snapshot",
             "template", "status", "combined_pdf_url", "generation_error", "created_by_username",
+            "approved_by_username", "approved_at", "rejection_reason", "cancelled_at",
             "generated_count", "issued_count", "created_at",
         ]
-        read_only_fields = ["prefix_snapshot", "status", "combined_pdf_url", "generation_error"]
+        read_only_fields = ["prefix_snapshot", "status", "combined_pdf_url", "generation_error",
+                           "approved_at", "rejection_reason", "cancelled_at"]
 
     def get_generated_count(self, batch):
         return batch.vouchers.count()
@@ -169,3 +174,40 @@ class ManualIssueSerializer(serializers.Serializer):
     phone = serializers.CharField(required=False, allow_blank=True, max_length=20)
     email = serializers.EmailField(required=False, allow_blank=True)
     reference = serializers.CharField(required=False, allow_blank=True, max_length=80)
+
+
+class RejectSerializer(serializers.Serializer):
+    reason = serializers.CharField(max_length=240)
+
+
+class ApproveSerializer(serializers.Serializer):
+    comment = serializers.CharField(required=False, allow_blank=True, max_length=240)
+
+
+class CancelSerializer(serializers.Serializer):
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=240)
+
+
+class PortalUserAccessSerializer(serializers.ModelSerializer):
+    is_active = serializers.BooleanField(default=True)
+    username = serializers.CharField(source="user.username", read_only=True)
+    user = serializers.SlugRelatedField(slug_field="username", queryset=User.objects.all())
+    department_ids = serializers.PrimaryKeyRelatedField(
+        source="departments", queryset=Department.objects.all(), many=True, required=False)
+    department_names = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PortalUserAccess
+        fields = ["id", "user", "username", "role", "department_ids", "department_names", "is_active", "created_at"]
+
+    def get_department_names(self, obj):
+        return list(obj.departments.values_list("name", flat=True))
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    batch_name = serializers.CharField(source="batch.name", read_only=True)
+
+    class Meta:
+        model = Notification
+        fields = ["id", "batch", "batch_name", "kind", "message", "read_at", "created_at"]
+        read_only_fields = fields
