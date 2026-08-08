@@ -276,31 +276,76 @@ batch's department; `approve`/`reject` notify the batch's requester.
 email backend and a call from `services/workflow.py`'s `_notify()` — nothing
 about the workflow itself changes.
 
-## Reporting (§12) and the template library (§5 "Configurable templates")
+## Reporting and dashboards (§12)
 
-`GET reports/summary/`, `reports/by-department/`, `reports/by-type/`, and
-`reports/export/` (CSV) — every one scoped to the caller's visible
-departments in `services/reports.py`, so a Report Viewer scoped to one
-department can't see another's numbers even in an aggregate total. `?
-department=` narrows further within what the caller can already see.
+`GET reports/summary/`, `by-department/`, `by-type/`, `trend/`, `batches/`
+and `export/` (CSV) — every one scoped to the caller's visible departments in
+`services/reports.py`, so a Report Viewer scoped to one department can't see
+another's numbers even in an aggregate total.
 
-Templates already supported multipart CRUD in Phase 1 (used by the
-create-form's inline artwork upload); Phase 3 adds a library screen
-(`/voucher-portal` → Templates) to list every template, set which one is
-`is_default`, and activate/deactivate old designs — the "multiple templates"
-half of §5's configurable-templates enhancement. **Word-based template
-upload is not implemented** — the brief itself calls this out as a bigger,
-separate future item, and this pass sticks to image-based artwork (JPEG/PNG)
-uploaded directly, which is what's actually driving the coupon design today.
+All six share one filter set (`reports.apply_filters`): `department`,
+`voucher_type`, `status`, `from`, `to`. Keeping the filtering in one function
+rather than per-view is deliberate — the summary, the breakdowns, the trend
+and the CSV can't drift into filtering differently from each other.
+
+`trend/` returns a **dense** monthly series (`?months=` 1–24, default 12):
+months with no activity come back as explicit zeros rather than being
+omitted, because a chart with gaps where nothing happened reads as missing
+data instead of a quiet month.
+
+The dashboard (`/voucher-portal` → Reports) puts one filter row above
+everything it scopes, then stat tiles, a multi-series trend line, a grouped
+department bar chart, and the by-type and batch-level tables. Both charts are
+inline SVG — no chart library — with a hover crosshair/tooltip layer and a
+"Show table" twin, so no value is reachable only by hovering.
+
+Chart colours are the first three slots of a validated categorical palette
+(`#2a78d6` / `#eb6834` / `#1baf7a`), checked all-pairs against this page's
+white card surface: worst CVD ΔE 9.2, worst normal-vision ΔE 24.0. Aqua sits
+below 3:1 contrast on white, which is why both charts ship direct value
+labels and a table view. Series colour follows the *measure*, not its rank,
+so filtering never repaints a series out from under the reader.
+
+## Template library and layout editor (§5 "Configurable templates")
+
+Templates supported multipart CRUD from Phase 1 (the create-form's inline
+artwork upload). On top of that:
+
+- **Library screen** — list every template, set which is `is_default`,
+  activate/deactivate old designs.
+- **Layout editor** — drag any field to reposition it, or type exact
+  coordinates. The canvas is the coupon's own coordinate space (points from
+  the top-left corner) scaled to fit, so what's dragged is what prints.
+  Alongside position it edits font size, colour, line spacing, box
+  width/height, and the qualifier's static text.
+- `GET templates/field-catalogue/` is the single source of truth for which
+  fields exist: `pdf.py` draws exactly these keys, `validate_field_geometry`
+  accepts exactly these keys, and the editor offers exactly these keys. A
+  field the renderer can't draw therefore can't be introduced by editing
+  geometry.
+- `GET|POST templates/{id}/preview/` renders a sample coupon — POST unsaved
+  geometry to see an edit *before* committing it, without creating a batch
+  and burning real voucher numbers.
+- `POST templates/{id}/reset-geometry/` restores the measured default layout.
+
+`validators.validate_field_geometry` is what stands between a careless drag
+and a print run of unreadable vouchers: it rejects unknown field keys,
+duplicates, non-numeric values, negatives, and any position outside the
+coupon's own dimensions.
+
+One gotcha worth knowing if you extend the template endpoints: they accept
+`MultiPartParser`, `FormParser` **and** `JSONParser`. Multipart carries the
+artwork upload; `field_geometry` is a nested structure a form encoder can't
+represent, so dropping `JSONParser` makes every geometry save fail with a 415.
 
 ## What's still not included
 
 SAP/external-system integration (explicitly out of scope for this pass),
-Word-based template upload, user-editable field *positions* (geometry is
-still a fixed known set of fields per template, not a drag-and-drop editor —
-see "Template and PDF rendering" above), real SMTP delivery, and
-voucher-type-level permission scoping (department is the boundary that's
-enforced; see "Roles and department permissions").
+Word-based template upload (the brief itself treats DOCX as a bigger,
+separate future item, and image-based artwork is what actually drives the
+coupon design today), real SMTP delivery, and voucher-type-level permission
+scoping (department is the boundary that's enforced; see "Roles and
+department permissions").
 
 ## Decisions made building this
 
@@ -322,12 +367,15 @@ enforced; see "Roles and department permissions").
 
 ## Tests
 
-`python manage.py test voucher_portal` — 61 tests: numbering (including a real
+`python manage.py test voucher_portal` — 80 tests: numbering (including a real
 concurrent-allocation test across 8 threads), discount validation, the
 preview-hash invalidation flow, the full draft → submit → approve → generate
 → issue → redeem workflow (both via `services/workflow.py` directly and
 through the HTTP API), self-approval blocking, role and department-scope
-enforcement, notifications, reporting (including department-scoped
-visibility), the template library, team-access management, and artwork
-upload (aspect ratio/size rejection, and the `is_active` multipart
-regression noted above).
+enforcement, notifications, reporting (summary, breakdowns, the dense monthly
+trend, batch-level rows, every filter, and department-scoped visibility on
+each), the template library, the geometry editor (valid moves, out-of-bounds
+and unknown-key rejection, catalogue/renderer agreement, unsaved-geometry
+preview, reset-to-default, and non-admin lockout), team-access management,
+and artwork upload (aspect ratio/size rejection, and the `is_active`
+multipart regression noted above).

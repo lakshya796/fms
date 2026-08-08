@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fmsRequest, fmsRequestRaw, login, logout, UNAUTHORISED_EVENT } from "../lib/fms-api";
 
 // Authenticated ADCOOP Voucher Portal. Unlike /vouchers (deliberately public),
@@ -389,7 +389,7 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
   </header>;
 
   if (screen === "reports") {
-    return <main className="voucher-page">{nav}<ReportsScreen /></main>;
+    return <main className="voucher-page">{nav}<ReportsScreen departments={departments} voucherTypes={voucherTypes} /></main>;
   }
   if (screen === "templates") {
     return <main className="voucher-page">{nav}<TemplatesScreen canAdmin={access.actions.includes("admin")} /></main>;
@@ -611,66 +611,488 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
   </main>;
 }
 
-function ReportsScreen() {
+// Three measures shown across both charts. Colours are the first three slots of
+// the validated categorical palette (checked all-pairs against this page's white
+// card surface: worst CVD ΔE 9.2, worst normal-vision ΔE 24.0). Aqua sits under
+// 3:1 on white, so both charts ship direct labels and a table view - the relief
+// the contrast warning requires. Identity follows the measure, never its rank,
+// so filtering never repaints a series.
+const SERIES = [
+  { key: "created", label: "Created", color: "#2a78d6" },
+  { key: "issued", label: "Issued", color: "#eb6834" },
+  { key: "redeemed", label: "Redeemed", color: "#1baf7a" },
+] as const;
+
+const CHART_INK = "#231B36";
+const CHART_MUTED = "#6B6480";
+const CHART_GRID = "#E6E1F0";
+const CHART_AXIS = "#CFC7DF";
+
+/** Clean axis steps only (1 / 2 / 5 / 10 × a power of ten). A 2.5 step would
+ *  round to a label that doesn't sit where the gridline is - "3" drawn at 2.5. */
+function niceTicks(max: number, count = 4) {
+  if (max <= 0) return [0, 1];
+  const raw = max / count;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = Math.max(1, [1, 2, 5, 10].map(m => m * magnitude).find(s => s >= raw) || magnitude * 10);
+  const ticks: number[] = [];
+  for (let value = 0; value <= max + step / 2; value += step) ticks.push(value);
+  return ticks;
+}
+
+/** Rounded at the data end, square at the baseline (per the mark spec). */
+function barPath(x: number, y: number, w: number, h: number, radius = 4) {
+  if (w <= 0.5) return "";
+  const r = Math.min(radius, w, h / 2);
+  return `M${x},${y} H${x + w - r} A${r},${r} 0 0 1 ${x + w},${y + r} V${y + h - r} A${r},${r} 0 0 1 ${x + w - r},${y + h} H${x} Z`;
+}
+
+function ChartLegend() {
+  return <ul className="viz-legend">
+    {SERIES.map(s => <li key={s.key}><i style={{ background: s.color }} />{s.label}</li>)}
+  </ul>;
+}
+
+function TrendChart({ data }: { data: any[] }) {
+  const [hover, setHover] = useState<number | null>(null);
+  const W = 760, H = 268;
+  const padding = { top: 18, right: 64, bottom: 38, left: 46 };
+  const plotW = W - padding.left - padding.right;
+  const plotH = H - padding.top - padding.bottom;
+
+  const max = Math.max(1, ...data.flatMap(d => SERIES.map(s => d[s.key] as number)));
+  const ticks = niceTicks(max);
+  const top = ticks[ticks.length - 1];
+  const x = (i: number) => padding.left + (data.length <= 1 ? plotW / 2 : (i * plotW) / (data.length - 1));
+  const y = (value: number) => padding.top + plotH - (value / top) * plotH;
+
+  // Direct end-labels, but only where they don't collide. Converging series drop
+  // their label to the legend + tooltip rather than being nudged apart, which
+  // would detach the label from its line.
+  const endLabels = SERIES
+    .map(s => ({ ...s, value: data.length ? (data[data.length - 1][s.key] as number) : 0 }))
+    .map(s => ({ ...s, y: y(s.value) }))
+    .sort((a, b) => a.y - b.y)
+    .reduce<{ key: string; label: string; color: string; value: number; y: number }[]>((kept, entry) => {
+      if (kept.length && entry.y - kept[kept.length - 1].y < 13) return kept;
+      kept.push(entry); return kept;
+    }, []);
+
+  const active = hover !== null ? data[hover] : null;
+
+  return <div className="viz-wrap">
+    <svg viewBox={`0 0 ${W} ${H}`} className="viz-svg" role="img"
+         aria-label={`Vouchers created, issued and redeemed per month over the last ${data.length} months`}>
+      {ticks.map(tick => <g key={tick}>
+        <line x1={padding.left} x2={padding.left + plotW} y1={y(tick)} y2={y(tick)}
+              stroke={tick === 0 ? CHART_AXIS : CHART_GRID} strokeWidth="1" />
+        <text x={padding.left - 10} y={y(tick) + 3.5} textAnchor="end" fontSize="10" fill={CHART_MUTED}
+              style={{ fontVariantNumeric: "tabular-nums" }}>{tick.toLocaleString()}</text>
+      </g>)}
+
+      {data.map((row, i) => {
+        // Label every other month once the series gets long, so ticks never collide.
+        const show = data.length <= 8 || i % 2 === data.length % 2;
+        if (!show) return null;
+        const [year, month] = row.month.split("-");
+        const name = new Date(Number(year), Number(month) - 1, 1).toLocaleString("en", { month: "short" });
+        return <text key={row.month} x={x(i)} y={H - 16} textAnchor="middle" fontSize="10" fill={CHART_MUTED}>
+          {month === "01" ? `${name} ${year.slice(2)}` : name}
+        </text>;
+      })}
+
+      {hover !== null && <line x1={x(hover)} x2={x(hover)} y1={padding.top} y2={padding.top + plotH}
+                               stroke={CHART_AXIS} strokeWidth="1" />}
+
+      {SERIES.map(s => (
+        <path key={s.key} fill="none" stroke={s.color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"
+              d={data.map((row, i) => `${i ? "L" : "M"}${x(i)},${y(row[s.key])}`).join(" ")} />
+      ))}
+
+      {/* End markers carry a 2px surface ring so they stay legible where lines cross. */}
+      {data.length > 0 && SERIES.map(s => (
+        <circle key={s.key} cx={x(data.length - 1)} cy={y(data[data.length - 1][s.key])} r="4.5"
+                fill={s.color} stroke="#fff" strokeWidth="2" />
+      ))}
+      {hover !== null && SERIES.map(s => (
+        <circle key={s.key} cx={x(hover)} cy={y(data[hover][s.key])} r="4.5" fill={s.color} stroke="#fff" strokeWidth="2" />
+      ))}
+
+      {endLabels.map(s => (
+        <text key={s.key} x={x(data.length - 1) + 10} y={s.y + 3.5} fontSize="11" fontWeight="600" fill={CHART_INK}
+              style={{ fontVariantNumeric: "tabular-nums" }}>{s.value.toLocaleString()}</text>
+      ))}
+
+      {/* Hit targets span the full column height, not just the 9px marker. */}
+      {data.map((row, i) => (
+        <rect key={row.month} x={x(i) - plotW / Math.max(data.length, 1) / 2} y={padding.top}
+              width={plotW / Math.max(data.length, 1)} height={plotH} fill="transparent"
+              onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)} />
+      ))}
+    </svg>
+
+    {active && <div className="viz-tooltip" style={{ left: `${(x(hover!) / W) * 100}%` }}>
+      <strong>{active.month}</strong>
+      {SERIES.map(s => <span key={s.key}><i style={{ background: s.color }} />{s.label}<b>{active[s.key].toLocaleString()}</b></span>)}
+    </div>}
+  </div>;
+}
+
+function DepartmentChart({ rows }: { rows: { name: string; created: number; issued: number; redeemed: number }[] }) {
+  const [hover, setHover] = useState<string | null>(null);
+  const W = 760;
+  const BAR = 14, BAR_GAP = 2, BAND_GAP = 26, LABEL_W = 150;
+  const bandH = SERIES.length * BAR + (SERIES.length - 1) * BAR_GAP;
+  const H = rows.length * bandH + Math.max(0, rows.length - 1) * BAND_GAP + 46;
+  const plotW = W - LABEL_W - 66;
+  const max = Math.max(1, ...rows.flatMap(r => SERIES.map(s => r[s.key] as number)));
+  const ticks = niceTicks(max, 3);
+  const top = ticks[ticks.length - 1];
+  const scale = (value: number) => (value / top) * plotW;
+
+  return <div className="viz-wrap">
+    <svg viewBox={`0 0 ${W} ${H}`} className="viz-svg" role="img"
+         aria-label="Vouchers created, issued and redeemed by department">
+      {ticks.map(tick => <g key={tick}>
+        <line x1={LABEL_W + scale(tick)} x2={LABEL_W + scale(tick)} y1={0} y2={H - 30}
+              stroke={tick === 0 ? CHART_AXIS : CHART_GRID} strokeWidth="1" />
+        <text x={LABEL_W + scale(tick)} y={H - 12} textAnchor="middle" fontSize="10" fill={CHART_MUTED}
+              style={{ fontVariantNumeric: "tabular-nums" }}>{tick.toLocaleString()}</text>
+      </g>)}
+
+      {rows.map((row, index) => {
+        const bandTop = index * (bandH + BAND_GAP);
+        return <g key={row.name} onMouseEnter={() => setHover(row.name)} onMouseLeave={() => setHover(null)}>
+          <rect x="0" y={bandTop - BAND_GAP / 2} width={W} height={bandH + BAND_GAP} fill="transparent" />
+          <text x={LABEL_W - 14} y={bandTop + bandH / 2 + 4} textAnchor="end" fontSize="11.5"
+                fontWeight={hover === row.name ? 700 : 500} fill={CHART_INK}>{row.name}</text>
+          {SERIES.map((s, seriesIndex) => {
+            const value = row[s.key] as number;
+            const barY = bandTop + seriesIndex * (BAR + BAR_GAP);
+            return <g key={s.key}>
+              <path d={barPath(LABEL_W, barY, scale(value), BAR)} fill={s.color} />
+              <text x={LABEL_W + scale(value) + 8} y={barY + BAR / 2 + 3.5} fontSize="10.5" fill={CHART_INK}
+                    style={{ fontVariantNumeric: "tabular-nums" }}>{value.toLocaleString()}</text>
+            </g>;
+          })}
+        </g>;
+      })}
+    </svg>
+  </div>;
+}
+
+function ChartOrTable({ title, action, chart, table }: { title: string; action?: React.ReactNode; chart: React.ReactNode; table: React.ReactNode }) {
+  const [asTable, setAsTable] = useState(false);
+  return <section className="voucher-card">
+    <div className="voucher-card-head">
+      <h2>{title}</h2>
+      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+        {!asTable && <ChartLegend />}
+        <button type="button" className="link-button" onClick={() => setAsTable(v => !v)}>
+          {asTable ? "Show chart" : "Show table"}
+        </button>
+        {action}
+      </div>
+    </div>
+    {asTable ? table : chart}
+  </section>;
+}
+
+function ReportsScreen({ departments, voucherTypes }: { departments: Department[]; voucherTypes: VoucherType[] }) {
+  const [filters, setFilters] = useState({ department: "", voucher_type: "", status: "", from: "", to: "" });
   const [summary, setSummary] = useState<Record<string, number> | null>(null);
   const [byDepartment, setByDepartment] = useState<any[]>([]);
   const [byType, setByType] = useState<any[]>([]);
+  const [trend, setTrend] = useState<any[]>([]);
+  const [batchRows, setBatchRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const query = () => {
+    const params = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, value); });
+    return params.toString() ? `?${params.toString()}` : "";
+  };
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      const [s, d, t] = await Promise.all([
-        fmsRequest<Record<string, number>>("voucher-portal/reports/summary/"),
-        fmsRequest<any[]>("voucher-portal/reports/by-department/"),
-        fmsRequest<any[]>("voucher-portal/reports/by-type/"),
+      setRefreshing(true);
+      const suffix = query();
+      const [s, d, t, tr, b] = await Promise.all([
+        fmsRequest<Record<string, number>>(`voucher-portal/reports/summary/${suffix}`),
+        fmsRequest<any[]>(`voucher-portal/reports/by-department/${suffix}`),
+        fmsRequest<any[]>(`voucher-portal/reports/by-type/${suffix}`),
+        fmsRequest<any[]>(`voucher-portal/reports/trend/${suffix}`),
+        fmsRequest<any[]>(`voucher-portal/reports/batches/${suffix}`),
       ]);
-      setSummary(s); setByDepartment(d); setByType(t); setLoading(false);
+      if (cancelled) return;
+      setSummary(s); setByDepartment(d); setByType(t); setTrend(tr); setBatchRows(b);
+      setLoading(false); setRefreshing(false);
     })();
-  }, []);
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters]);
 
   if (loading || !summary) return <div className="data-state">Loading…</div>;
 
-  return <>
-    <section className="voucher-stats">
-      <div><span>Total</span><strong>{summary.total}</strong></div>
-      <div><span>Generated</span><strong>{summary.generated}</strong></div>
-      <div><span>Issued</span><strong>{summary.issued}</strong></div>
-      <div><span>Redeemed</span><strong>{summary.redeemed}</strong></div>
-      <div><span>Expired</span><strong>{summary.expired}</strong></div>
-      <div><span>Cancelled</span><strong>{summary.cancelled}</strong></div>
+  const departmentSeries = byDepartment.map(row => ({
+    name: row.batch__department__name, created: row.total, issued: row.issued, redeemed: row.redeemed,
+  }));
+
+  const breakdownTable = (rows: any[], idKey: string, nameKey: string, heading: string) => (
+    <div className="table-wrap">
+      <table>
+        <thead><tr><th>{heading}</th><th>Created</th><th>Issued</th><th>Redeemed</th></tr></thead>
+        <tbody>
+          {rows.map(row => <tr key={row[idKey]}>
+            <td>{row[nameKey]}</td><td>{row.total}</td><td>{row.issued}</td><td>{row.redeemed}</td>
+          </tr>)}
+          {rows.length === 0 && <tr><td colSpan={4}><div className="data-state">Nothing in this slice.</div></td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  return <div style={{ opacity: refreshing ? 0.6 : 1, transition: "opacity .15s" }}>
+    {/* One filter row above everything it scopes - never per-chart filters. */}
+    <section className="voucher-card voucher-filter-row">
+      <label>Department<select value={filters.department} onChange={e => setFilters({ ...filters, department: e.target.value })}>
+        <option value="">All</option>
+        {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+      </select></label>
+      <label>Voucher type<select value={filters.voucher_type} onChange={e => setFilters({ ...filters, voucher_type: e.target.value })}>
+        <option value="">All</option>
+        {voucherTypes.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+      </select></label>
+      <label>Status<select value={filters.status} onChange={e => setFilters({ ...filters, status: e.target.value })}>
+        <option value="">All</option>
+        {["generated", "issued", "redeemed", "cancelled"].map(s => <option key={s} value={s}>{s}</option>)}
+      </select></label>
+      <label>From<input type="date" value={filters.from} onChange={e => setFilters({ ...filters, from: e.target.value })} /></label>
+      <label>To<input type="date" value={filters.to} onChange={e => setFilters({ ...filters, to: e.target.value })} /></label>
+      <button type="button" className="link-button" onClick={() => setFilters({ department: "", voucher_type: "", status: "", from: "", to: "" })}>Clear</button>
     </section>
 
-    <section className="voucher-card">
-      <div className="voucher-card-head">
-        <h2>By department</h2>
-        <button type="button" className="secondary" onClick={() => downloadBlob("voucher-portal/reports/export/", "voucher-report.csv")}>Download CSV</button>
-      </div>
-      <div className="table-wrap">
-        <table>
-          <thead><tr><th>Department</th><th>Total</th><th>Issued</th><th>Redeemed</th></tr></thead>
-          <tbody>
-            {byDepartment.map((row: any) => <tr key={row.batch__department__id}>
-              <td>{row.batch__department__name}</td><td>{row.total}</td><td>{row.issued}</td><td>{row.redeemed}</td>
-            </tr>)}
-          </tbody>
-        </table>
-      </div>
+    <section className="voucher-stats">
+      <div><span>Total</span><strong>{summary.total.toLocaleString()}</strong></div>
+      <div><span>Generated</span><strong>{summary.generated.toLocaleString()}</strong></div>
+      <div><span>Issued</span><strong>{summary.issued.toLocaleString()}</strong></div>
+      <div><span>Redeemed</span><strong>{summary.redeemed.toLocaleString()}</strong></div>
+      <div><span>Expired</span><strong>{summary.expired.toLocaleString()}</strong></div>
+      <div><span>Cancelled</span><strong>{summary.cancelled.toLocaleString()}</strong></div>
     </section>
+
+    <ChartOrTable
+      title="Vouchers over time"
+      chart={<TrendChart data={trend} />}
+      table={<div className="table-wrap">
+        <table>
+          <thead><tr><th>Month</th><th>Created</th><th>Issued</th><th>Redeemed</th></tr></thead>
+          <tbody>{trend.map(row => <tr key={row.month}>
+            <td>{row.month}</td><td>{row.created}</td><td>{row.issued}</td><td>{row.redeemed}</td>
+          </tr>)}</tbody>
+        </table>
+      </div>}
+    />
+
+    <ChartOrTable
+      title="By department"
+      action={<button type="button" className="secondary" style={{ width: "auto", padding: "0 14px", height: 34 }}
+        onClick={() => downloadBlob(`voucher-portal/reports/export/${query()}`, "voucher-report.csv")}>Download CSV</button>}
+      chart={departmentSeries.length ? <DepartmentChart rows={departmentSeries} /> : <div className="data-state">Nothing in this slice.</div>}
+      table={breakdownTable(byDepartment, "batch__department__id", "batch__department__name", "Department")}
+    />
 
     <section className="voucher-card">
       <div className="voucher-card-head"><h2>By voucher type</h2></div>
+      {breakdownTable(byType, "batch__voucher_type__id", "batch__voucher_type__name", "Voucher type")}
+    </section>
+
+    <section className="voucher-card">
+      <div className="voucher-card-head"><h2>Batches</h2></div>
       <div className="table-wrap">
         <table>
-          <thead><tr><th>Voucher type</th><th>Total</th><th>Issued</th><th>Redeemed</th></tr></thead>
+          <thead><tr><th>Batch</th><th>Department</th><th>Type</th><th>Value</th><th>Status</th><th>Generated</th><th>Issued</th><th>Redeemed</th><th>Valid until</th></tr></thead>
           <tbody>
-            {byType.map((row: any) => <tr key={row.batch__voucher_type__id}>
-              <td>{row.batch__voucher_type__name}</td><td>{row.total}</td><td>{row.issued}</td><td>{row.redeemed}</td>
+            {batchRows.map(row => <tr key={row.id}>
+              <td><strong>{row.name}</strong><small>{row.prefix}</small></td>
+              <td>{row.department}</td><td>{row.voucher_type}</td><td>{row.value}</td>
+              <td><span className={"status " + statusClass(row.status)}>{statusLabel(row.status)}</span></td>
+              <td>{row.generated}</td><td>{row.issued}</td><td>{row.redeemed}</td><td>{row.valid_to}</td>
             </tr>)}
+            {batchRows.length === 0 && <tr><td colSpan={9}><div className="data-state">Nothing in this slice.</div></td></tr>}
           </tbody>
         </table>
       </div>
     </section>
-  </>;
+  </div>;
+}
+
+type GeometryField = { key: string; x: number; y: number; size?: number; w?: number; h?: number; line_height?: number; color?: string; font?: string; static?: string };
+type Geometry = { artwork?: any; card?: any; fields: GeometryField[] };
+type CatalogueEntry = { key: string; label: string; kind: string; has_static_text?: boolean };
+
+/** Drag-to-position editor for a template's field layout (§5 "user-editable
+ *  field positions"). Positions are points from the coupon's top-left corner,
+ *  which is exactly what the PDF renderer consumes - the canvas below is that
+ *  same coordinate space scaled to fit, so what you drag is what prints. */
+function GeometryEditor({ template, onClose, onSaved }: { template: Template; onClose: () => void; onSaved: () => void }) {
+  const COUPON_W = 479.52, COUPON_H = 178;
+  const DISPLAY_W = 720;
+  const scale = DISPLAY_W / COUPON_W;
+
+  const [catalogue, setCatalogue] = useState<CatalogueEntry[]>([]);
+  const [geometry, setGeometry] = useState<Geometry | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [previewUrl, setPreviewUrl] = useState("");
+  const [previewing, setPreviewing] = useState(false);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const cat = await fmsRequest<{ fields: CatalogueEntry[]; defaults: Geometry }>("voucher-portal/templates/field-catalogue/");
+      setCatalogue(cat.fields);
+      const full = await fmsRequest<Template & { field_geometry: Geometry }>(`voucher-portal/templates/${template.id}/`);
+      setGeometry(full.field_geometry?.fields ? full.field_geometry : cat.defaults);
+    })();
+  }, [template.id]);
+
+  const labelFor = (key: string) => catalogue.find(c => c.key === key)?.label || key;
+  const kindFor = (key: string) => catalogue.find(c => c.key === key)?.kind || "text";
+
+  const patchField = (key: string, patch: Partial<GeometryField>) => {
+    setGeometry(g => g && ({ ...g, fields: g.fields.map(f => f.key === key ? { ...f, ...patch } : f) }));
+    setPreviewUrl("");
+  };
+
+  const onPointerMove = (event: React.PointerEvent) => {
+    if (!dragging || !canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    const x = Math.round(Math.max(0, Math.min(COUPON_W, (event.clientX - rect.left) / (rect.width / COUPON_W))) * 10) / 10;
+    const y = Math.round(Math.max(0, Math.min(COUPON_H, (event.clientY - rect.top) / (rect.height / COUPON_H))) * 10) / 10;
+    patchField(dragging, { x, y });
+  };
+
+  const save = async () => {
+    if (!geometry) return;
+    setSaving(true); setError("");
+    try {
+      await fmsRequest(`voucher-portal/templates/${template.id}/`, {
+        method: "PATCH", body: JSON.stringify({ field_geometry: geometry }),
+      });
+      onSaved();
+    } catch (err: any) { setError(parseApiError(err)); }
+    finally { setSaving(false); }
+  };
+
+  const resetToDefault = async () => {
+    setSaving(true); setError("");
+    try {
+      const updated = await fmsRequest<{ field_geometry: Geometry }>(`voucher-portal/templates/${template.id}/reset-geometry/`, { method: "POST", body: "{}" });
+      setGeometry(updated.field_geometry); setPreviewUrl("");
+    } catch (err: any) { setError(parseApiError(err)); }
+    finally { setSaving(false); }
+  };
+
+  const renderPreview = async () => {
+    if (!geometry) return;
+    setPreviewing(true); setError("");
+    try {
+      const response = await fmsRequestRaw(`voucher-portal/templates/${template.id}/preview/`, {
+        method: "POST", body: JSON.stringify({ field_geometry: geometry }),
+      });
+      setPreviewUrl(URL.createObjectURL(await response.blob()));
+    } catch (err: any) { setError(parseApiError(err)); }
+    finally { setPreviewing(false); }
+  };
+
+  if (!geometry) return <section className="voucher-card"><div className="data-state">Loading layout…</div></section>;
+
+  const active = geometry.fields.find(f => f.key === selected) || null;
+  const card = geometry.card || {};
+
+  return <section className="voucher-card">
+    <div className="voucher-card-head">
+      <h2>Layout — {template.name}</h2>
+      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+        <button type="button" className="link-button" onClick={resetToDefault} disabled={saving}>Reset to default</button>
+        <button type="button" className="link-button" onClick={renderPreview} disabled={previewing}>{previewing ? "Rendering…" : "Preview PDF"}</button>
+        <button type="button" className="secondary" style={{ width: "auto", padding: "0 14px", height: 34 }} onClick={onClose}>Close</button>
+        <button type="button" className="primary" style={{ width: "auto", padding: "0 16px", height: 34 }} disabled={saving} onClick={save}>{saving ? "Saving…" : "Save layout"}</button>
+      </div>
+    </div>
+
+    <p style={{ fontSize: 11, color: "var(--voucher-muted)", marginBottom: 12 }}>
+      Drag a field to move it, or pick one and type exact coordinates. Positions are
+      in points from the coupon's top-left corner — the same units the printed PDF uses.
+    </p>
+    {error && <div className="form-error" style={{ marginBottom: 12 }}>{error}</div>}
+
+    <div className="geo-layout">
+      <div>
+        <div ref={canvasRef} className="geo-canvas"
+             style={{ width: DISPLAY_W, height: COUPON_H * scale, backgroundImage: template.artwork ? `url(${template.artwork})` : undefined }}
+             onPointerMove={onPointerMove} onPointerUp={() => setDragging(null)} onPointerLeave={() => setDragging(null)}>
+          {card.w && <div className="geo-card-box" style={{
+            left: (card.x || 0) * scale, top: (card.y || 0) * scale,
+            width: card.w * scale, height: (card.h || 0) * scale,
+          }} />}
+          {geometry.fields.map(field => (
+            <button key={field.key} type="button"
+                    className={"geo-chip" + (selected === field.key ? " selected" : "")}
+                    style={{ left: field.x * scale, top: field.y * scale }}
+                    onPointerDown={event => { event.preventDefault(); setSelected(field.key); setDragging(field.key); }}
+                    onClick={() => setSelected(field.key)}>
+              {labelFor(field.key)}
+            </button>
+          ))}
+          {!template.artwork && <span className="geo-canvas-note">No artwork uploaded — the default ADCOOP design prints behind these fields.</span>}
+        </div>
+        {previewUrl && <iframe src={previewUrl} title="Template preview"
+          style={{ width: DISPLAY_W, height: 320, marginTop: 14, border: "1px solid var(--voucher-line)", borderRadius: 10 }} />}
+      </div>
+
+      <div className="geo-panel">
+        <p className="geo-panel-title">Fields</p>
+        <ul className="geo-field-list">
+          {geometry.fields.map(field => (
+            <li key={field.key}>
+              <button type="button" className={selected === field.key ? "selected" : ""} onClick={() => setSelected(field.key)}>
+                {labelFor(field.key)}
+              </button>
+            </li>
+          ))}
+        </ul>
+
+        {active && <div className="geo-props">
+          <p className="geo-panel-title">{labelFor(active.key)}</p>
+          <label>X (pt)<input type="number" step="0.1" min={0} max={COUPON_W} value={active.x}
+            onChange={e => patchField(active.key, { x: Number(e.target.value) })} /></label>
+          <label>Y (pt)<input type="number" step="0.1" min={0} max={COUPON_H} value={active.y}
+            onChange={e => patchField(active.key, { y: Number(e.target.value) })} /></label>
+          {kindFor(active.key) === "box" ? <>
+            <label>Width (pt)<input type="number" step="0.1" min={0} value={active.w ?? 0}
+              onChange={e => patchField(active.key, { w: Number(e.target.value) })} /></label>
+            <label>Height (pt)<input type="number" step="0.1" min={0} value={active.h ?? 0}
+              onChange={e => patchField(active.key, { h: Number(e.target.value) })} /></label>
+          </> : <>
+            <label>Font size (pt)<input type="number" step="0.5" min={0} value={active.size ?? 8}
+              onChange={e => patchField(active.key, { size: Number(e.target.value) })} /></label>
+            {kindFor(active.key) === "multiline" && <label>Line spacing (pt)<input type="number" step="0.5" min={0} value={active.line_height ?? 9}
+              onChange={e => patchField(active.key, { line_height: Number(e.target.value) })} /></label>}
+            <label>Colour<input type="color" value={active.color || "#231B36"}
+              onChange={e => patchField(active.key, { color: e.target.value })} /></label>
+          </>}
+          {catalogue.find(c => c.key === active.key)?.has_static_text &&
+            <label>Text<input value={active.static ?? ""} onChange={e => patchField(active.key, { static: e.target.value })} /></label>}
+        </div>}
+      </div>
+    </div>
+  </section>;
 }
 
 function TemplatesScreen({ canAdmin }: { canAdmin: boolean }) {
@@ -680,6 +1102,7 @@ function TemplatesScreen({ canAdmin }: { canAdmin: boolean }) {
   const [uploadName, setUploadName] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
+  const [editing, setEditing] = useState<Template | null>(null);
 
   const load = async () => {
     setLoading(true);
@@ -711,6 +1134,11 @@ function TemplatesScreen({ canAdmin }: { canAdmin: boolean }) {
     finally { setUploading(false); }
   };
 
+  if (editing) {
+    return <GeometryEditor template={editing} onClose={() => setEditing(null)}
+                           onSaved={() => { setEditing(null); load(); }} />;
+  }
+
   return <section className="voucher-card">
     <div className="voucher-card-head"><h2>Voucher templates</h2></div>
     {canAdmin && <div className="voucher-inline-form" style={{ marginBottom: 18 }}>
@@ -732,6 +1160,7 @@ function TemplatesScreen({ canAdmin }: { canAdmin: boolean }) {
         {canAdmin && <div className="voucher-template-actions">
           {!t.is_default && <button type="button" className="link-button" disabled={busyId === t.id} onClick={() => setDefault(t)}>Set default</button>}
           <button type="button" className="link-button" disabled={busyId === t.id} onClick={() => toggleActive(t)}>{t.is_active ? "Deactivate" : "Activate"}</button>
+          <button type="button" className="link-button" onClick={() => setEditing(t)}>Edit layout</button>
         </div>}
       </div>)}
       {templates.length === 0 && <div className="data-state">No templates yet.</div>}

@@ -1,3 +1,4 @@
+import copy
 import threading
 import time
 from datetime import timedelta
@@ -815,3 +816,183 @@ class PortalUserAccessApiTests(TestCase):
         response = client.post("/api/v1/voucher-portal/access/",
                                {"user": "new_requester", "role": "requester"}, format="json")
         self.assertEqual(response.status_code, 403)
+
+
+class GeometryValidationTests(TestCase):
+    """The geometry editor is the only thing that can move fields on a printed
+    voucher, so a bad edit has to be rejected before it's saved, not
+    discovered on a print run."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("geo_admin", password="x", is_staff=True)
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.template = VoucherTemplate.objects.create(name="Editable", is_default=True)
+
+    def _patch(self, geometry):
+        return self.client.patch(f"/api/v1/voucher-portal/templates/{self.template.id}/",
+                                 {"field_geometry": geometry}, format="json")
+
+    def test_valid_move_is_accepted(self):
+        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
+        geometry["fields"][0]["x"] = 40
+        geometry["fields"][0]["y"] = 25
+        response = self._patch(geometry)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.template.refresh_from_db()
+        self.assertEqual(self.template.field_geometry["fields"][0]["x"], 40)
+
+    def test_field_outside_the_coupon_is_rejected(self):
+        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
+        geometry["fields"][0]["y"] = 900  # coupon is only 178pt tall
+        response = self._patch(geometry)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("field_geometry", response.data)
+
+    def test_negative_position_is_rejected(self):
+        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
+        geometry["fields"][0]["x"] = -5
+        self.assertEqual(self._patch(geometry).status_code, 400)
+
+    def test_unknown_field_key_is_rejected(self):
+        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
+        geometry["fields"].append({"key": "not_a_real_field", "x": 10, "y": 10, "size": 8})
+        response = self._patch(geometry)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("not_a_real_field", str(response.data))
+
+    def test_non_numeric_position_is_rejected(self):
+        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
+        geometry["fields"][0]["x"] = "left-ish"
+        self.assertEqual(self._patch(geometry).status_code, 400)
+
+    def test_duplicate_field_key_is_rejected(self):
+        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
+        geometry["fields"].append(copy.deepcopy(geometry["fields"][0]))
+        self.assertEqual(self._patch(geometry).status_code, 400)
+
+    def test_field_catalogue_matches_what_the_renderer_draws(self):
+        response = self.client.get("/api/v1/voucher-portal/templates/field-catalogue/")
+        self.assertEqual(response.status_code, 200)
+        catalogue_keys = {f["key"] for f in response.data["fields"]}
+        default_keys = {f["key"] for f in DEFAULT_FIELD_GEOMETRY["fields"]}
+        self.assertEqual(catalogue_keys, default_keys)
+
+    def test_template_preview_renders_without_a_batch(self):
+        response = self.client.get(f"/api/v1/voucher-portal/templates/{self.template.id}/preview/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertTrue(response.content.startswith(b"%PDF"))
+        # and nothing was persisted to get that preview
+        self.assertEqual(PortalBatch.objects.count(), 0)
+        self.assertEqual(PortalVoucher.objects.count(), 0)
+
+    def test_template_preview_renders_unsaved_geometry(self):
+        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
+        geometry["fields"][0]["x"] = 60
+        response = self.client.post(f"/api/v1/voucher-portal/templates/{self.template.id}/preview/",
+                                    {"field_geometry": geometry}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.content.startswith(b"%PDF"))
+        self.template.refresh_from_db()  # preview must not save the edit
+        self.assertEqual(self.template.field_geometry["fields"][0]["x"], DEFAULT_FIELD_GEOMETRY["fields"][0]["x"])
+
+    def test_template_preview_rejects_invalid_unsaved_geometry(self):
+        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
+        geometry["fields"][0]["y"] = 5000
+        response = self.client.post(f"/api/v1/voucher-portal/templates/{self.template.id}/preview/",
+                                    {"field_geometry": geometry}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_reset_geometry_restores_the_default_layout(self):
+        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
+        geometry["fields"][0]["x"] = 77
+        self._patch(geometry)
+        response = self.client.post(f"/api/v1/voucher-portal/templates/{self.template.id}/reset-geometry/")
+        self.assertEqual(response.status_code, 200)
+        self.template.refresh_from_db()
+        self.assertEqual(self.template.field_geometry, DEFAULT_FIELD_GEOMETRY)
+
+    def test_non_admin_cannot_reset_geometry(self):
+        requester = User.objects.create_user("geo_requester", password="x")
+        dept = Department.objects.create(code="GEO", name="Geo")
+        grant(requester, "requester", [dept])
+        client = APIClient()
+        client.force_authenticate(requester)
+        response = client.post(f"/api/v1/voucher-portal/templates/{self.template.id}/reset-geometry/")
+        self.assertEqual(response.status_code, 403)
+
+
+class AdvancedReportsTests(TestCase):
+    def setUp(self):
+        self.dept, self.vtype, self.prefix, self.template = make_reference_data()
+        self.mkt = Department.objects.create(code="MKT", name="Marketing")
+        self.mkt_type = VoucherType.objects.create(code="MKTV", name="Marketing Voucher", department=self.mkt)
+        self.mkt_prefix = VoucherPrefix.objects.create(prefix="MKT", label="Marketing", department=self.mkt,
+                                                       voucher_type=self.mkt_type, sequence_length=4)
+        self.requester = User.objects.create_user("requester", password="x", is_staff=True)
+        self.approver = User.objects.create_user("approver", password="x", is_staff=True)
+
+        hr_batch = approved_batch(self.dept, self.vtype, self.prefix, self.template, self.requester, self.approver, quantity=3)
+        generate_vouchers(hr_batch)
+        vouchers = list(hr_batch.vouchers.all())
+        vouchers[0].issue(actor=self.requester)
+        workflow.redeem_voucher(vouchers[0], self.requester)
+
+        mkt_batch = approved_batch(self.mkt, self.mkt_type, self.mkt_prefix, self.template, self.requester, self.approver, quantity=2)
+        generate_vouchers(mkt_batch)
+
+        self.client = APIClient()
+        self.client.force_authenticate(self.requester)
+
+    def test_trend_returns_a_dense_monthly_series(self):
+        response = self.client.get("/api/v1/voucher-portal/reports/trend/?months=6")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 6)  # empty months filled in, not skipped
+        self.assertEqual({row["month"] for row in response.data}.__len__(), 6)
+        current = timezone.localdate().strftime("%Y-%m")
+        this_month = next(row for row in response.data if row["month"] == current)
+        self.assertEqual(this_month["created"], 5)
+        self.assertEqual(this_month["issued"], 1)   # issued counts redeemed too - it got there via issued
+        self.assertEqual(this_month["redeemed"], 1)
+
+    def test_batch_level_report(self):
+        response = self.client.get("/api/v1/voucher-portal/reports/batches/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 2)
+        by_department = {row["department"]: row for row in response.data}
+        self.assertEqual(by_department["HR"]["generated"], 3)
+        self.assertEqual(by_department["HR"]["redeemed"], 1)
+        self.assertEqual(by_department["Marketing"]["generated"], 2)
+
+    def test_department_filter_narrows_every_report(self):
+        summary = self.client.get(f"/api/v1/voucher-portal/reports/summary/?department={self.dept.id}")
+        self.assertEqual(summary.data["total"], 3)
+        batches = self.client.get(f"/api/v1/voucher-portal/reports/batches/?department={self.dept.id}")
+        self.assertEqual(len(batches.data), 1)
+
+    def test_voucher_type_filter(self):
+        response = self.client.get(f"/api/v1/voucher-portal/reports/summary/?voucher_type={self.mkt_type.id}")
+        self.assertEqual(response.data["total"], 2)
+
+    def test_status_filter(self):
+        response = self.client.get("/api/v1/voucher-portal/reports/summary/?status=redeemed")
+        self.assertEqual(response.data["total"], 1)
+
+    def test_date_range_filter_excludes_everything_before_today(self):
+        tomorrow = (timezone.localdate() + timedelta(days=1)).isoformat()
+        response = self.client.get(f"/api/v1/voucher-portal/reports/summary/?from={tomorrow}")
+        self.assertEqual(response.data["total"], 0)
+
+    def test_report_viewer_scope_still_applies_to_trend_and_batches(self):
+        viewer = User.objects.create_user("scoped_viewer", password="x")
+        grant(viewer, "report_viewer", [self.dept])
+        client = APIClient()
+        client.force_authenticate(viewer)
+        batches = client.get("/api/v1/voucher-portal/reports/batches/")
+        self.assertEqual(len(batches.data), 1)
+        self.assertEqual(batches.data[0]["department"], "HR")
+        trend = client.get("/api/v1/voucher-portal/reports/trend/")
+        current = timezone.localdate().strftime("%Y-%m")
+        this_month = next(row for row in trend.data if row["month"] == current)
+        self.assertEqual(this_month["created"], 3)  # HR's 3, not all 5
