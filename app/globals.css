@@ -291,7 +291,51 @@ tr.clickable:hover td{background:#f8faf7}
 .voucher-template-card img{width:100%;aspect-ratio:2.74/1;object-fit:cover;border-radius:8px}
 .voucher-template-placeholder{width:100%;aspect-ratio:2.74/1;border-radius:8px;background:var(--voucher-purple);opacity:.15;display:grid;place-items:center;font-size:10px;color:var(--voucher-purple)}
 .voucher-template-badges{display:flex;gap:6px}
-.voucher-template-actions{display:flex;gap:10px;margin-top:auto}
+.voucher-template-actions{display:flex;gap:10px;margin-top:auto;flex-wrap:wrap}
+
+/* Dashboard charts. Series colours live in the component (validated categorical
+   palette); everything here is chrome and layout only. */
+.voucher-filter-row{display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap}
+.voucher-filter-row label{display:flex;flex-direction:column;gap:5px;font-size:10px;font-weight:700;color:var(--voucher-muted)}
+.voucher-filter-row select,.voucher-filter-row input{border:1px solid var(--voucher-line);border-radius:8px;padding:8px 10px;font-size:11px;font-family:inherit;background:#fff;color:var(--voucher-ink);outline:none}
+.voucher-filter-row select:focus,.voucher-filter-row input:focus{border-color:var(--voucher-purple);box-shadow:0 0 0 3px #4e327d1a}
+.viz-wrap{position:relative}
+.viz-svg{width:100%;height:auto;display:block;overflow:visible}
+.viz-legend{display:flex;gap:14px;list-style:none;margin:0;padding:0}
+.viz-legend li{display:flex;align-items:center;gap:6px;font-size:10.5px;font-weight:600;color:var(--voucher-muted)}
+.viz-legend i{width:10px;height:10px;border-radius:3px;flex:none}
+.viz-tooltip{position:absolute;top:8px;transform:translateX(-50%);background:#fff;border:1px solid var(--voucher-line);border-radius:9px;
+  box-shadow:0 8px 22px rgba(35,27,54,.14);padding:9px 11px;font-size:10.5px;pointer-events:none;min-width:132px;z-index:5}
+.viz-tooltip strong{display:block;margin-bottom:6px;color:var(--voucher-ink);font-size:11px}
+.viz-tooltip span{display:flex;align-items:center;gap:6px;color:var(--voucher-muted);line-height:1.9}
+.viz-tooltip span i{width:8px;height:8px;border-radius:2px;flex:none}
+.viz-tooltip span b{margin-left:auto;color:var(--voucher-ink);font-variant-numeric:tabular-nums}
+
+/* Template geometry editor - the canvas is the coupon's own coordinate space,
+   scaled, so a dragged position maps 1:1 onto what the PDF renderer draws. */
+.geo-layout{display:grid;grid-template-columns:minmax(0,auto) 260px;gap:22px;align-items:start}
+@media(max-width:1120px){.geo-layout{grid-template-columns:1fr}}
+.geo-canvas{position:relative;border:1px solid var(--voucher-line);border-radius:8px;background:#EFEBF6;
+  background-size:cover;background-position:center;touch-action:none;max-width:100%;overflow:hidden}
+.geo-canvas-note{position:absolute;right:10px;bottom:8px;font-size:9px;color:var(--voucher-muted);
+  background:rgba(255,255,255,.86);border-radius:5px;padding:3px 7px;pointer-events:none}
+.geo-card-box{position:absolute;background:rgba(255,255,255,.92);border:1px dashed rgba(78,50,125,.5);border-radius:3px;pointer-events:none}
+.geo-chip{position:absolute;transform:translateY(-50%);border:1px solid var(--voucher-purple);background:rgba(255,255,255,.94);
+  color:var(--voucher-purple);font-size:9px;font-weight:700;padding:2px 6px;border-radius:5px;cursor:grab;white-space:nowrap;line-height:1.5}
+.geo-chip:hover{background:#fff}
+.geo-chip.selected{background:var(--voucher-purple);color:#fff;z-index:3}
+.geo-chip:active{cursor:grabbing}
+.geo-panel{border:1px solid var(--voucher-line);border-radius:10px;padding:14px}
+.geo-panel-title{font-size:9px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--voucher-muted);margin:0 0 10px}
+.geo-field-list{list-style:none;margin:0 0 16px;padding:0;display:flex;flex-direction:column;gap:2px;max-height:400px;overflow-y:auto}
+.geo-field-list button{width:100%;text-align:left;border:0;background:transparent;padding:6px 8px;border-radius:6px;font-size:11px;color:var(--voucher-ink);cursor:pointer}
+.geo-field-list button:hover{background:#f6f4fa}
+.geo-field-list button.selected{background:var(--voucher-purple);color:#fff;font-weight:600}
+.geo-props{border-top:1px solid var(--voucher-line);padding-top:14px;display:flex;flex-direction:column;gap:9px}
+.geo-props label{display:flex;flex-direction:column;gap:4px;font-size:10px;font-weight:700;color:var(--voucher-muted)}
+.geo-props input{border:1px solid var(--voucher-line);border-radius:7px;padding:7px 9px;font-size:11px;font-family:inherit;color:var(--voucher-ink);outline:none}
+.geo-props input[type=color]{padding:2px;height:30px}
+.geo-props input:focus{border-color:var(--voucher-purple);box-shadow:0 0 0 3px #4e327d1a}
 .voucher-form-wide{grid-column:1 / -1}
 .voucher-form button.primary{background:var(--voucher-purple);height:42px}
 .voucher-success{margin-top:14px;padding:12px 14px;border-radius:10px;background:#f1eefa;color:var(--voucher-purple);font-size:11px}

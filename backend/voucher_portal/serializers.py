@@ -6,7 +6,7 @@ from rest_framework import serializers
 
 from .models import (Department, Notification, PortalBatch, PortalUserAccess, PortalVoucher, VoucherPrefix,
                      VoucherTemplate, VoucherType)
-from .validators import ArtworkError, validate_artwork
+from .validators import ArtworkError, GeometryError, validate_artwork, validate_field_geometry
 
 
 # DRF's auto-generated BooleanField for a model field with default=True still
@@ -60,6 +60,29 @@ class VoucherTemplateSerializer(serializers.ModelSerializer):
         try:
             validate_artwork(value)
         except ArtworkError as error:
+            raise serializers.ValidationError(str(error))
+        return value
+
+    def validate_field_geometry(self, value):
+        # Bound-check against this template's own coupon size - the incoming
+        # value if it's being changed in the same request, otherwise the
+        # stored one.
+        def dimension(name, fallback):
+            raw = self.initial_data.get(name) if hasattr(self, "initial_data") else None
+            if raw not in (None, ""):
+                try:
+                    return float(raw)
+                except (TypeError, ValueError):
+                    return fallback
+            return getattr(self.instance, name, None) or fallback
+
+        try:
+            validate_field_geometry(
+                value,
+                coupon_width=dimension("coupon_width", 479.52),
+                coupon_height=dimension("coupon_height", 178.0),
+            )
+        except GeometryError as error:
             raise serializers.ValidationError(str(error))
         return value
 

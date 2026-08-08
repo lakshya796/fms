@@ -94,6 +94,37 @@ def render_preview(data: dict) -> bytes:
     return build_voucher_pdf(batch, voucher)
 
 
+def render_template_sample(template, geometry=None) -> bytes:
+    """Render one coupon for a template on its own, with stand-in values.
+
+    The geometry editor needs to show what moving a field actually does before
+    anyone commits the layout, and creating a throwaway batch just to see that
+    would burn real voucher numbers. Passing `geometry` renders unsaved edits;
+    omitting it renders what's stored."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    if geometry is not None:
+        original = template.field_geometry
+        template.field_geometry = geometry
+        try:
+            snapshot = _template_snapshot(template)
+        finally:
+            template.field_geometry = original
+    else:
+        snapshot = _template_snapshot(template)
+
+    sample = _PreviewBatch({
+        "discount_type": "percentage", "percentage_value": Decimal("50"),
+        "max_discount_value": Decimal("50"), "currency": "AED",
+        "valid_to": timezone.localdate() + timedelta(days=365),
+        "restrictions": "Brands : Sample\nStores : Not Restricted",
+    }, template)
+    sample.template_snapshot = snapshot
+    return build_voucher_pdf(sample, _PreviewVoucher("SAMPLE0001"))
+
+
 @transaction.atomic
 def create_draft_batch(data: dict, created_by) -> PortalBatch:
     """Save a batch exactly as submitted. No numbers allocated, no vouchers

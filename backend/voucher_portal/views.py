@@ -6,6 +6,7 @@ superuser status) via `HasPortalAccess`. This is the deliberate split from
 Action-level checks (create/approve/issue/report/admin) and department-scope
 checks both go through `request.portal_access` - see services/access.py.
 """
+import copy
 import csv
 import io
 
@@ -16,19 +17,21 @@ from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
-from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 from rest_framework.response import Response
 
+from .geometry import DEFAULT_FIELD_GEOMETRY, FIELD_CATALOGUE
 from .models import Department, Notification, PortalBatch, PortalUserAccess, PortalVoucher, VoucherPrefix, \
     VoucherTemplate, VoucherType
+from .validators import GeometryError, validate_field_geometry
 from .serializers import (ApproveSerializer, BatchFormSerializer, CancelSerializer, DepartmentSerializer,
                           ManualIssueSerializer, NotificationSerializer, PortalBatchSerializer,
                           PortalUserAccessSerializer, PortalVoucherSerializer, RecipientRowSerializer,
                           RejectSerializer, VoucherPrefixSerializer, VoucherTemplateSerializer, VoucherTypeSerializer)
 from .services import reports, workflow
 from .services.access import get_access
-from .services.generation import create_draft_batch, payload_hash, render_preview
+from .services.generation import create_draft_batch, payload_hash, render_preview, render_template_sample
 
 
 class HasPortalAccess(BasePermission):
@@ -77,7 +80,9 @@ class VoucherPrefixViewSet(AdminWriteMixin, viewsets.ModelViewSet):
 class VoucherTemplateViewSet(AdminWriteMixin, viewsets.ModelViewSet):
     queryset = VoucherTemplate.objects.all()
     serializer_class = VoucherTemplateSerializer
-    parser_classes = [MultiPartParser, FormParser]
+    # Multipart for artwork uploads, JSON for the geometry editor - field_geometry
+    # is a nested structure that a form encoder can't carry.
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_permissions(self):
         # Uploading artwork from the create-batch form (see app/voucher-portal)
@@ -92,6 +97,38 @@ class VoucherTemplateViewSet(AdminWriteMixin, viewsets.ModelViewSet):
         if not (access.can("admin") or access.can("create")):
             raise PermissionDenied("You don't have permission to add a template.")
         serializer.save()
+
+    @action(detail=False, methods=["get"], url_path="field-catalogue")
+    def field_catalogue(self, request):
+        """What the renderer can draw, so the geometry editor offers exactly
+        those fields rather than keeping its own copy of the list."""
+        return Response({"fields": FIELD_CATALOGUE, "defaults": DEFAULT_FIELD_GEOMETRY})
+
+    @action(detail=True, methods=["get", "post"])
+    def preview(self, request, pk=None):
+        """Render a sample coupon for this template. POST an unsaved
+        `field_geometry` to see an edit before committing it; GET renders
+        what's stored."""
+        template = self.get_object()
+        geometry = None
+        if request.method == "POST" and request.data.get("field_geometry") is not None:
+            geometry = request.data["field_geometry"]
+            try:
+                validate_field_geometry(geometry, coupon_width=template.coupon_width,
+                                        coupon_height=template.coupon_height)
+            except GeometryError as error:
+                raise ValidationError({"field_geometry": str(error)})
+        pdf_bytes = render_template_sample(template, geometry)
+        return HttpResponse(pdf_bytes, content_type="application/pdf")
+
+    @action(detail=True, methods=["post"], url_path="reset-geometry")
+    def reset_geometry(self, request, pk=None):
+        if not request.portal_access.can("admin"):
+            raise PermissionDenied("Only an administrator can reset a template's layout.")
+        template = self.get_object()
+        template.field_geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
+        template.save(update_fields=["field_geometry", "updated_at"])
+        return Response(VoucherTemplateSerializer(template).data)
 
 
 class PortalUserAccessViewSet(viewsets.ModelViewSet):
@@ -390,9 +427,23 @@ class ReportsViewSet(viewsets.ViewSet):
         queryset = PortalVoucher.objects.select_related("batch", "batch__department", "batch__voucher_type")
         if access.department_ids is not None:
             queryset = queryset.filter(batch__department_id__in=access.department_ids)
-        department = request.query_params.get("department")
-        if department:
-            queryset = queryset.filter(batch__department_id=department)
+        return reports.apply_filters(queryset, request.query_params)
+
+    def _scoped_batches(self, request):
+        access = request.portal_access
+        _require(access, "report")
+        queryset = PortalBatch.objects.select_related("department", "voucher_type", "created_by", "approved_by")
+        if access.department_ids is not None:
+            queryset = queryset.filter(department_id__in=access.department_ids)
+        params = request.query_params
+        if params.get("department"):
+            queryset = queryset.filter(department_id=params["department"])
+        if params.get("voucher_type"):
+            queryset = queryset.filter(voucher_type_id=params["voucher_type"])
+        if params.get("from"):
+            queryset = queryset.filter(created_at__date__gte=params["from"])
+        if params.get("to"):
+            queryset = queryset.filter(created_at__date__lte=params["to"])
         return queryset
 
     @action(detail=False, methods=["get"])
@@ -406,6 +457,18 @@ class ReportsViewSet(viewsets.ViewSet):
     @action(detail=False, methods=["get"], url_path="by-type")
     def by_type(self, request):
         return Response(reports.by_voucher_type(self._scoped_vouchers(request)))
+
+    @action(detail=False, methods=["get"])
+    def trend(self, request):
+        try:
+            months = max(1, min(24, int(request.query_params.get("months", 12))))
+        except (TypeError, ValueError):
+            months = 12
+        return Response(reports.monthly_trend(self._scoped_vouchers(request), months=months))
+
+    @action(detail=False, methods=["get"])
+    def batches(self, request):
+        return Response(reports.batch_rows(self._scoped_batches(request)))
 
     @action(detail=False, methods=["get"])
     def export(self, request):
