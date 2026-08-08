@@ -79,6 +79,22 @@ client appends `/api/v1/` itself.
 Nginx must pass `X-Forwarded-Proto`, or Django treats requests as plain HTTP and the secure
 session and CSRF cookies stop working.
 
+## Voucher Portal media
+
+The deploy script writes `MEDIA_ROOT=$SHARED/media` into `fms.env` so voucher artwork and
+generated PDFs survive a release cut (see [docs/VOUCHER-PORTAL.md](VOUCHER-PORTAL.md)). Django
+only serves that directory itself when `DEBUG=true`, which production isn't - add an nginx
+location block so it's reachable over HTTPS:
+
+```nginx
+location /media/ {
+    alias /opt/phloz/fms/shared/media/;
+}
+```
+
+This becomes unnecessary once `VOUCHER_PORTAL_S3_BUCKET` (and AWS credentials) are set - PDFs
+then go straight to S3 and this path is never used.
+
 ## Worth revisiting at scale
 
 `phloz-fms` runs 2 gunicorn workers. For a 1000+ vehicle operation with several branches
