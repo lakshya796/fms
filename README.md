@@ -38,9 +38,12 @@ phone number, and print each one as a PDF with its barcode. See
 
 An authenticated extension of the gift voucher desk above, covering the fuller retail voucher
 workflow: percentage or fixed discounts, department/type-scoped prefixes with server-allocated
-numbering, a preview-before-you-generate step, bulk generation with an individual PDF per voucher
-plus one combined print PDF, and manual or CSV bulk issuing. A separate app from the public desk —
-neither shares a table with the other. See [docs/VOUCHER-PORTAL.md](docs/VOUCHER-PORTAL.md).
+numbering, role- and department-scoped access (Administrator, Requester, Approver, Report Viewer),
+a full draft → submit → approve/reject → generate approval workflow with in-app notifications,
+bulk generation with an individual PDF per voucher plus one combined print PDF, manual or CSV bulk
+issuing, redeem/cancel actions, department-level reporting with CSV export, and a multi-template
+artwork library. A separate app from the public desk — neither shares a table with the other. See
+[docs/VOUCHER-PORTAL.md](docs/VOUCHER-PORTAL.md).
 
 ## Repository layout
 

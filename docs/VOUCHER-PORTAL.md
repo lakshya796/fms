@@ -1,4 +1,4 @@
-# Voucher Portal (ADCOOP) — Phase 1
+# Voucher Portal (ADCOOP) — Phases 1 & 2, and Phase 3 minus integrations
 
 An authenticated extension of the public gift voucher desk (`vouchers/`, see
 [docs/GIFT-VOUCHERS.md](GIFT-VOUCHERS.md)), built to the requirements brief and the
@@ -118,7 +118,7 @@ silently created inactive and invisible to the batch it was uploaded for
 (`ArtworkUploadTests.test_uploaded_template_is_active_without_saying_so` guards
 this).
 
-## Preview → confirm (§6)
+## Preview → draft → approve → generate (§6, §10)
 
 `POST batches/preview/` renders one sample coupon from the submitted form
 **without touching the database** (an unsaved, batch-shaped object is enough
@@ -126,15 +126,47 @@ for the renderer) and returns the PDF with an `X-Preview-Hash` header — a
 SHA-256 of the canonicalised form payload. `POST batches/` requires that hash
 back and rejects a stale one, so changing any field after previewing genuinely
 invalidates it — enforced server-side, not left to the browser
-(`PortalApiTests.test_create_with_stale_hash_rejected`).
+(`PortalApiWorkflowTests.test_create_with_stale_hash_rejected`).
 
-## Generation and storage
+Creating a batch and actually minting its vouchers are two separate steps,
+split by the approval workflow below:
 
-`POST batches/` allocates numbers, bulk-creates `PortalVoucher` rows
-(`status=generated`) and sets `batch.status=generating`, then **starts a
-background thread** that renders every voucher's individual PDF, uploads each
-one, assembles the combined print PDF, and flips `batch.status=generated` (or
-`failed`, with `generation_error` set).
+- `POST batches/` (`services/generation.create_draft_batch`) saves the batch
+  exactly as submitted — discount, validity, terms, and a snapshot of the
+  chosen prefix and template — as `status=draft`. **No numbers are allocated,
+  no `PortalVoucher` rows exist yet.**
+- `POST batches/{id}/submit/` → `pending_approval`, notifies approvers.
+- `POST batches/{id}/approve/` → `approved`, notifies the requester. Self-
+  approval is blocked for everyone except Administrators (§10: "should not
+  approve their own request unless explicitly permitted" — Administrator is
+  that permission).
+- `POST batches/{id}/reject/` (reason required) → `rejected`, notifies the
+  requester with the reason. A rejected batch can be resubmitted directly
+  (`submit` again) rather than needing a true edit-and-resave step — there's
+  no field-level edit endpoint yet, so "editing and resubmitting" (§10) is
+  simplified to "resubmit the same batch," documented here rather than left
+  as a silent gap.
+- `POST batches/{id}/generate/` — **only valid from `approved`** — is what
+  used to happen automatically in Phase 1: allocates numbers
+  (`services/numbering.allocate`, using the batch's own snapshot rather than
+  the live prefix, so an edit to the prefix between submission and generation
+  can never change what gets printed), bulk-creates `PortalVoucher` rows, and
+  starts the background PDF job below.
+- `POST batches/{id}/cancel/` — Administrator only, from any non-terminal
+  status — logs a `StatusChange` and stops the batch going further.
+
+Every transition is logged to `StatusChange` (who, when, from/to status,
+reason) and, where relevant, an in-app `Notification`. See
+`services/workflow.py`.
+
+## Background PDF generation and storage
+
+`generate_vouchers` **starts a background thread** that renders every
+voucher's individual PDF, uploads each one, assembles the combined print PDF,
+and flips `batch.status` from `generating` to `generated` (or `failed`, with
+`generation_error` set). Once at least one voucher is issued, `PortalBatch.
+refresh_issue_status()` (called after every issue action) moves the batch on
+to `partially_issued` / `fully_issued`.
 
 **This thread-based approach is a deliberate Phase 1 simplification, not an
 oversight.** There's no task queue on this box — no Redis, no Celery. A
@@ -174,31 +206,103 @@ location /media/ {
 (`$MEDIA_ROOT` env var to override), which — like `fms.env` — survives every
 deploy, unlike the timestamped release directories.
 
-## Issuing (§8)
+## Issuing, redemption and cancellation (§8, §9)
 
-Two paths, both on `PortalVoucher.issue()`:
-
-- **Manual**: `POST vouchers/issue/` with `voucher_ids` and optional
+- **Manual issue**: `POST vouchers/issue/` with `voucher_ids` and optional
   name/phone/email/reference.
-- **Bulk CSV**: `POST batches/{id}/issue_bulk/`, a `multipart/form-data` upload
-  with a `name,phone,email,reference` header row. Assigns to the oldest
+- **Bulk CSV issue**: `POST batches/{id}/issue_bulk/`, a `multipart/form-data`
+  upload with a `name,phone,email,reference` header row. Assigns to the oldest
   unissued vouchers in the batch, in order; rejects the whole upload up front
   if there are more valid recipient rows than available vouchers (rather than
   partially issuing and leaving the caller to figure out which recipients
   didn't get one). Malformed rows are collected and returned in `rejected`
   rather than aborting the whole upload.
+- **Redeem**: `POST vouchers/{id}/redeem/` — issued → redeemed. No SAP or POS
+  integration triggers this; it's a manual "this voucher was used in store"
+  action, since third-party integration is explicitly out of scope here.
+- **Cancel**: `POST vouchers/{id}/cancel/` (batch or voucher) — Administrator
+  only, matching §11's role table, which lists cancel only under
+  Administrator.
 
-## What Phase 1 deliberately does not include
+## Roles and department permissions (§11)
 
-Everything in the brief's Phase 2 and 3: approval workflow, email
-notifications, department-scoped permissions beyond "logged in," reporting
-exports, SAP integration, multi-template management UI, Word-based template
-upload. `iam`'s existing `Role`/`allows()`/`AuditLog` machinery is the
-intended foundation for the Phase 2 permission and audit work — see
-`backend/iam/models.py` — rather than a parallel system built inside
-`voucher_portal`.
+Two independent axes, deliberately **not** built on `iam.Role` —
+`services/access.py` explains why (retail voucher staff and fleet-ops staff
+are different people in a different org, even when they share a Django
+login):
 
-## Decisions made building this (see the implementation plan for the full list)
+- **Role** (`PortalUserAccess.role`) decides which *actions* a login may
+  perform at all: `create`, `approve`, `issue`, `report`, `admin`, `download`.
+  The four roles match §11 exactly — Administrator gets everything;
+  Requester gets create/issue/download; Approver gets approve/download/report;
+  Report Viewer gets report only. See `models.ROLE_ACTIONS`.
+- **Department scope** (`PortalUserAccess.departments`, a M2M) decides which
+  departments' batches and vouchers a login can see and act on at all.
+  Administrator/Report Viewer with nothing assigned see every department (the
+  common case for those roles); Requester/Approver with nothing assigned see
+  **nothing** — an explicit grant is required, a locked-down default rather
+  than an accidentally-open one.
+
+Django staff/superusers get implicit Administrator access with no department
+restriction, so the bootstrap `fleetadmin` (or any dev login with
+`is_staff=True`) works immediately with no separate grant — see
+`get_access()`. Voucher-type-level permission granularity from §11
+("Permissions should be assignable by department, voucher type, action") is
+**not** implemented — department is the boundary that's actually enforced;
+voucher-type scoping was judged not worth the added complexity for this pass
+and would be a natural next axis on `PortalUserAccess` if it's ever needed.
+
+Every `voucher-portal/` endpoint requires both the project default
+(`IsAuthenticated`) and `HasPortalAccess` (an active grant, or Django
+staff/superuser). Action and department checks happen per-view
+(`_require`/`_require_department` in `views.py`), not just in the frontend —
+§13's "access must be enforced on the server, not only hidden in the
+interface."
+
+**Managing access**: `/api/v1/voucher-portal/access/` (Administrator only) —
+grant an *existing* Django login a role and department scope; creating the
+account itself is `iam`'s or Django admin's job, not this app's. `GET
+access/me/` (anyone with portal access) returns the caller's own role,
+actions and department scope, so the frontend knows what to show without
+duplicating the permission table client-side.
+
+## Notifications (§10)
+
+**In-app only** — there's no SMTP configured on this deployment. `POST
+batches/{id}/submit/` notifies every approver/administrator scoped to the
+batch's department; `approve`/`reject` notify the batch's requester.
+`GET notifications/` (scoped to the caller), `POST notifications/{id}/read/`,
+`POST notifications/read-all/`. Wiring in real email later only needs an
+email backend and a call from `services/workflow.py`'s `_notify()` — nothing
+about the workflow itself changes.
+
+## Reporting (§12) and the template library (§5 "Configurable templates")
+
+`GET reports/summary/`, `reports/by-department/`, `reports/by-type/`, and
+`reports/export/` (CSV) — every one scoped to the caller's visible
+departments in `services/reports.py`, so a Report Viewer scoped to one
+department can't see another's numbers even in an aggregate total. `?
+department=` narrows further within what the caller can already see.
+
+Templates already supported multipart CRUD in Phase 1 (used by the
+create-form's inline artwork upload); Phase 3 adds a library screen
+(`/voucher-portal` → Templates) to list every template, set which one is
+`is_default`, and activate/deactivate old designs — the "multiple templates"
+half of §5's configurable-templates enhancement. **Word-based template
+upload is not implemented** — the brief itself calls this out as a bigger,
+separate future item, and this pass sticks to image-based artwork (JPEG/PNG)
+uploaded directly, which is what's actually driving the coupon design today.
+
+## What's still not included
+
+SAP/external-system integration (explicitly out of scope for this pass),
+Word-based template upload, user-editable field *positions* (geometry is
+still a fixed known set of fields per template, not a drag-and-drop editor —
+see "Template and PDF rendering" above), real SMTP delivery, and
+voucher-type-level permission scoping (department is the boundary that's
+enforced; see "Roles and department permissions").
+
+## Decisions made building this
 
 - **D1 — Portal vs public desk**: new authenticated area; `/vouchers` is
   untouched and keeps running as the public till page.
@@ -207,14 +311,23 @@ intended foundation for the Phase 2 permission and audit work — see
   coupon per page, for print).
 - **D4 — Max discount cap**: always optional, never enforced as required, even
   in the form.
+- **Email notifications**: in-app only for this pass — no SMTP is configured
+  on this deployment; real email is a config change away, not a rebuild.
+- **Additional template formats**: a multi-template library with image-based
+  artwork, not Word/DOCX upload — the brief itself treats DOCX upload as a
+  bigger, separate future item.
 - **Reference data**: seeded from the brief's own examples
-  (`seed_voucher_portal`); edit via `/admin/` once real department/type/prefix
-  data is available.
+  (`seed_voucher_portal`); edit via `/admin/` or the Team access screen once
+  real department/type/prefix/user data is available.
 
 ## Tests
 
-`python manage.py test voucher_portal` — 24 tests: numbering (including a real
+`python manage.py test voucher_portal` — 61 tests: numbering (including a real
 concurrent-allocation test across 8 threads), discount validation, the
-preview-hash invalidation flow, batch generation and its snapshot guarantee,
-manual and CSV issuing, API-level auth enforcement, and artwork upload
-(aspect ratio/size rejection, and the `is_active` multipart regression above).
+preview-hash invalidation flow, the full draft → submit → approve → generate
+→ issue → redeem workflow (both via `services/workflow.py` directly and
+through the HTTP API), self-approval blocking, role and department-scope
+enforcement, notifications, reporting (including department-scoped
+visibility), the template library, team-access management, and artwork
+upload (aspect ratio/size rejection, and the `is_active` multipart
+regression noted above).
