@@ -35,6 +35,14 @@ A batch is either `percentage` or `fixed`, never both:
 reads — `models.trim_decimal()` exists specifically to avoid that, and both the
 model's `display_value` and the PDF renderer use it.
 
+## Validity
+
+The create form only collects `valid_to` ("Valid until") — no start date. §3.3
+already treats the start date as stored-but-unprinted; the form goes a step
+further and doesn't collect it at all. `BatchFormSerializer.valid_from` is
+`required=False` and defaults to today (`timezone.localdate()`) when omitted,
+so the API stays usable without a frontend either way.
+
 ## Numbering (§4)
 
 `VoucherPrefix` owns one sequence (`next_sequence`, `sequence_length`).
@@ -90,6 +98,25 @@ template's proportions:
 Until a real design is uploaded, every template falls back to
 `voucher_portal/assets/default_artwork.png` — the sample artwork from the
 attached PDF.
+
+**Uploading artwork from the create form**: the frontend doesn't route through a
+separate template-management screen for Phase 1 — the create-batch form has its
+own "Voucher artwork" file input that `POST`s straight to `templates/`
+(multipart, `name` + `artwork`), gets back a template id, and includes it as
+`template` on the batch payload. A brand-new template created this way still
+gets the coupon's known field positions automatically (`VoucherTemplate.
+field_geometry`'s model default is the same `DEFAULT_FIELD_GEOMETRY`, not an
+empty dict) — only the artwork image changes, never where things are drawn.
+
+Watch for this if you touch `VoucherTemplateSerializer`: DRF's `BooleanField`
+treats a key that's simply absent from a `multipart/form-data` body as `False`
+(`default_empty_html`, simulating an unchecked HTML checkbox) — it does **not**
+fall through to the model's own `default=True`. The create form's upload never
+sends `is_active`, so without `is_active = serializers.BooleanField(default=
+True)` declared explicitly on the serializer, every uploaded template was
+silently created inactive and invisible to the batch it was uploaded for
+(`ArtworkUploadTests.test_uploaded_template_is_active_without_saying_so` guards
+this).
 
 ## Preview → confirm (§6)
 
@@ -186,7 +213,8 @@ intended foundation for the Phase 2 permission and audit work — see
 
 ## Tests
 
-`python manage.py test voucher_portal` — 19 tests: numbering (including a real
+`python manage.py test voucher_portal` — 24 tests: numbering (including a real
 concurrent-allocation test across 8 threads), discount validation, the
 preview-hash invalidation flow, batch generation and its snapshot guarantee,
-manual and CSV issuing, and API-level auth enforcement.
+manual and CSV issuing, API-level auth enforcement, and artwork upload
+(aspect ratio/size rejection, and the `is_active` multipart regression above).

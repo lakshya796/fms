@@ -201,6 +201,19 @@ class PortalApiTests(TestCase):
         data.update(overrides)
         return data
 
+    def test_valid_from_defaults_to_today_when_omitted(self):
+        """The create form no longer collects a start date - the API must still work
+        when the caller sends nothing for it."""
+        payload = self._payload()
+        del payload["valid_from"]
+        preview = self.client.post("/api/v1/voucher-portal/batches/preview/", payload, format="json")
+        self.assertEqual(preview.status_code, 200)
+        response = self.client.post("/api/v1/voucher-portal/batches/",
+                                    {**payload, "preview_hash": preview["X-Preview-Hash"]}, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        batch = PortalBatch.objects.get(pk=response.data["id"])
+        self.assertEqual(batch.valid_from, timezone.localdate())
+
     def test_endpoints_require_authentication(self):
         anon = APIClient()
         response = anon.get("/api/v1/voucher-portal/batches/")
@@ -263,3 +276,60 @@ class PortalApiTests(TestCase):
         upload = SimpleUploadedFile("recipients.csv", csv_content.encode(), content_type="text/csv")
         response = self.client.post(f"/api/v1/voucher-portal/batches/{created['id']}/issue_bulk/", {"file": upload}, format="multipart")
         self.assertEqual(response.status_code, 400)
+
+
+def _make_image_upload(width, height, name="art.png"):
+    import io
+    from django.core.files.uploadedfile import SimpleUploadedFile
+    from PIL import Image
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), color=(200, 50, 50)).save(buffer, format="PNG")
+    return SimpleUploadedFile(name, buffer.getvalue(), content_type="image/png")
+
+
+class ArtworkUploadTests(TestCase):
+    """Covers the create-batch form's inline artwork upload, which POSTs straight
+    to the templates/ endpoint - see validators.py for the size/ratio rules,
+    derived from the approved coupon's own proportions (2.74:1)."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("tester", password="x")
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_correctly_proportioned_artwork_is_accepted(self):
+        upload = _make_image_upload(1987, 725)  # the template's own native size
+        response = self.client.post("/api/v1/voucher-portal/templates/",
+                                    {"name": "Custom artwork", "artwork": upload}, format="multipart")
+        self.assertEqual(response.status_code, 201, response.data)
+        template = VoucherTemplate.objects.get(pk=response.data["id"])
+        # A template created with no geometry of its own still gets the coupon's
+        # known field positions, not an empty layout with nothing drawn on it.
+        self.assertEqual(template.field_geometry, DEFAULT_FIELD_GEOMETRY)
+
+    def test_uploaded_template_is_active_without_saying_so(self):
+        """Regression: DRF's BooleanField treats an omitted key in a multipart
+        upload like an unchecked HTML checkbox (False), overriding the model's
+        own default=True, unless the serializer field says default=True itself.
+        A template you can't select right after uploading it is a broken upload."""
+        upload = _make_image_upload(1987, 725)
+        response = self.client.post("/api/v1/voucher-portal/templates/",
+                                    {"name": "Custom artwork", "artwork": upload}, format="multipart")
+        template = VoucherTemplate.objects.get(pk=response.data["id"])
+        self.assertTrue(template.is_active)
+        # And usable as a batch's template right away, the way the create form uses it.
+        self.assertIn(template, VoucherTemplate.objects.filter(is_active=True))
+
+    def test_wrong_aspect_ratio_is_rejected(self):
+        upload = _make_image_upload(2000, 2000)  # square, nowhere near 2.74:1
+        response = self.client.post("/api/v1/voucher-portal/templates/",
+                                    {"name": "Bad artwork", "artwork": upload}, format="multipart")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("artwork", response.data)
+
+    def test_too_narrow_artwork_is_rejected(self):
+        upload = _make_image_upload(800, 292)  # correct ratio, below the 1500px floor
+        response = self.client.post("/api/v1/voucher-portal/templates/",
+                                    {"name": "Too small", "artwork": upload}, format="multipart")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("artwork", response.data)

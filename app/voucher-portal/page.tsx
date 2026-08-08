@@ -25,7 +25,7 @@ type Voucher = {
 const EMPTY_FORM = {
   name: "", department: "", voucher_type: "", description: "", quantity: "10",
   discount_type: "fixed", percentage_value: "", max_discount_value: "", fixed_value: "", currency: "AED",
-  valid_from: "", valid_to: "", restrictions: "", terms: "", prefix: "",
+  valid_to: "", restrictions: "", terms: "", prefix: "",
 };
 
 function statusClass(status: string) {
@@ -99,6 +99,11 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
 
+  const [artworkPreviewUrl, setArtworkPreviewUrl] = useState("");
+  const [templateId, setTemplateId] = useState<number | "">("");
+  const [artworkUploading, setArtworkUploading] = useState(false);
+  const [artworkError, setArtworkError] = useState("");
+
   const [activeBatch, setActiveBatch] = useState<Batch | null>(null);
   const [vouchers, setVouchers] = useState<Voucher[]>([]);
   const [voucherStatus, setVoucherStatus] = useState("");
@@ -153,7 +158,10 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
     await loadVouchers(batch.id);
   };
 
-  const resetCreateForm = () => { setForm(EMPTY_FORM); setPreviewHash(""); setPreviewUrl(""); setPreviewError(""); setCreateError(""); };
+  const resetCreateForm = () => {
+    setForm(EMPTY_FORM); setPreviewHash(""); setPreviewUrl(""); setPreviewError(""); setCreateError("");
+    setArtworkPreviewUrl(""); setTemplateId(""); setArtworkError("");
+  };
 
   const departmentPrefixes = prefixes.filter(p => !form.department || String(p.department) === form.department);
   const departmentTypes = voucherTypes.filter(t => !form.department || String(t.department) === form.department);
@@ -163,14 +171,33 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
     setPreviewHash(""); setPreviewUrl(""); // any change invalidates the preview
   };
 
+  const uploadArtwork = async (file: File) => {
+    setArtworkUploading(true); setArtworkError("");
+    setArtworkPreviewUrl(URL.createObjectURL(file));
+    setPreviewHash(""); setPreviewUrl(""); // new artwork invalidates any existing preview
+    try {
+      const body = new FormData();
+      body.append("name", `${form.name || "Custom"} artwork`);
+      body.append("artwork", file);
+      const template = await fmsRequest<{ id: number }>("voucher-portal/templates/", { method: "POST", body });
+      setTemplateId(template.id);
+    } catch (error: any) {
+      setArtworkError(parseApiError(error));
+      setArtworkPreviewUrl(""); setTemplateId("");
+    } finally { setArtworkUploading(false); }
+  };
+
+  const clearArtwork = () => { setArtworkPreviewUrl(""); setTemplateId(""); setArtworkError(""); setPreviewHash(""); setPreviewUrl(""); };
+
   const buildPayload = () => ({
     name: form.name, department: form.department, voucher_type: form.voucher_type, description: form.description,
     quantity: form.quantity, discount_type: form.discount_type,
     percentage_value: form.discount_type === "percentage" ? form.percentage_value : undefined,
     max_discount_value: form.discount_type === "percentage" ? (form.max_discount_value || undefined) : undefined,
     fixed_value: form.discount_type === "fixed" ? form.fixed_value : undefined,
-    currency: form.currency, valid_from: form.valid_from, valid_to: form.valid_to,
+    currency: form.currency, valid_to: form.valid_to,
     restrictions: form.restrictions, terms: form.terms, prefix: form.prefix,
+    template: templateId || undefined,
   });
 
   const runPreview = async () => {
@@ -242,7 +269,7 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
           <span className={"status " + statusClass(activeBatch.status)}>{activeBatch.status}</span>
         </div>
         <p style={{ fontSize: 12, color: "var(--voucher-muted)" }}>
-          Validity {activeBatch.valid_from} to {activeBatch.valid_to} · {activeBatch.issued_count} issued
+          Valid until {activeBatch.valid_to} · {activeBatch.issued_count} issued
         </p>
         {activeBatch.status === "generating" && <div className="data-state">Assembling PDFs in the background — this refreshes automatically.</div>}
         {activeBatch.status === "failed" && <div className="data-state error">Generation failed: {activeBatch.generation_error}</div>}
@@ -352,8 +379,7 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
         </> : <label>Fixed value<input required type="number" min={0.01} step={0.01} value={form.fixed_value}
           onChange={e => updateForm({ fixed_value: e.target.value })} /></label>}
 
-        <label>Validity start<input required type="date" value={form.valid_from} onChange={e => updateForm({ valid_from: e.target.value })} /></label>
-        <label>Validity end<input required type="date" value={form.valid_to} onChange={e => updateForm({ valid_to: e.target.value })} /></label>
+        <label className="voucher-form-wide">Valid until<input required type="date" value={form.valid_to} onChange={e => updateForm({ valid_to: e.target.value })} /></label>
 
         <label className="voucher-form-wide">Restrictions <small>(optional)</small>
           <textarea rows={2} value={form.restrictions} onChange={e => updateForm({ restrictions: e.target.value })} />
@@ -361,6 +387,17 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
         <label className="voucher-form-wide">Terms and conditions
           <textarea rows={3} value={form.terms} onChange={e => updateForm({ terms: e.target.value })} />
         </label>
+
+        <label className="voucher-form-wide">Voucher artwork <small>(optional — uses the default ADCOOP design if not provided; JPEG or PNG, 2.74:1, 1500–4000px wide, up to 5 MB)</small>
+          <input type="file" accept="image/png,image/jpeg" disabled={artworkUploading}
+            onChange={e => e.target.files?.[0] && uploadArtwork(e.target.files[0])} />
+        </label>
+        {artworkUploading && <div className="data-state voucher-form-wide">Uploading…</div>}
+        {artworkError && <div className="form-error voucher-form-wide">{artworkError}</div>}
+        {artworkPreviewUrl && !artworkUploading && <div className="voucher-form-wide voucher-artwork-preview">
+          <img src={artworkPreviewUrl} alt="Uploaded artwork" />
+          <button type="button" className="link-button" onClick={clearArtwork}>Remove — use default design</button>
+        </div>}
 
         {previewError && <div className="form-error voucher-form-wide">{previewError}</div>}
         <button type="button" className="secondary voucher-form-wide" disabled={previewing} onClick={runPreview}>
