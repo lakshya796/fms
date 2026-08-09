@@ -143,6 +143,27 @@ class VoucherTemplateViewSet(AdminWriteMixin, viewsets.ModelViewSet):
         pdf_bytes = render_template_sample(template, geometry)
         return HttpResponse(pdf_bytes, content_type="application/pdf")
 
+    @action(detail=True, methods=["get"])
+    def artwork(self, request, pk=None):
+        """Stream a template's artwork through the API.
+
+        Deliberately not the `artwork` field's own media URL. Nothing serves
+        /media/ in production - `urls.py` registers those routes through
+        `django.conf.urls.static.static()`, which is a no-op when DEBUG is
+        false, and nginx only proxies the API's own prefix - so that URL is a
+        404 the moment it leaves a dev machine. This path is also the only one
+        that stays correct if the files later move to S3."""
+        template = self.get_object()
+        if not template.artwork:
+            raise ValidationError("This template has no artwork.")
+        try:
+            stream = template.artwork.open("rb")
+        except (FileNotFoundError, OSError, ValueError):
+            raise ValidationError(
+                "The artwork file is missing from storage - it was uploaded before the media "
+                "directory moved outside the release. Upload it again.")
+        return FileResponse(stream, content_type=storage.guess_content_type(template.artwork.name))
+
     @action(detail=True, methods=["post"], url_path="reset-geometry")
     def reset_geometry(self, request, pk=None):
         """Back to an empty card carrying only the mandatory barcode."""
