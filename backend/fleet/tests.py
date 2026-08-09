@@ -542,6 +542,97 @@ class VendorHireTests(AutomaticInvoiceTests):
         self.assertAlmostEqual(data["total_cost"], 12000.0 + 3800.0, places=2)
 
 
+class AllocationTests(BaseFleetOpsTest):
+    """Recommending and confirming a vehicle for an order - own capacity, vendor
+    capacity, and the spot-hire estimate when a vendor has no vehicle on file yet."""
+
+    def create_order(self, **overrides):
+        payload = {"customer": self.customer.id, "pickup": self.pickup.id, "dropoff": self.dropoff.id,
+                  "service_rate": self.rate.id, "order_type": "ftl", "weight_kg": 12400,
+                  "payload_description": "Packaged food cartons", "packages": 480}
+        payload.update(overrides)
+        response = self.client.post("/api/v1/orders/", payload, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        return Order.objects.get(pk=response.data["id"])
+
+    def test_recommend_vehicles_includes_the_available_own_vehicle(self):
+        order = self.create_order()
+        response = self.client.post(f"/api/v1/orders/{order.id}/recommend-vehicles/", {}, format="json")
+        self.assertEqual(response.status_code, 200)
+        own = [c for c in response.data["candidates"] if c["vehicle_id"] == self.vehicle.id]
+        self.assertEqual(len(own), 1)
+        self.assertEqual(own[0]["source"], "own")
+        self.assertGreater(own[0]["expected_revenue"], 0)
+
+    def test_recommend_vehicles_offers_a_spot_hire_estimate_for_an_active_vendor(self):
+        order = self.create_order()
+        Vendor.objects.create(name="Anand Roadlines", code="VN-ANAND", vendor_type="transporter", status="active")
+        response = self.client.post(f"/api/v1/orders/{order.id}/recommend-vehicles/", {}, format="json")
+        spot = [c for c in response.data["candidates"] if c["source"] == "vendor_spot"]
+        self.assertEqual(len(spot), 1)
+        self.assertTrue(spot[0]["estimated_cost"])
+
+    def test_recommend_vehicles_ranks_by_expected_profit_not_distance(self):
+        order = self.create_order()
+        candidates = self.client.post(f"/api/v1/orders/{order.id}/recommend-vehicles/", {}, format="json").data["candidates"]
+        profits = [c["expected_profit"] for c in candidates]
+        self.assertEqual(profits, sorted(profits, reverse=True))
+        self.assertTrue(candidates[0]["recommended"])
+
+    def test_confirm_vehicle_with_an_own_vehicle_and_driver_opens_a_trip(self):
+        order = self.create_order()
+        response = self.client.post(f"/api/v1/orders/{order.id}/confirm-vehicle/",
+                                    {"vehicle": self.vehicle.id, "driver": self.driver.id}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIsNotNone(response.data["order"]["trip"])
+        self.assertIsNone(response.data["hire"])
+        self.vehicle.refresh_from_db()
+        self.assertEqual(self.vehicle.status, "allocated")
+        self.assertEqual(self.vehicle.current_trip_id, response.data["order"]["trip"])
+
+    def test_confirm_vehicle_for_an_outside_vehicle_creates_a_hire_and_sends_confirmation(self):
+        order = self.create_order()
+        vendor = Vendor.objects.create(name="Anand Roadlines", code="VN-ANAND", email="ops@anandroadlines.example")
+        response = self.client.post(f"/api/v1/orders/{order.id}/confirm-vehicle/", {
+            "vendor": vendor.id,
+            "outside_vehicle": {"vehicle_number": "MH 12 AB 4455", "vehicle_type": "20 ft SXL", "capacity_kg": 9000},
+            "hire": {"agreed_rate": "12000", "rate_basis": "trip", "driver_name": "Suresh Patil",
+                    "driver_phone": "9812345670", "advance_amount": "3000"},
+        }, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIsNotNone(response.data["hire"])
+        self.assertEqual(response.data["hire"]["status"], "confirmed")
+        self.assertTrue(response.data["vendor_confirmation_sent"])
+        hired_vehicle = Vehicle.objects.get(registration_number="MH 12 AB 4455")
+        self.assertEqual(hired_vehicle.ownership, "outside")
+        self.assertEqual(hired_vehicle.vendor_id, vendor.id)
+        # No driver was supplied - the vendor's own driver lives on the hire, not the
+        # internal driver master, so no trip has opened yet.
+        self.assertIsNone(response.data["order"]["trip"])
+        message = OutboundMessage.objects.get(reference_type="hire", reference_id=str(response.data["hire"]["id"]))
+        self.assertEqual(message.status, "sent")
+
+    def test_confirm_vehicle_flags_an_expired_document(self):
+        order = self.create_order()
+        ComplianceDocument.objects.create(vehicle=self.vehicle, document_type="insurance",
+                                          expiry_date=timezone.localdate() - timedelta(days=5))
+        response = self.client.post(f"/api/v1/orders/{order.id}/confirm-vehicle/",
+                                    {"vehicle": self.vehicle.id, "driver": self.driver.id}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(any("expired" in warning for warning in response.data["warnings"]))
+
+    def test_availability_endpoint_filters_by_radius_and_sorts_by_distance(self):
+        near = Vehicle.objects.create(registration_number="MH 04 AA 1111", vehicle_type="32 ft MXL",
+                                      current_latitude=Decimal("19.300000"), current_longitude=Decimal("73.060000"))
+        far = Vehicle.objects.create(registration_number="MH 04 BB 2222", vehicle_type="32 ft MXL",
+                                     current_latitude=Decimal("21.000000"), current_longitude=Decimal("79.000000"))
+        response = self.client.get("/api/v1/vehicles/availability/", {"place": self.pickup.id, "radius_km": 50})
+        ids = [row["id"] for row in response.data["vehicles"]]
+        self.assertIn(near.id, ids)
+        self.assertNotIn(far.id, ids)
+        self.assertEqual(response.data["vehicles"][0]["id"], near.id)
+
+
 class LaneProjectionTests(BaseFleetOpsTest):
     """What a lane earns against what this fleet actually spends to run it."""
 
