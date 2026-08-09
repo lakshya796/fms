@@ -101,10 +101,26 @@ h1 { margin:0; font-size:24px; letter-spacing:-.7px; }
 .chip{border:1px solid #dfe4df;background:#fff;border-radius:20px;padding:7px 12px;font-size:10px;font-weight:700;cursor:pointer;color:#4c574f}
 .chip.active{background:#16231d;color:#fff;border-color:#16231d}
 .compliance-second{margin-top:16px}
-.status.valid,.status.active,.status.completed,.status.approved,.status.resolved,.status.delivered{background:#e9f6ee;color:#347257}
-.status.expiring,.status.assigned,.status.open,.status.created,.status.dispatched,.status.not-sent{background:#fff4df;color:#9a6b22}
-.status.expired,.status.cancelled,.status.critical,.status.lost{background:#ffebe7;color:#b95544}
-.status.in-transit,.status.high{background:#e9f1fb;color:#3a6e9d}
+.status.valid,.status.active,.status.completed,.status.approved,.status.resolved,.status.delivered,.status.available,.status.idle,.status.confirmed,.status.settled{background:#e9f6ee;color:#347257}
+.status.expiring,.status.assigned,.status.open,.status.created,.status.dispatched,.status.not-sent,.status.under-maintenance,.status.allocated,.status.awaiting-loading,.status.awaiting-unloading{background:#fff4df;color:#9a6b22}
+.status.expired,.status.cancelled,.status.critical,.status.lost,.status.breakdown,.status.driver-unavailable{background:#ffebe7;color:#b95544}
+.status.in-transit,.status.high,.status.running,.status.on-trip,.status.loaded,.status.billed{background:#e9f1fb;color:#3a6e9d}
+.status.inactive,.status.unloaded,.status.at-customer-location{background:#f2f4f1;color:#5c655f}
+.record-section{border-top:1px solid var(--line);padding:22px 0}
+.record-section .margin-strip{margin-top:12px}
+.record-section .tracking-grid{margin-top:14px}
+.candidate-list{display:flex;flex-direction:column;gap:10px;margin-bottom:13px}
+.candidate-card{margin-bottom:0}
+.candidate-card.best{background:#f5f8f4;border-color:#c9dccf}
+.candidate-card-head{display:flex;align-items:flex-start;gap:10px;margin-bottom:12px}
+.candidate-card-head>div{flex:1;display:flex;flex-direction:column;gap:2px}
+.candidate-card-head strong{font-size:12px}
+.candidate-card-head small{font-size:10px;color:#7c8681}
+.candidate-card-head button{width:auto;white-space:nowrap;padding:8px 12px}
+.rank-pill{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;flex:none;border-radius:50%;background:#eef1ed;color:#4c574f;font-size:9px;font-weight:700;margin-top:1px}
+.candidate-card.best .rank-pill{background:#dff77d;color:#173024}
+.candidate-card .margin-strip{margin-top:0}
+.estimate-note{font-size:9px;color:#9a6b22;display:block;margin-top:2px}
 .data-state{padding:34px;text-align:center;color:#8b948f;font-size:11px}
 .data-state.error{color:#b95544}
 .expense-split{margin-top:16px}
