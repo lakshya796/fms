@@ -948,10 +948,10 @@ function ReportsScreen({ departments, voucherTypes }: { departments: Department[
   </div>;
 }
 
-type GeometryField = { key: string; x: number; y: number; size?: number; w?: number; h?: number; line_height?: number; color?: string; font?: string };
+type GeometryField = { key: string; enabled?: boolean; x: number; y: number; size?: number; w?: number; h?: number; line_height?: number; color?: string; fill?: string; opacity?: number; font?: string; static?: string };
 type TextLayer = { id: string; text: string; x: number; y: number; size: number; color: string; font: string };
 type Geometry = { version?: number; artwork?: any; fields: GeometryField[]; text_layers?: TextLayer[] };
-type CatalogueEntry = { key: string; label: string; kind: string; required?: boolean };
+type CatalogueEntry = { key: string; label: string; kind: string; required?: boolean; editable_text?: boolean };
 
 /** Drag-to-position editor for a template's field layout (§5 "user-editable
  *  field positions"). Positions are points from the coupon's top-left corner,
@@ -971,6 +971,7 @@ function GeometryEditor({ template, onClose, onSaved }: { template: Template; on
   const [previewUrl, setPreviewUrl] = useState("");
   const [previewing, setPreviewing] = useState(false);
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const previewSequence = useRef(0);
 
   useEffect(() => {
     (async () => {
@@ -980,7 +981,11 @@ function GeometryEditor({ template, onClose, onSaved }: { template: Template; on
       // Old templates used discount-specific fixed fields. Opening one in the
       // new editor upgrades it to the four-variable layer document locally;
       // nothing is persisted until Confirm & save is clicked.
-      setGeometry(full.field_geometry?.version === 2 ? full.field_geometry : cat.defaults);
+      if (full.field_geometry?.version === 2) {
+        const stored = new Map((full.field_geometry.fields || []).map(field => [field.key, field]));
+        setGeometry({ ...cat.defaults, ...full.field_geometry,
+          fields: cat.defaults.fields.map(field => ({ ...field, ...(stored.get(field.key) || {}) })) });
+      } else setGeometry(cat.defaults);
     })();
   }, [template.id]);
 
@@ -1052,6 +1057,28 @@ function GeometryEditor({ template, onClose, onSaved }: { template: Template; on
     finally { setPreviewing(false); }
   };
 
+  // Server-rendered preview is the source of truth. Wait until the user has
+  // stopped moving/typing for two seconds, then replace the iframe only if
+  // this is still the newest render request.
+  useEffect(() => {
+    if (!geometry) return;
+    const sequence = ++previewSequence.current;
+    const timer = window.setTimeout(async () => {
+      setPreviewing(true); setError("");
+      try {
+        const response = await fmsRequestRaw(`voucher-portal/templates/${template.id}/preview/`, {
+          method: "POST", body: JSON.stringify({ field_geometry: geometry }),
+        });
+        const nextUrl = URL.createObjectURL(await response.blob());
+        if (sequence === previewSequence.current) {
+          setPreviewUrl(previous => { if (previous) URL.revokeObjectURL(previous); return nextUrl; });
+        } else URL.revokeObjectURL(nextUrl);
+      } catch (err: any) { if (sequence === previewSequence.current) setError(parseApiError(err)); }
+      finally { if (sequence === previewSequence.current) setPreviewing(false); }
+    }, 2000);
+    return () => window.clearTimeout(timer);
+  }, [geometry, template.id]);
+
   if (!geometry) return <section className="voucher-card"><div className="data-state">Loading layout…</div></section>;
 
   const active = geometry.fields.find(f => f.key === selected) || null;
@@ -1080,13 +1107,20 @@ function GeometryEditor({ template, onClose, onSaved }: { template: Template; on
         <div ref={canvasRef} className="geo-canvas"
              style={{ width: DISPLAY_W, height: COUPON_H * scale, backgroundImage: template.artwork ? `url(${template.artwork})` : undefined }}
              onPointerMove={onPointerMove} onPointerUp={() => setDragging(null)} onPointerLeave={() => setDragging(null)}>
-          {geometry.fields.map(field => (
+          {geometry.fields.filter(field => field.enabled !== false).map(field => (
             <button key={field.key} type="button"
                     className={"geo-chip" + (selected === field.key ? " selected" : "")}
-                    style={{ left: field.x * scale, top: field.y * scale }}
+                    style={{ left: field.x * scale, top: field.y * scale,
+                      fontSize: field.size ? field.size * scale : undefined,
+                      color: selected === field.key ? undefined : field.color,
+                      fontFamily: field.font,
+                      width: kindFor(field.key) === "box" && field.w ? field.w * scale : undefined,
+                      height: kindFor(field.key) === "box" && field.h ? field.h * scale : undefined,
+                      backgroundColor: kindFor(field.key) === "box" ? field.fill : undefined,
+                      opacity: kindFor(field.key) === "box" ? (field.opacity ?? 1) : undefined }}
                     onPointerDown={event => { event.preventDefault(); setSelected(field.key); setDragging(field.key); }}
                     onClick={() => setSelected(field.key)}>
-              {field.key === "barcode" ? "▥ SAMPLE0001" : field.key === "recipient_name" ? "Sample Name" : field.key === "recipient_phone" ? "+971 50 123 4567" : "name@example.com"}
+              {field.key === "content_panel" ? "Content panel" : field.key === "barcode" ? "▥ SAMPLE0001" : field.key === "discount_numeral" ? "50" : field.key === "discount_unit" ? "%" : field.key === "off_label" ? "off" : field.key === "qualifier" ? (field.static || "on the value of") : field.key === "cap_line" ? "Up to AED 50.00" : field.key === "valid_label" ? (field.static || "Discount Valid Until :") : field.key === "valid_date" ? "09-Aug-2027" : field.key === "restrictions_label" ? (field.static || "Coupon Restrictions :") : field.key === "restrictions_body" ? "Brands: Sample" : field.key === "barcode_plate" ? "Barcode background" : field.key === "voucher_code" ? "SAMPLE0001" : field.key === "recipient_name" ? "Sample Name" : field.key === "recipient_phone" ? "+971 50 123 4567" : "name@example.com"}
             </button>
           ))}
           {(geometry.text_layers || []).map(layer => <button key={layer.id} type="button"
@@ -1108,7 +1142,7 @@ function GeometryEditor({ template, onClose, onSaved }: { template: Template; on
           {geometry.fields.map(field => (
             <li key={field.key}>
               <button type="button" className={selected === field.key ? "selected" : ""} onClick={() => setSelected(field.key)}>
-                {labelFor(field.key)}
+                {field.enabled === false ? "○ " : "● "}{labelFor(field.key)}
               </button>
             </li>
           ))}
@@ -1120,6 +1154,9 @@ function GeometryEditor({ template, onClose, onSaved }: { template: Template; on
 
         {active && <div className="geo-props">
           <p className="geo-panel-title">{labelFor(active.key)}</p>
+          <label className="checkbox-row"><input type="checkbox" checked={active.enabled !== false}
+            disabled={catalogue.find(c => c.key === active.key)?.required}
+            onChange={e => patchField(active.key, { enabled: e.target.checked })} /> Show on voucher</label>
           <label>X (pt)<input type="number" step="0.1" min={0} max={COUPON_W} value={active.x}
             onChange={e => patchField(active.key, { x: Number(e.target.value) })} /></label>
           <label>Y (pt)<input type="number" step="0.1" min={0} max={COUPON_H} value={active.y}
@@ -1136,7 +1173,17 @@ function GeometryEditor({ template, onClose, onSaved }: { template: Template; on
               onChange={e => patchField(active.key, { line_height: Number(e.target.value) })} /></label>}
             <label>Colour<input type="color" value={active.color || "#231B36"}
               onChange={e => patchField(active.key, { color: e.target.value })} /></label>
+            <label>Font<select value={active.font || "Helvetica"} onChange={e => patchField(active.key, { font: e.target.value })}>
+              <option>Helvetica</option><option>Helvetica-Bold</option><option>Times-Roman</option><option>Times-Bold</option><option>Courier</option>
+            </select></label>
           </>}
+          {kindFor(active.key) === "box" && <label>Fill colour<input type="color" value={active.fill || "#FFFFFF"}
+            onChange={e => patchField(active.key, { fill: e.target.value })} /></label>}
+          {kindFor(active.key) === "box" && <label>Opacity ({Math.round((active.opacity ?? 1) * 100)}%)
+            <input type="range" min={0} max={1} step={0.05} value={active.opacity ?? 1}
+              onChange={e => patchField(active.key, { opacity: Number(e.target.value) })} /></label>}
+          {catalogue.find(c => c.key === active.key)?.editable_text && <label>Text<input value={active.static || ""}
+            onChange={e => patchField(active.key, { static: e.target.value })} /></label>}
         </div>}
         {activeText && <div className="geo-props">
           <p className="geo-panel-title">Text</p>
