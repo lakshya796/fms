@@ -989,10 +989,32 @@ type Catalogue = {
   fonts: string[]; alignments: Align[]; coupon_presets: CouponPreset[];
   starters: Starter[]; blank: CardDocument;
 };
-type TemplateDetail = Template & {
-  layout: CardDocument; field_geometry: CardDocument;
-  coupon_width: number; coupon_height: number;
+type TemplateSummary = Template & {
+  layout?: CardDocument; field_geometry?: CardDocument;
+  coupon_width?: number; coupon_height?: number;
 };
+type TemplateDetail = TemplateSummary;
+
+const API_TOO_OLD = "This screen needs a newer version of the voucher portal API than the server is running. " +
+  "Ask an administrator to deploy the latest backend, then reload.";
+
+/** The layout to draw for a template.
+ *
+ *  The frontend and the API deploy separately, so a browser can be a release
+ *  ahead of the server. An API from before the card designer sends no
+ *  `layout`, and its `field_geometry` is the old fixed-field document - which
+ *  is readable but not drawable here. Return null for both rather than
+ *  handing the renderer something it will crash on. */
+function cardDocument(template: TemplateSummary | null | undefined): CardDocument | null {
+  const candidate = template?.layout || template?.field_geometry;
+  return candidate && candidate.version === 3 && Array.isArray(candidate.elements) ? candidate : null;
+}
+
+/** Does this API know about the designer at all? */
+function usableCatalogue(catalogue: Catalogue | null): catalogue is Catalogue {
+  return !!catalogue && Array.isArray(catalogue.palette) && Array.isArray(catalogue.variables)
+    && Array.isArray(catalogue.coupon_presets);
+}
 
 const TYPE_LABELS: Record<ElementType, string> = {
   text: "Text", field: "Voucher field", box: "Box", line: "Line", barcode: "Barcode",
@@ -1118,17 +1140,17 @@ function ElementView({ element, scale, values }: { element: CardElement; scale: 
  *  Shared by the designer canvas and the small previews on the library screen,
  *  so a thumbnail can never disagree with the editor about a layout. */
 function CardPreview({ document: doc, artwork, width, height, scale, values, children }: {
-  document: CardDocument; artwork: string | null; width: number; height: number;
+  document: CardDocument | null; artwork: string | null; width: number; height: number;
   scale: number; values: Record<string, string>; children?: React.ReactNode;
 }) {
   return <div className="card-surface" style={{
-    width: width * scale, height: height * scale, background: doc.background || "#FFFFFF",
+    width: width * scale, height: height * scale, background: doc?.background || "#FFFFFF",
   }}>
-    {artwork && !doc.artwork?.hidden && <img src={artwork} alt="" className="card-artwork" style={{
-      left: (doc.artwork?.x ?? 0) * scale, top: (doc.artwork?.y ?? 0) * scale,
-      width: (doc.artwork?.w ?? width) * scale, height: (doc.artwork?.h ?? height) * scale,
+    {artwork && !doc?.artwork?.hidden && <img src={artwork} alt="" className="card-artwork" style={{
+      left: (doc?.artwork?.x ?? 0) * scale, top: (doc?.artwork?.y ?? 0) * scale,
+      width: (doc?.artwork?.w ?? width) * scale, height: (doc?.artwork?.h ?? height) * scale,
     }} />}
-    {(doc.elements || []).filter(element => !element.hidden).map(element => (
+    {(doc?.elements || []).filter(element => !element.hidden).map(element => (
       <ElementView key={element.id} element={element} scale={scale} values={values} />
     ))}
     {children}
@@ -1169,14 +1191,20 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
           fmsRequest<Catalogue>("voucher-portal/templates/field-catalogue/"),
           fmsRequest<TemplateDetail>(`voucher-portal/templates/${template.id}/`),
         ]);
-        setCatalogue(cat);
-        setArtwork(full.artwork);
-        setCard({ w: full.coupon_width, h: full.coupon_height });
         // `layout` is the stored document normalised to the current element
         // shape, so a template authored before the designer existed opens as
-        // ordinary, editable elements rather than failing to load.
-        setDoc(full.layout);
-        setSaved(JSON.stringify(full.layout));
+        // ordinary, editable elements rather than failing to load. An API too
+        // old to send it at all is reported, not crashed on.
+        const layout = cardDocument(full);
+        if (!usableCatalogue(cat) || !layout) {
+          setError(API_TOO_OLD);
+          return;
+        }
+        setCatalogue(cat);
+        setArtwork(full.artwork);
+        setCard({ w: full.coupon_width || 479.52, h: full.coupon_height || 178 });
+        setDoc(layout);
+        setSaved(JSON.stringify(layout));
       } catch (err: any) { setError(parseApiError(err)); }
     })();
   }, [template.id]);
@@ -1803,7 +1831,8 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
             setSaving(true);
             try {
               const updated = await fmsRequest<TemplateDetail>(`voucher-portal/templates/${template.id}/reset-geometry/`, { method: "POST", body: "{}" });
-              setDoc(updated.layout); setSaved(JSON.stringify(updated.layout)); setPast([]); setFuture([]); setSelected(null);
+              const emptied = cardDocument(updated) || catalogue.blank;
+              setDoc(emptied); setSaved(JSON.stringify(emptied)); setPast([]); setFuture([]); setSelected(null);
             } catch (err: any) { setError(parseApiError(err)); }
             finally { setSaving(false); }
           }}>Reset to an empty card</button>}
@@ -1815,8 +1844,9 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
 
 function TemplatesScreen({ canAdmin }: { canAdmin: boolean }) {
   const [templates, setTemplates] = useState<Template[]>([]);
-  const [layouts, setLayouts] = useState<Record<number, { layout: CardDocument; w: number; h: number }>>({});
+  const [layouts, setLayouts] = useState<Record<number, { layout: CardDocument | null; w: number; h: number }>>({});
   const [catalogue, setCatalogue] = useState<Catalogue | null>(null);
+  const [loadError, setLoadError] = useState("");
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [showNew, setShowNew] = useState(false);
@@ -1827,18 +1857,25 @@ function TemplatesScreen({ canAdmin }: { canAdmin: boolean }) {
   const [editing, setEditing] = useState<Template | null>(null);
 
   const load = async () => {
-    setLoading(true);
-    const data = await fmsRequest<{ results: (Template & { layout: CardDocument; coupon_width: number; coupon_height: number })[] }
-      | (Template & { layout: CardDocument; coupon_width: number; coupon_height: number })[]>("voucher-portal/templates/?page_size=100");
-    const list = unwrap(data);
-    setTemplates(list);
-    setLayouts(Object.fromEntries(list.map(t => [t.id, { layout: t.layout, w: t.coupon_width, h: t.coupon_height }])));
-    setLoading(false);
+    setLoading(true); setLoadError("");
+    try {
+      const data = await fmsRequest<{ results: TemplateSummary[] } | TemplateSummary[]>(
+        "voucher-portal/templates/?page_size=100");
+      const list = unwrap(data);
+      setTemplates(list);
+      setLayouts(Object.fromEntries(list.map(t => [t.id, {
+        layout: cardDocument(t), w: t.coupon_width || 479.52, h: t.coupon_height || 178,
+      }])));
+    } catch (error: any) {
+      setLoadError(parseApiError(error));
+    } finally { setLoading(false); }
   };
 
   useEffect(() => {
     load();
-    fmsRequest<Catalogue>("voucher-portal/templates/field-catalogue/").then(setCatalogue).catch(() => setCatalogue(null));
+    fmsRequest<Catalogue>("voucher-portal/templates/field-catalogue/")
+      .then(cat => setCatalogue(usableCatalogue(cat) ? cat : null))
+      .catch(() => setCatalogue(null));
   }, []);
 
   const sampleValues = useMemo(() => {
@@ -1896,13 +1933,13 @@ function TemplatesScreen({ canAdmin }: { canAdmin: boolean }) {
       <label className="designer-field">Name
         <input placeholder="e.g. Eid gift card" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
       </label>
-      <label className="designer-field">Card size
+      {catalogue && <label className="designer-field">Card size
         <select value={form.preset} onChange={e => setForm({ ...form, preset: e.target.value })}>
-          {(catalogue?.coupon_presets || []).map(preset => (
+          {catalogue.coupon_presets.map(preset => (
             <option key={preset.key} value={preset.key}>{preset.label}</option>
           ))}
         </select>
-      </label>
+      </label>}
       <label className="designer-field">Background artwork <small>(optional — design on a plain background if you prefer)</small>
         <input type="file" accept="image/png,image/jpeg" onChange={e => setFile(e.target.files?.[0] || null)} />
       </label>
@@ -1912,21 +1949,24 @@ function TemplatesScreen({ canAdmin }: { canAdmin: boolean }) {
       </button>
     </div>}
 
+    {loadError && <div className="form-error" style={{ marginBottom: 14 }}>{loadError}</div>}
+    {!loading && !loadError && !catalogue && <div className="designer-warning">{API_TOO_OLD}</div>}
     {loading && <div className="data-state">Loading…</div>}
     {!loading && <div className="voucher-template-grid">
       {templates.map(t => {
         const stored = layouts[t.id];
+        const count = stored?.layout?.elements?.length ?? 0;
         return <div key={t.id} className="voucher-template-card">
           <div className="voucher-template-thumb">
-            {stored ? <CardPreview document={stored.layout} artwork={t.artwork} width={stored.w} height={stored.h}
-                                   scale={200 / stored.w} values={sampleValues} />
-                    : <div className="voucher-template-placeholder">No layout</div>}
+            {stored?.layout ? <CardPreview document={stored.layout} artwork={t.artwork} width={stored.w} height={stored.h}
+                                           scale={200 / stored.w} values={sampleValues} />
+                    : <div className="voucher-template-placeholder">Layout unavailable</div>}
           </div>
           <strong>{t.name}</strong>
           <div className="voucher-template-badges">
             {t.is_default && <span className="chip active">Default</span>}
             {!t.is_active && <span className="chip">Inactive</span>}
-            {stored && <span className="chip">{stored.layout.elements?.length || 0} element{(stored.layout.elements?.length || 0) === 1 ? "" : "s"}</span>}
+            {stored?.layout && <span className="chip">{count} element{count === 1 ? "" : "s"}</span>}
           </div>
           <div className="voucher-template-actions">
             <button type="button" className="link-button" onClick={() => setEditing(t)}>Design</button>

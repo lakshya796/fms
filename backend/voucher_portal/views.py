@@ -20,8 +20,8 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 from rest_framework.response import Response
 
-from .geometry import (ALIGNMENTS, COUPON_PRESETS, ELEMENT_TYPES, FONTS, PALETTE, VARIABLES,
-                       blank_geometry, starter_layouts)
+from .geometry import (ALIGNMENTS, COUPON_PRESETS, ELEMENT_TYPES, FONTS, LEGACY_ADCOOP_GEOMETRY,
+                       LEGACY_FIELD_CATALOGUE, PALETTE, VARIABLES, blank_geometry, starter_layouts)
 from .models import Department, Notification, PortalBatch, PortalUserAccess, PortalVoucher, VoucherPrefix, \
     VoucherTemplate, VoucherType
 from .validators import GeometryError, validate_field_geometry
@@ -117,6 +117,13 @@ class VoucherTemplateViewSet(AdminWriteMixin, viewsets.ModelViewSet):
             "coupon_presets": COUPON_PRESETS,
             "starters": starter_layouts(),
             "blank": blank_geometry(),
+            # The browser and this API deploy separately, so a page from before
+            # the designer can still be in someone's tab when this ships. These
+            # two keys are what it reads; serving them keeps that page working
+            # (on the old fixed-field document, which still validates and still
+            # renders) instead of breaking it mid-rollout.
+            "fields": LEGACY_FIELD_CATALOGUE,
+            "defaults": LEGACY_ADCOOP_GEOMETRY,
         })
 
     @action(detail=True, methods=["get", "post"])
