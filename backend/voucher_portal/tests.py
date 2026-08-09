@@ -876,6 +876,24 @@ class GeometryValidationTests(TestCase):
         geometry["fields"].append(copy.deepcopy(geometry["fields"][0]))
         self.assertEqual(self._patch(geometry).status_code, 400)
 
+    def test_barcode_is_mandatory(self):
+        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
+        geometry["fields"] = [field for field in geometry["fields"] if field["key"] != "barcode"]
+        response = self._patch(geometry)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("mandatory", str(response.data))
+
+    def test_arbitrary_styled_text_is_accepted(self):
+        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
+        geometry["text_layers"].append({
+            "id": "terms-title", "text": "Valid at all branches", "x": 20, "y": 30,
+            "size": 12, "font": "Helvetica-Bold", "color": "#4E327D",
+        })
+        response = self._patch(geometry)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.template.refresh_from_db()
+        self.assertEqual(self.template.field_geometry["text_layers"][0]["text"], "Valid at all branches")
+
     def test_field_catalogue_matches_what_the_renderer_draws(self):
         response = self.client.get("/api/v1/voucher-portal/templates/field-catalogue/")
         self.assertEqual(response.status_code, 200)
@@ -1011,6 +1029,8 @@ class DownloadTests(TestCase):
     API's, which is how this surfaced: a download opened the login page)."""
 
     def setUp(self):
+        self._production_bucket = storage._S3_BUCKET
+        storage._S3_BUCKET = ""  # exercise the local storage adapter in tests
         self.dept, self.vtype, self.prefix, self.template = make_reference_data()
         self.requester = User.objects.create_user("requester", password="x", is_staff=True)
         self.approver = User.objects.create_user("approver", password="x", is_staff=True)
@@ -1034,6 +1054,9 @@ class DownloadTests(TestCase):
 
         self.client = APIClient()
         self.client.force_authenticate(self.requester)
+
+    def tearDown(self):
+        storage._S3_BUCKET = self._production_bucket
 
     def test_batch_download_streams_a_pdf(self):
         response = self.client.get(f"/api/v1/voucher-portal/batches/{self.batch.id}/download/")

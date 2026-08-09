@@ -82,42 +82,37 @@ def _draw_one(c, batch, voucher, geometry):
         c.drawImage(str(artwork_path), artwork.get("x", 0), -artwork.get("y", 0) - artwork["h"],
                    width=artwork["w"], height=artwork["h"], mask="auto")
 
-    # --- content card
-    card = geometry.get("card", {})
-    if card.get("w"):
-        c.setFillColor(_color(card.get("fill"), "#FFFFFF"))
-        c.setStrokeColor(_color("#4E327D"))
-        c.setLineWidth(0.6)
-        c.rect(card.get("x", 0), -card.get("y", 0) - card["h"], card["w"], card["h"], stroke=1, fill=1)
+    if geometry.get("version") == 2:
+        # Designer-owned copy. These layers are intentionally not connected to
+        # a batch model: the confirmed text is snapshotted with the template.
+        for layer in geometry.get("text_layers", []):
+            lines = layer.get("text", "").splitlines()
+            if len(lines) > 1:
+                _draw_multiline(c, layer, lines)
+            else:
+                _draw_field(c, layer, lines[0] if lines else "", coupon_h)
 
-    # --- discount numeral / unit / "off"
-    if batch.discount_type == "percentage":
-        numeral = trim_decimal(batch.percentage_value)
-        unit = "%"
+        _draw_field(c, fields.get("recipient_name"), getattr(voucher, "recipient_name", "") or "", coupon_h)
+        _draw_field(c, fields.get("recipient_phone"), getattr(voucher, "recipient_phone", "") or "", coupon_h)
+        _draw_field(c, fields.get("recipient_email"), getattr(voucher, "recipient_email", "") or "", coupon_h)
     else:
-        numeral = f"{batch.fixed_value:,.0f}"
-        unit = batch.currency
-    _draw_field(c, fields.get("discount_numeral"), numeral, coupon_h)
-    _draw_field(c, fields.get("discount_unit"), unit, coupon_h)
-    _draw_field(c, fields.get("off_label"), "off", coupon_h)
-    _draw_field(c, fields.get("qualifier"), fields.get("qualifier", {}).get("static", ""), coupon_h)
-
-    if batch.discount_type == "percentage" and batch.max_discount_value:
-        _draw_field(c, fields.get("cap_line"), f"Up to {batch.currency} {batch.max_discount_value:,.2f}", coupon_h)
-
-    _draw_field(c, fields.get("valid_label"), "Discount Valid Until :", coupon_h)
-    _draw_field(c, fields.get("valid_date"), _date(batch.valid_to), coupon_h)
-
-    if batch.restrictions:
-        _draw_field(c, fields.get("restrictions_label"), "Coupon Restrictions :", coupon_h)
-        wrapped = textwrap.wrap(batch.restrictions, width=48)[:5]
-        _draw_multiline(c, fields.get("restrictions_body"), wrapped)
+        # Existing immutable batch snapshots continue to print exactly as they
+        # did before the layer editor was introduced.
+        numeral = trim_decimal(batch.percentage_value) if batch.discount_type == "percentage" else f"{batch.fixed_value:,.0f}"
+        unit = "%" if batch.discount_type == "percentage" else batch.currency
+        _draw_field(c, fields.get("discount_numeral"), numeral, coupon_h)
+        _draw_field(c, fields.get("discount_unit"), unit, coupon_h)
+        _draw_field(c, fields.get("off_label"), "off", coupon_h)
+        _draw_field(c, fields.get("qualifier"), fields.get("qualifier", {}).get("static", ""), coupon_h)
+        if batch.discount_type == "percentage" and batch.max_discount_value:
+            _draw_field(c, fields.get("cap_line"), f"Up to {batch.currency} {batch.max_discount_value:,.2f}", coupon_h)
+        _draw_field(c, fields.get("valid_label"), "Discount Valid Until :", coupon_h)
+        _draw_field(c, fields.get("valid_date"), _date(batch.valid_to), coupon_h)
+        if batch.restrictions:
+            _draw_field(c, fields.get("restrictions_label"), "Coupon Restrictions :", coupon_h)
+            _draw_multiline(c, fields.get("restrictions_body"), textwrap.wrap(batch.restrictions, width=48)[:5])
 
     # --- barcode
-    plate = fields.get("barcode_plate", {})
-    if plate.get("w"):
-        c.setFillColor(_color("#FFFFFF"))
-        c.rect(plate.get("x", 0), -plate.get("y", 0) - plate.get("h", 0), plate["w"], plate["h"], stroke=0, fill=1)
     bc_field = fields.get("barcode", {})
     if bc_field.get("w"):
         barcode = code128.Code128(voucher.number, barHeight=bc_field.get("h", 13) - 2, barWidth=0.28)
@@ -127,7 +122,6 @@ def _draw_one(c, batch, voucher, geometry):
         c.scale(scale, 1)
         barcode.drawOn(c, 0, 0)
         c.restoreState()
-    _draw_field(c, fields.get("voucher_code"), voucher.number, coupon_h)
 
     c.restoreState()
 
