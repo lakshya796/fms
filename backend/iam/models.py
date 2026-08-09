@@ -40,6 +40,8 @@ PERMISSION_CATALOGUE = [
     ("users.view", "View users, roles and branches"),
     ("users.manage", "Create users, assign roles and branches"),
     ("reports.view", "View dashboards and analytics"),
+    ("messages.view", "View outbound emails and their delivery status"),
+    ("messages.manage", "Resend outbound emails"),
 ]
 PERMISSION_CODES = [code for code, _ in PERMISSION_CATALOGUE]
 
@@ -158,3 +160,36 @@ class AuditLog(Timestamped):
 
     def __str__(self):
         return f"{self.username} {self.action} {self.entity}"
+
+
+OUTBOUND_CHANNELS = [("email", "Email"), ("sms", "SMS"), ("whatsapp", "WhatsApp")]
+OUTBOUND_STATUSES = [("queued", "Queued"), ("sent", "Sent"), ("failed", "Failed")]
+
+
+class OutboundMessage(Timestamped):
+    """Every message the system sends out, recorded so it can be shown, audited and
+    resent - vendor confirmations, and any future SMS/WhatsApp alert.
+
+    Nothing in the fleet or accounting apps calls an email API directly; everything
+    goes through here, which is what makes "resend" and "what did we actually send"
+    possible without re-deriving it from application state.
+    """
+    channel = models.CharField(max_length=10, choices=OUTBOUND_CHANNELS, default="email")
+    to_address = models.CharField(max_length=240)
+    subject = models.CharField(max_length=240, blank=True)
+    body = models.TextField(blank=True)
+    template_key = models.CharField(max_length=60, blank=True)
+    reference_type = models.CharField(max_length=40, blank=True)
+    reference_id = models.CharField(max_length=40, blank=True)
+    status = models.CharField(max_length=10, choices=OUTBOUND_STATUSES, default="queued")
+    sent_at = models.DateTimeField(null=True, blank=True)
+    error = models.CharField(max_length=500, blank=True)
+    retry_count = models.PositiveIntegerField(default=0)
+    created_by = models.CharField(max_length=150, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [models.Index(fields=["reference_type", "reference_id"]), models.Index(fields=["status"])]
+
+    def __str__(self):
+        return f"{self.channel} to {self.to_address} ({self.status})"

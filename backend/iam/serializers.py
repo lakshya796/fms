@@ -3,7 +3,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
-from .models import AuditLog, Branch, Organisation, PERMISSION_CATALOGUE, PERMISSION_CODES, Role, UserProfile
+from .models import AuditLog, Branch, Organisation, OutboundMessage, PERMISSION_CATALOGUE, PERMISSION_CODES, Role, UserProfile
 
 
 class OrganisationSerializer(serializers.ModelSerializer):
@@ -96,6 +96,13 @@ class AuditLogSerializer(serializers.ModelSerializer):
     class Meta:
         model = AuditLog
         fields = "__all__"
+
+
+class OutboundMessageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OutboundMessage
+        fields = "__all__"
+        read_only_fields = ["status", "sent_at", "error", "retry_count"]
 
 
 class PermissionCatalogueSerializer(serializers.Serializer):

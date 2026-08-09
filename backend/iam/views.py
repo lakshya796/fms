@@ -4,10 +4,11 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
+from . import messaging
 from .filtering import apply_filters
-from .models import AuditLog, Branch, Organisation, Role, UserProfile
+from .models import AuditLog, Branch, Organisation, OutboundMessage, Role, UserProfile
 from .permissions import HasModulePermission
-from .serializers import (AuditLogSerializer, BranchSerializer, OrganisationSerializer,
+from .serializers import (AuditLogSerializer, BranchSerializer, OrganisationSerializer, OutboundMessageSerializer,
                           PermissionCatalogueSerializer, RoleSerializer, UserSerializer)
 
 
@@ -137,6 +138,26 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
             if value:
                 queryset = queryset.filter(**{field: value})
         return queryset
+
+
+class OutboundMessageViewSet(viewsets.ReadOnlyModelViewSet):
+    """Every email the system has sent, so a vendor confirmation can be shown and
+    resent rather than trusted blindly to have gone out."""
+    queryset = OutboundMessage.objects.all()
+    serializer_class = OutboundMessageSerializer
+    permission_classes = [HasModulePermission]
+    required_permission = "messages.view"
+    required_write_permission = "messages.manage"
+
+    def get_queryset(self):
+        return apply_filters(super().get_queryset(), self.request.query_params,
+                             ["channel", "status", "reference_type", "reference_id"], ["to_address", "subject"])
+
+    @action(detail=True, methods=["post"])
+    def resend(self, request, pk=None):
+        message = self.get_object()
+        messaging.resend(message)
+        return Response(self.get_serializer(message).data)
 
 
 @api_view(["GET"])

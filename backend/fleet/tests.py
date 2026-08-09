@@ -126,7 +126,7 @@ class OrderLifecycleTests(BaseFleetOpsTest):
         dispatched = self.client.post(f"/api/v1/orders/{order.id}/dispatch/")
         self.assertEqual(dispatched.status_code, 200)
         self.vehicle.refresh_from_db(); self.driver.refresh_from_db()
-        self.assertEqual(self.vehicle.status, "on_trip")
+        self.assertEqual(self.vehicle.status, "running")
         self.assertEqual(self.driver.status, "on_trip")
 
         issued = self.client.post(f"/api/v1/orders/{order.id}/pod-request/", {"receiver_phone": "9820011223"}, format="json")
@@ -143,6 +143,32 @@ class OrderLifecycleTests(BaseFleetOpsTest):
         self.assertTrue(proof.otp_verified)
         self.assertEqual(proof.status, "verified")
         self.assertEqual([a.code for a in order.activities.all()][0], "ORDER_COMPLETED")
+        self.assertIsNotNone(order.trip_id)
+        self.assertEqual(order.trip.status, "closed")
+
+    def test_assigning_an_order_creates_and_reuses_one_trip(self):
+        order = self.create_order()
+        self.client.post(f"/api/v1/orders/{order.id}/assign/",
+                         {"driver": self.driver.id, "vehicle": self.vehicle.id}, format="json")
+        order.refresh_from_db()
+        self.assertIsNotNone(order.trip_id)
+        first_trip_id = order.trip_id
+        # Re-assigning the same order must not spawn a second trip and lose the cost history.
+        self.client.post(f"/api/v1/orders/{order.id}/assign/",
+                         {"driver": self.driver.id, "vehicle": self.vehicle.id}, format="json")
+        order.refresh_from_db()
+        self.assertEqual(order.trip_id, first_trip_id)
+
+    def test_order_profitability_counts_fuel_logged_against_the_orders_trip(self):
+        order = self.create_order()
+        self.client.post(f"/api/v1/orders/{order.id}/assign/",
+                         {"driver": self.driver.id, "vehicle": self.vehicle.id}, format="json")
+        order.refresh_from_db()
+        FuelEntry.objects.create(vehicle=self.vehicle, trip=order.trip, odometer_km=self.vehicle.current_odometer_km + 200,
+                                 volume_litres=Decimal("50"), rate_per_litre=Decimal("95"))
+        response = self.client.get(f"/api/v1/orders/{order.id}/profitability/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["fuel"], 4750.0)
 
     def test_activity_endpoint_validates_status(self):
         order = self.create_order()
@@ -583,6 +609,40 @@ class AnalyticsAndAuthTests(BaseFleetOpsTest):
     def test_trip_endpoints_still_work_alongside_the_dispatch_action(self):
         response = self.client.get("/api/v1/trips/")
         self.assertEqual(response.status_code, 200)
+
+
+class VehicleStatusAndOwnershipTests(BaseFleetOpsTest):
+    def test_dispatch_and_complete_write_a_status_log(self):
+        order = OrderLifecycleTests.create_order(self)
+        self.client.post(f"/api/v1/orders/{order.id}/assign/",
+                         {"driver": self.driver.id, "vehicle": self.vehicle.id}, format="json")
+        self.client.post(f"/api/v1/orders/{order.id}/dispatch/")
+        history = self.client.get(f"/api/v1/vehicles/{self.vehicle.id}/status-history/")
+        self.assertEqual(history.status_code, 200)
+        statuses = [row["status"] for row in history.data]
+        self.assertIn("running", statuses)
+        self.assertIn("allocated", statuses)
+        # The closed row for "allocated" should have an end time once "running" opened.
+        allocated_row = next(row for row in history.data if row["status"] == "allocated")
+        self.assertIsNotNone(allocated_row["ended_at"])
+
+    def test_set_status_endpoint_moves_a_vehicle_to_breakdown(self):
+        response = self.client.post(f"/api/v1/vehicles/{self.vehicle.id}/set-status/",
+                                    {"status": "breakdown", "reason": "Clutch failure near Lonavala"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.vehicle.refresh_from_db()
+        self.assertEqual(self.vehicle.status, "breakdown")
+
+    def test_set_status_rejects_an_unknown_status(self):
+        response = self.client.post(f"/api/v1/vehicles/{self.vehicle.id}/set-status/", {"status": "on_fire"}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_ownership_defaults_to_own_and_accepts_outside_with_a_vendor(self):
+        self.assertEqual(self.vehicle.ownership, "own")
+        vendor = Vendor.objects.create(name="Anand Roadlines", code="VN-ANAND")
+        hired = Vehicle.objects.create(registration_number="MH 12 AB 4455", vehicle_type="20 ft SXL",
+                                       ownership="outside", vendor=vendor)
+        self.assertEqual(hired.vendor_id, vendor.id)
 
 
 class PaginationTests(BaseFleetOpsTest):

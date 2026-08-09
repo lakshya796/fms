@@ -1,9 +1,11 @@
 """Tests for organisation structure and role based access."""
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.core import mail
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
-from .models import AuditLog, Branch, PERMISSION_CODES, Role, UserProfile
+from . import messaging
+from .models import AuditLog, Branch, OutboundMessage, PERMISSION_CODES, Role, UserProfile
 
 
 class IamTestCase(TestCase):
@@ -126,3 +128,30 @@ class AuditTrailTests(IamTestCase):
         listed = self.client.get("/api/v1/iam/audit-log/")
         self.assertEqual(listed.status_code, 200)
         self.assertEqual(self.client.post("/api/v1/iam/audit-log/", {}, format="json").status_code, 405)
+
+
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+class OutboundMessagingTests(IamTestCase):
+    def test_send_email_records_and_delivers_the_message(self):
+        message = messaging.send_email(to="vendor@example.com", subject="Trip confirmed",
+                                        body="Order ORD-1 assigned to MH 04 JU 9182.",
+                                        reference_type="order", reference_id=7)
+        self.assertEqual(message.status, "sent")
+        self.assertIsNotNone(message.sent_at)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["vendor@example.com"])
+
+    def test_resend_delivers_again_without_creating_a_new_record(self):
+        message = messaging.send_email(to="vendor@example.com", subject="Trip confirmed", body="Body")
+        messaging.resend(message)
+        message.refresh_from_db()
+        self.assertEqual(message.retry_count, 1)
+        self.assertEqual(OutboundMessage.objects.count(), 1)
+        self.assertEqual(len(mail.outbox), 2)
+
+    def test_resend_endpoint_requires_the_manage_permission(self):
+        message = messaging.send_email(to="vendor@example.com", subject="Trip confirmed", body="Body")
+        response = self.client.post(f"/api/v1/iam/outbound-messages/{message.id}/resend/")
+        self.assertEqual(response.status_code, 200)
+        message.refresh_from_db()
+        self.assertEqual(message.retry_count, 1)
