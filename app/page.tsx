@@ -5,7 +5,7 @@ import { UNAUTHORISED_EVENT, fmsRequest, login, logout } from "./lib/fms-api";
 
 const navGroups: { label: string; items: [string, string][] }[] = [
   { label: "WORKSPACE", items: [["Overview", "⌂"], ["Analytics", "◎"]] },
-  { label: "TRANSPORT", items: [["Indents", "◰"], ["Dispatch", "▦"], ["Orders", "◈"], ["ePOD", "✍"], ["Tracking", "⌖"], ["Operations", "▤"]] },
+  { label: "TRANSPORT", items: [["Indents", "◰"], ["Dispatch", "▦"], ["Orders", "◈"], ["Hires", "⚑"], ["ePOD", "✍"], ["Tracking", "⌖"], ["Operations", "▤"]] },
   { label: "COMMERCIAL", items: [["Customers", "◇"], ["Sales", "↗"], ["Rates", "⚖"], ["Invoices", "▥"]] },
   { label: "FLEET", items: [["Fleet", "▱"], ["Fleets", "▩"], ["Drivers", "♙"], ["Maintenance", "⚒"], ["Compliance", "▣"], ["Fuel", "⛽"], ["Issues", "⚠"]] },
   { label: "NETWORK", items: [["Vendors", "⌸"], ["Places", "⌂"], ["Service areas", "◫"], ["Zones", "◍"]] },
@@ -103,12 +103,6 @@ const modules: Record<string, { eyebrow: string; title: string; action: string; 
     stats: [["LRs today", "24", "18 dispatched"], ["Active trips", "32", "4 need attention"], ["POD pending", "7", "₹3.2L billable"]],
     columns: ["LR number", "Consignor → Consignee", "Route", "E-way bill", "Status"],
     rows: [["LR-240831", "Tata Consumer → D-Mart Pune", "TS-2841", "MH 04 JU 9182", "In transit"], ["LR-240829", "Asian Paints → Jaipur Depot", "TS-2839", "HR 55 AN 4021", "Loading"], ["LR-240826", "V-Guard → Chennai DC", "TS-2834", "KA 51 MN 6814", "Delayed"], ["LR-240822", "Havells → Lucknow Hub", "TS-2831", "UP 32 KL 1098", "Delivered"]]
-  },
-  Fleet: {
-    eyebrow: "OWN FLEET", title: "Vehicles & trip costing", action: "+ Add vehicle", actionType: "vehicle",
-    stats: [["Fleet size", "41", "32 on road"], ["Cost per km", "₹28.40", "↓ ₹1.20 vs July"], ["Maintenance due", "5", "2 critical"]],
-    columns: ["Vehicle", "Type", "Ownership", "Capacity", "Status"],
-    rows: [["MH 04 JU 9182", "32 ft MXL", "Ramesh Yadav", "6,842 km", "₹27.80"], ["HR 55 AN 4021", "22 ft SXL", "Sandeep Kumar", "5,106 km", "₹29.10"], ["KA 51 MN 6814", "32 ft MXL", "Vijay Raj", "7,214 km", "₹28.60"], ["GJ 01 KT 7730", "20 ft", "Irfan Sheikh", "4,832 km", "₹26.90"]]
   },
   Settlements: {
     eyebrow: "DRIVER ACCOUNTS", title: "Driver settlements", action: "+ New settlement", actionType: "settlement",
@@ -599,6 +593,30 @@ const recordForms: Record<string, FormSpec> = {
       { name: "special_instructions", label: "Special instructions", type: "textarea" },
     ],
   },
+  hire: {
+    eyebrow: "VENDOR HIRE", title: "Record a vehicle hire", button: "Save hire", endpoint: "hires/",
+    reference: (_values, created) => created?.vendor_name ? `Hire from ${created.vendor_name}` : "Hire",
+    fields: [
+      { name: "order", label: "Order", type: "select", source: "orders/", required: true },
+      { name: "vendor", label: "Vendor", type: "select", source: "vendors/", required: true },
+      { name: "hire_type", label: "Hire type", type: "select", options: [["spot", "Spot hire"], ["contract", "Contract rate"]] },
+      { name: "outside_vehicle_number", label: "Vehicle number" },
+      { name: "outside_vehicle_type", label: "Vehicle type" },
+      { name: "outside_capacity_kg", label: "Capacity (kg)", type: "number" },
+      { name: "driver_name", label: "Driver name" },
+      { name: "driver_phone", label: "Driver phone" },
+      { name: "driver_licence", label: "Driver licence" },
+      { name: "agreed_rate", label: "Agreed rate (₹)", type: "number", required: true },
+      { name: "rate_basis", label: "Rate basis", type: "select", options: [["trip", "Per trip"], ["km", "Per km"], ["day", "Per day"], ["ton", "Per ton"], ["other", "Other"]] },
+      { name: "loading_charge", label: "Loading (₹)", type: "number", value: "0" },
+      { name: "unloading_charge", label: "Unloading (₹)", type: "number", value: "0" },
+      { name: "detention_rate_per_day", label: "Detention per day (₹)", type: "number", value: "0" },
+      { name: "toll_responsibility", label: "Toll paid by", type: "select", options: [["vendor", "Vendor"], ["ours", "This fleet"]] },
+      { name: "advance_amount", label: "Advance paid (₹)", type: "number", value: "0" },
+      { name: "payment_terms_days", label: "Payment terms (days)", type: "number", value: "30" },
+      { name: "remarks", label: "Remarks", type: "textarea" },
+    ],
+  },
 };
 
 // Edit reuses the same field spec as creation. A field's current value on the record beats
@@ -690,7 +708,6 @@ const liveModules: Record<string, { endpoint: string; map: (record: any) => stri
   Customers: { endpoint: "customers/", map: r => [r.name, r.gstin, "₹" + Number(r.credit_limit).toLocaleString("en-IN"), r.email || "—", r.kyc_status] },
   Sales: { endpoint: "quotes/", map: r => [r.number, r.customer_name, r.origin + " → " + r.destination, "₹" + Number(r.freight_amount).toLocaleString("en-IN"), r.status] },
   Operations: { endpoint: "lorry-receipts/", map: r => [r.number, r.consignor + " → " + r.consignee, r.origin + " → " + r.destination, r.eway_bill_number || "—", r.status] },
-  Fleet: { endpoint: "vehicles/", map: r => [r.registration_number, r.vehicle_type, r.ownership, Number(r.capacity_kg).toLocaleString("en-IN") + " kg", r.status] },
   Settlements: { endpoint: "settlements/", map: r => [r.driver_name, "Trip #" + r.trip, "₹" + Number(r.advance_amount).toLocaleString("en-IN"), "₹" + Number(r.approved_expenses).toLocaleString("en-IN"), r.status] },
   Invoices: { endpoint: "invoices/", map: r => [r.number, r.customer_name, r.order_number || r.trip_number || "manual", r.due_date, rupees(r.total_amount), r.status] },
   Vendors: { endpoint: "vendors/", map: r => [r.name, r.vendor_type, r.city || "—", r.gstin || "—", r.status] },
@@ -753,6 +770,158 @@ function ModuleView({ name, onAction, reloadKey, openAction }: { name: string; o
           <div className="record-field"><span>Last updated</span><strong>{stamp(selected.updated_at)}</strong></div>
         </div>
         <div className="record-actions"><button className="secondary" onClick={closeDrawer}>Close</button>{editSpec && <button className="primary" onClick={() => setEditing(true)}>Edit record</button>}</div>
+      </>}
+    </aside></div>}
+  </div>;
+}
+
+const vehicleStatusOptions: [string, string][] = [
+  ["available", "Available"], ["idle", "Idle"], ["allocated", "Allocated"], ["running", "Running"],
+  ["loaded", "Loaded"], ["unloaded", "Unloaded"], ["under_maintenance", "Under maintenance"],
+  ["driver_unavailable", "Driver unavailable"], ["breakdown", "Breakdown"], ["at_customer_location", "At customer location"],
+  ["awaiting_loading", "Awaiting loading"], ["awaiting_unloading", "Awaiting unloading"], ["inactive", "Inactive"],
+];
+
+function FleetVehiclesView({ reloadKey, onAction, openAction }: { reloadKey: number; onAction: Notify; openAction: (type: string) => void }) {
+  const [vehicles, setVehicles] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
+  const [places, setPlaces] = useState<any[]>([]);
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<any>(null);
+  const [editing, setEditing] = useState(false);
+  const [history, setHistory] = useState<any[]>([]);
+  const [statusChoice, setStatusChoice] = useState("");
+  const [statusReason, setStatusReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [findPlace, setFindPlace] = useState("");
+  const [findRadius, setFindRadius] = useState("100");
+  const [findBusy, setFindBusy] = useState(false);
+  const [availability, setAvailability] = useState<any[] | null>(null);
+
+  const load = () => {
+    setLoading(true);
+    fmsRequest<any>(wholeSet("vehicles/")).then(payload => {
+      const records = asList(payload);
+      setVehicles(records);
+      setTotal(asCount(payload, records));
+    }).finally(() => setLoading(false));
+  };
+  useEffect(load, [reloadKey]);
+  useEffect(() => { fmsRequest<any>(wholeSet("places/")).then(payload => setPlaces(asList(payload))).catch(() => undefined); }, []);
+
+  useEffect(() => {
+    if (!selected) { setHistory([]); return; }
+    setStatusChoice(""); setStatusReason("");
+    fmsRequest<any>(`vehicles/${selected.id}/status-history/`).then(setHistory).catch(() => setHistory([]));
+  }, [selected?.id]);
+
+  const rows = vehicles.filter(v => `${v.registration_number} ${v.vehicle_type} ${v.ownership} ${v.vendor_name || ""} ${v.status}`.toLowerCase().includes(query.toLowerCase()));
+
+  const changeStatus = async () => {
+    if (!selected || !statusChoice) return;
+    setBusy(true);
+    try {
+      const updated = await fmsRequest<any>(`vehicles/${selected.id}/set-status/`, { method: "POST", body: JSON.stringify({ status: statusChoice, reason: statusReason }) });
+      onAction(`${updated.registration_number} moved to ${statusChoice.replaceAll("_", " ")}`);
+      setSelected(updated);
+      setStatusChoice(""); setStatusReason("");
+      fmsRequest<any>(`vehicles/${selected.id}/status-history/`).then(setHistory).catch(() => undefined);
+      load();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 120) : "Could not change status", "warn");
+    } finally { setBusy(false); }
+  };
+
+  const findAvailability = async () => {
+    setFindBusy(true);
+    try {
+      const params = new URLSearchParams();
+      if (findPlace) {
+        params.set("place", findPlace);
+        // A radius only means something relative to a place - applying it with no
+        // place picked would filter out every vehicle, since none would have a
+        // computed distance to compare against it.
+        if (findRadius) params.set("radius_km", findRadius);
+      }
+      const payload = await fmsRequest<any>(`vehicles/availability/?${params.toString()}`);
+      setAvailability(payload.vehicles || []);
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 120) : "Could not search availability", "warn");
+    } finally { setFindBusy(false); }
+  };
+
+  return <div className="module-page">
+    <div className="module-title"><div><p className="eyebrow">OWN FLEET</p><h2>Vehicles & availability</h2><p>Own, attached and outside-sourced vehicles, live status and where a truck can be found near a pickup point.</p></div><button className="primary module-action" onClick={() => openAction("vehicle")}>＋ Add vehicle</button></div>
+    <div className="module-stats">
+      <div className="module-stat"><span>Fleet size</span><strong>{loading ? "—" : total}</strong><small>Own, attached & outside-sourced</small></div>
+      <div className="module-stat"><span>Available now</span><strong>{loading ? "—" : vehicles.filter(v => ["available", "idle"].includes(v.status)).length}</strong><small>Ready for allocation</small></div>
+      <div className="module-stat"><span>Attention needed</span><strong>{loading ? "—" : vehicles.filter(v => ["breakdown", "under_maintenance", "driver_unavailable"].includes(v.status)).length}</strong><small>Breakdown, workshop or no driver</small></div>
+    </div>
+
+    <section className="module-table-card">
+      <div className="module-toolbar"><div><strong>Find available vehicles</strong><span>Nearest first, with a document-expiry flag</span></div></div>
+      <div className="allocate-grid" style={{ gridTemplateColumns: "1fr 140px auto" }}>
+        <label>Near place<select value={findPlace} onChange={e => setFindPlace(e.target.value)}><option value="">Any location</option>{places.map(p => <option key={p.id} value={p.id}>{p.name} · {p.city}</option>)}</select></label>
+        <label>Radius (km)<input value={findRadius} onChange={e => setFindRadius(e.target.value)} type="number" min="1" /></label>
+        <button className="secondary full-button" disabled={findBusy} onClick={findAvailability}>{findBusy ? "Searching…" : "Find"}</button>
+      </div>
+      {availability && (availability.length ? <div className="table-wrap"><table><thead><tr><th>Vehicle</th><th>Status</th><th>Distance</th><th>Current place</th><th>Documents</th></tr></thead>
+        <tbody>{availability.map(row => <tr key={row.id} className="clickable" onClick={() => setSelected(vehicles.find(v => v.id === row.id) || row)}>
+          <td><strong>{row.registration_number}</strong><small>{row.vehicle_type}</small></td>
+          <td><span className={"status " + String(row.status).replaceAll("_", "-")}>{String(row.status).replaceAll("_", " ")}</span></td>
+          <td>{row.distance_km == null ? "—" : `${Number(row.distance_km).toFixed(1)} km`}</td>
+          <td>{row.current_place || "—"}</td>
+          <td>{row.expired_documents ? <span className="status expired">{row.expired_documents} expired</span> : "Valid"}</td>
+        </tr>)}</tbody></table></div>
+        : <div className="data-state">No vehicle matched that location and radius.</div>)}
+    </section>
+
+    <section className="module-table-card">
+      <div className="module-toolbar"><div><strong>All vehicles</strong><span>{loading ? "Loading…" : rows.length + " vehicles"}</span></div><div className="toolbar-actions"><input aria-label="Search vehicles" placeholder="Search vehicles..." value={query} onChange={e => setQuery(e.target.value)} /><button onClick={load}>↻ Refresh</button></div></div>
+      {loading ? <div className="data-state">Loading records…</div> : !rows.length ? <div className="data-state">No vehicles found.</div> :
+      <div className="table-wrap"><table><thead><tr><th>Vehicle</th><th>Type</th><th>Ownership</th><th>Capacity</th><th>Status</th></tr></thead>
+        <tbody>{rows.map(v => <tr key={v.id} className="clickable" onClick={() => setSelected(v)}>
+          <td><strong>{v.registration_number}</strong></td>
+          <td>{v.vehicle_type}</td>
+          <td>{v.ownership === "own" ? "Own" : `${v.ownership.replace("_", " ")}${v.vendor_name ? ` · ${v.vendor_name}` : ""}`}</td>
+          <td>{Number(v.capacity_kg).toLocaleString("en-IN")} kg</td>
+          <td><span className={"status " + String(v.status).replaceAll("_", "-")}>{String(v.status).replaceAll("_", " ")}</span></td>
+        </tr>)}</tbody></table></div>}
+    </section>
+
+    {selected && <div className="record-backdrop" onMouseDown={() => setSelected(null)}><aside className="record-drawer" onMouseDown={event => event.stopPropagation()}>
+      <div className="record-head"><div><p className="eyebrow">VEHICLE</p><h2>{selected.registration_number}</h2><span className={"status " + String(selected.status).replaceAll("_", "-")}>{String(selected.status).replaceAll("_", " ")}</span></div><button className="panel-close" onClick={() => setSelected(null)}>×</button></div>
+      {editing ? <RecordForm spec={recordForms.vehicle} record={selected} onClose={() => setEditing(false)}
+        onSaved={() => { onAction(`${selected.registration_number} updated`); setEditing(false); load(); }} /> : <>
+        <div className="record-fields">
+          <div className="record-field"><span>Type</span><strong>{selected.vehicle_type}</strong></div>
+          <div className="record-field"><span>Ownership</span><strong>{selected.ownership}{selected.vendor_name ? ` · ${selected.vendor_name}` : ""}</strong></div>
+          <div className="record-field"><span>Capacity</span><strong>{Number(selected.capacity_kg).toLocaleString("en-IN")} kg</strong></div>
+          <div className="record-field"><span>Odometer</span><strong>{Number(selected.current_odometer_km).toLocaleString("en-IN")} km</strong></div>
+          <div className="record-field"><span>Current place</span><strong>{selected.current_place_name || "—"}</strong></div>
+          <div className="record-field"><span>Current trip</span><strong>{selected.current_trip_number || "—"}</strong></div>
+          <div className="record-field"><span>Status since</span><strong>{stamp(selected.status_since)}</strong></div>
+          <div className="record-field"><span>Expected available</span><strong>{selected.expected_available_at ? stamp(selected.expected_available_at) : "—"}</strong></div>
+          <div className="record-field"><span>Insurance valid until</span><strong>{selected.insurance_expiry || "—"}</strong></div>
+          <div className="record-field"><span>Permit valid until</span><strong>{selected.permit_expiry || "—"}</strong></div>
+        </div>
+
+        <div className="allocate-box">
+          <p className="eyebrow">CHANGE STATUS</p>
+          <div className="allocate-grid">
+            <label>New status<select value={statusChoice} onChange={e => setStatusChoice(e.target.value)}><option value="">Select a status</option>{vehicleStatusOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          </div>
+          <label className="reject-reason">Reason<input value={statusReason} onChange={e => setStatusReason(e.target.value)} placeholder="Clutch failure near Lonavala" /></label>
+          <button className="primary full-button" disabled={busy || !statusChoice} onClick={changeStatus}>Update status</button>
+        </div>
+
+        <div className="record-timeline"><p className="eyebrow">STATUS HISTORY</p>
+          {history.slice(0, 12).map((row: any) => <div key={row.id}><i /><span><strong>{String(row.status).replaceAll("_", " ")}</strong><small>{row.reason || row.place_name || "—"}</small></span><time>{stamp(row.started_at)}</time></div>)}
+          {!history.length && <div><i /><span><strong>No history yet</strong></span></div>}
+        </div>
+
+        <div className="record-actions"><button className="secondary" onClick={() => setSelected(null)}>Close</button><button className="primary" onClick={() => setEditing(true)}>Edit record</button></div>
       </>}
     </aside></div>}
   </div>;
@@ -1080,6 +1249,10 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
   const [busy, setBusy] = useState(false);
   const [driver, setDriver] = useState("");
   const [vehicle, setVehicle] = useState("");
+  const [candidates, setCandidates] = useState<any[] | null>(null);
+  const [recommending, setRecommending] = useState(false);
+  const [spotCandidate, setSpotCandidate] = useState<any>(null);
+  const [settlement, setSettlement] = useState<any>(null);
 
   const load = () => {
     setLoading(true);
@@ -1094,6 +1267,19 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
     fmsRequest<any>(wholeSet("drivers/")).then(payload => setDrivers(asList(payload))).catch(() => undefined);
     fmsRequest<any>(wholeSet("vehicles/")).then(payload => setVehicles(asList(payload))).catch(() => undefined);
   }, []);
+
+  // The candidate list and any spot-hire form in progress belong to whichever order
+  // is open, so a fresh selection starts clean rather than showing the last order's picks.
+  useEffect(() => { setCandidates(null); setSpotCandidate(null); }, [selected?.id]);
+
+  // The settlement sheet is safe to fetch for any order - it comes back with nulls
+  // for the sides that have not happened yet rather than an error.
+  useEffect(() => {
+    if (!selected) { setSettlement(null); return; }
+    let active = true;
+    fmsRequest<any>(`orders/${selected.id}/settlement/`).then(payload => { if (active) setSettlement(payload); }).catch(() => { if (active) setSettlement(null); });
+    return () => { active = false; };
+  }, [selected?.id, selected?.status]);
 
   const run = async (order: any, path: string, body?: Record<string, unknown>) => {
     setBusy(true);
@@ -1136,6 +1322,62 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
       await reopen(order);
     } catch (e) {
       onAction(e instanceof Error ? e.message.slice(0, 120) : "Could not raise the invoice", "warn");
+    } finally { setBusy(false); }
+  };
+
+  // Own and vendor capacity ranked by expected profit, not distance - the point of
+  // Phase 4 is that a dispatcher confirms a decision here rather than guesses one.
+  const recommend = async () => {
+    if (!selected) return;
+    setRecommending(true); setSpotCandidate(null);
+    try {
+      const payload = await fmsRequest<any>(`orders/${selected.id}/recommend-vehicles/`, { method: "POST", body: "{}" });
+      setCandidates(payload.candidates || []);
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 120) : "Could not fetch recommendations", "warn");
+    } finally { setRecommending(false); }
+  };
+
+  // A candidate that already has a vehicle on file (own, or a vendor's registered
+  // truck) confirms in one call; the driver picked above goes along if one was chosen.
+  const confirmVehicle = async (candidate: any) => {
+    setBusy(true);
+    try {
+      const payload = await fmsRequest<any>(`orders/${selected.id}/confirm-vehicle/`, { method: "POST", body: JSON.stringify({
+        vehicle: candidate.vehicle_id, ...(driver ? { driver: Number(driver) } : {}),
+      }) });
+      onAction(`${payload.order.number} confirmed on ${candidate.registration_number}`);
+      (payload.warnings || []).forEach((warning: string) => onAction(warning, "warn"));
+      setCandidates(null);
+      setSelected(payload.order);
+      load();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 120) : "Could not confirm the vehicle", "warn");
+    } finally { setBusy(false); }
+  };
+
+  // A spot-hire candidate has no vehicle on file yet, so the driver's own truck and
+  // driver details are captured here and the hire is created in the same call.
+  const confirmSpotHire = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!spotCandidate) return;
+    const form = new FormData(event.currentTarget as HTMLFormElement);
+    setBusy(true);
+    try {
+      const payload = await fmsRequest<any>(`orders/${selected.id}/confirm-vehicle/`, { method: "POST", body: JSON.stringify({
+        vendor: spotCandidate.vendor_id,
+        outside_vehicle: { vehicle_number: String(form.get("vehicle_number") || ""), vehicle_type: String(form.get("vehicle_type") || "") },
+        hire: { agreed_rate: Number(form.get("agreed_rate") || 0), rate_basis: "trip",
+               driver_name: String(form.get("driver_name") || ""), driver_phone: String(form.get("driver_phone") || ""),
+               advance_amount: Number(form.get("advance_amount") || 0) },
+      }) });
+      onAction(`${payload.order.number} confirmed via ${spotCandidate.vendor_name}${payload.vendor_confirmation_sent ? " · vendor emailed" : ""}`);
+      (payload.warnings || []).forEach((warning: string) => onAction(warning, "warn"));
+      setCandidates(null); setSpotCandidate(null);
+      setSelected(payload.order);
+      load();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 120) : "Could not confirm the hire", "warn");
     } finally { setBusy(false); }
   };
 
@@ -1199,11 +1441,73 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
       {selected.status === "created" || !selected.driver ? <div className="allocate-box">
         <p className="eyebrow">ALLOCATE VEHICLE & DRIVER</p>
         <div className="allocate-grid">
-          <label>Driver<select value={driver} onChange={event => setDriver(event.target.value)}><option value="">Select driver</option>{drivers.map(record => <option key={record.id} value={record.id}>{record.name} · {record.status}</option>)}</select></label>
+          <label>Driver (optional for a vendor hire)<select value={driver} onChange={event => setDriver(event.target.value)}><option value="">Select driver</option>{drivers.map(record => <option key={record.id} value={record.id}>{record.name} · {record.status}</option>)}</select></label>
+        </div>
+        <button className="secondary full-button" disabled={recommending} onClick={recommend}>{recommending ? "Finding the best truck…" : candidates ? "↻ Re-run recommendation" : "Find best vehicle"}</button>
+
+        {candidates && (candidates.length ? <div className="candidate-list">{candidates.map(candidate => <div
+              className={"allocate-box candidate-card" + (candidate.recommended ? " best" : "")}
+              key={candidate.vehicle_id ?? `spot-${candidate.vendor_id}`}>
+            <div className="candidate-card-head">
+              <span className="rank-pill">{candidate.rank}</span>
+              <div>
+                <strong>{candidate.registration_number || "Spot hire"}</strong>
+                <small>{candidate.vendor_name || "Own fleet"}{candidate.vehicle_type ? ` · ${candidate.vehicle_type}` : ""} · {String(candidate.source).replaceAll("_", " ")}{candidate.dead_km != null ? ` · ${Number(candidate.dead_km).toFixed(1)} dead km` : ""}</small>
+                {candidate.fit_notes?.length ? <small className="text-late">{candidate.fit_notes.join(" ")}</small> : null}
+              </div>
+              {candidate.vehicle_id
+                ? <button className="secondary" disabled={busy} onClick={() => confirmVehicle(candidate)}>Confirm</button>
+                : <button className="secondary" disabled={busy} onClick={() => setSpotCandidate((current: any) => current?.vendor_id === candidate.vendor_id ? null : candidate)}>{spotCandidate?.vendor_id === candidate.vendor_id ? "Cancel" : "Confirm"}</button>}
+            </div>
+            <div className="margin-strip">
+              <div><span>Cost</span><strong>{rupees(candidate.expected_cost)}</strong>{candidate.estimated_cost ? <span className="estimate-note">estimated</span> : null}</div>
+              <div><span>Revenue</span><strong>{rupees(candidate.expected_revenue)}</strong></div>
+              <div><span>Profit</span><strong className={candidate.expected_profit >= 0 ? "good" : "bad"}>{rupees(candidate.expected_profit)}</strong></div>
+            </div>
+          </div>)}</div>
+          : <p className="pod-note">No vehicle or active vendor matched this consignment yet.</p>)}
+
+        {spotCandidate && <form className="action-form pod-capture" onSubmit={confirmSpotHire}>
+          <p className="eyebrow">CONFIRM SPOT HIRE · {spotCandidate.vendor_name}</p>
+          <div className="form-grid">
+            <label>Vehicle number<input name="vehicle_number" required /></label>
+            <label>Vehicle type<input name="vehicle_type" placeholder="20 ft SXL" /></label>
+            <label>Driver name<input name="driver_name" required /></label>
+            <label>Driver phone<input name="driver_phone" /></label>
+            <label>Agreed rate (₹)<input name="agreed_rate" type="number" step="any" defaultValue={spotCandidate.expected_cost} required /></label>
+            <label>Advance paid (₹)<input name="advance_amount" type="number" step="any" defaultValue="0" /></label>
+          </div>
+          <button className="primary full-button" disabled={busy}>Confirm hire & notify vendor</button>
+        </form>}
+
+        <p className="eyebrow" style={{ marginTop: 18 }}>OR ASSIGN DIRECTLY</p>
+        <div className="allocate-grid">
           <label>Vehicle<select value={vehicle} onChange={event => setVehicle(event.target.value)}><option value="">Select vehicle</option>{vehicles.map(record => <option key={record.id} value={record.id}>{record.registration_number} · {record.status}</option>)}</select></label>
         </div>
         <button className="primary full-button" disabled={busy || !driver || !vehicle} onClick={() => run(selected, "assign", { driver: Number(driver), vehicle: Number(vehicle) })}>Assign to order</button>
-      </div> : <div className="allocate-box"><p className="eyebrow">ALLOCATION</p><div className="tracking-grid"><div><span>Vehicle</span><strong>{selected.vehicle_number || "—"}</strong></div><div><span>Driver</span><strong>{selected.driver_name || "—"}</strong></div></div></div>}
+      </div> : <div className="allocate-box"><p className="eyebrow">ALLOCATION</p><div className="tracking-grid">
+          <div><span>Vehicle</span><strong>{selected.vehicle_number || "—"}</strong></div>
+          <div><span>Driver</span><strong>{selected.driver_name || "—"}</strong></div>
+          <div><span>Source</span><strong>{settlement?.vendor ? `Vendor · ${settlement.vendor.vendor}` : "Own fleet"}</strong></div>
+          <div><span>Hire status</span><strong>{settlement?.vendor ? settlement.vendor.hire_status : "—"}</strong></div>
+        </div></div>}
+
+      {settlement && (settlement.customer || settlement.vendor || settlement.vehicle.fuel || settlement.vehicle.trip_expenses) && <div className="record-section">
+        <p className="eyebrow">SETTLEMENT</p>
+        <div className="margin-strip">
+          <div><span>Revenue</span><strong>{rupees(settlement.revenue)}</strong></div>
+          <div><span>Total cost</span><strong>{rupees(settlement.total_cost)}</strong></div>
+          <div><span>Actual profit</span><strong className={settlement.actual_profit >= 0 ? "good" : "bad"}>{rupees(settlement.actual_profit)}</strong></div>
+        </div>
+        <div className="tracking-grid">
+          <div><span>Customer billed</span><strong>{settlement.customer ? rupees(settlement.customer.total_amount) : "Not invoiced"}</strong></div>
+          <div><span>Customer outstanding</span><strong>{settlement.customer ? rupees(settlement.customer.outstanding) : "—"}</strong></div>
+          <div><span>Vendor payable</span><strong>{settlement.vendor ? rupees(settlement.vendor.payable.total_payable) : "Own vehicle"}</strong></div>
+          <div><span>Vendor balance due</span><strong>{settlement.vendor ? rupees(settlement.vendor.payable.balance_due) : "—"}</strong></div>
+          <div><span>Fuel</span><strong>{rupees(settlement.vehicle.fuel)}</strong></div>
+          <div><span>On-road expenses</span><strong>{rupees(settlement.vehicle.trip_expenses)}</strong></div>
+        </div>
+      </div>}
       <div className="record-timeline"><p className="eyebrow">WAYPOINTS</p>
         {(selected.waypoints || []).map((point: any) => <div key={point.id}><i /><span><strong>{point.sequence}. {point.place_name}</strong><small>{point.waypoint_type} · {point.city}</small></span><time>{point.status}</time></div>)}
         {!(selected.waypoints || []).length && <div><i /><span><strong>Direct movement</strong><small>Pickup to drop without intermediate stops</small></span><time>—</time></div>}
@@ -1220,6 +1524,113 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
         <button className="secondary" disabled={busy || selected.status === "cancelled"} onClick={() => run(selected, "cancel", { reason: "Cancelled from dispatch desk" })}>Cancel order</button>
         <button className="secondary" disabled={busy || !selected.service_rate} onClick={() => run(selected, "reprice")}>Reprice</button>
         <button className="primary" disabled={busy || selected.status !== "completed"} onClick={() => raiseInvoice(selected)}>Raise invoice</button>
+      </div>
+    </aside></div>}
+  </div>;
+}
+
+const hireStatusLabel: Record<string, string> = {
+  draft: "Draft", confirmed: "Confirmed", billed: "Billed", settled: "Settled", cancelled: "Cancelled",
+};
+
+function HiresView({ reloadKey, onAction, openAction }: { reloadKey: number; onAction: Notify; openAction: (type: string) => void }) {
+  const [hires, setHires] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<any>(null);
+  const [payable, setPayable] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    setLoading(true);
+    fmsRequest<any>(wholeSet("hires/")).then(payload => {
+      const records = asList(payload);
+      setHires(records);
+      setTotal(asCount(payload, records));
+    }).finally(() => setLoading(false));
+  };
+  useEffect(load, [reloadKey]);
+
+  useEffect(() => {
+    if (!selected) { setPayable(null); return; }
+    let active = true;
+    fmsRequest<any>(`hires/${selected.id}/payable/`).then(payload => { if (active) setPayable(payload); }).catch(() => { if (active) setPayable(null); });
+    return () => { active = false; };
+  }, [selected?.id, selected?.status]);
+
+  const call = async (path: string, message: (payload: any) => string) => {
+    setBusy(true);
+    try {
+      const payload = await fmsRequest<any>(`hires/${selected.id}/${path}/`, { method: "POST", body: "{}" });
+      onAction(message(payload));
+      const updated = await fmsRequest<any>(`hires/${selected.id}/`);
+      setSelected(updated);
+      load();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 120) : "Action failed", "warn");
+    } finally { setBusy(false); }
+  };
+
+  const pending = hires.filter(hire => !["settled", "cancelled"].includes(hire.status));
+  const totalPayable = hires.reduce((sum, hire) => sum + Number(hire.agreed_rate || 0), 0);
+
+  return <div className="module-page">
+    <div className="module-title"><div><p className="eyebrow">OUTSIDE-SOURCED CAPACITY</p><h2>Vendor hires</h2><p>The commercial terms agreed with a transport owner for one outside-sourced trip, and its settlement.</p></div><button className="primary module-action" onClick={() => openAction("hire")}>＋ Add hire</button></div>
+    <div className="module-stats">
+      <div className="module-stat"><span>Total hires</span><strong>{loading ? "—" : total}</strong><small>Across all statuses</small></div>
+      <div className="module-stat"><span>Open</span><strong>{loading ? "—" : pending.length}</strong><small>Not yet settled or cancelled</small></div>
+      <div className="module-stat"><span>Agreed value</span><strong>{rupees(totalPayable)}</strong><small>Sum of agreed rates</small></div>
+    </div>
+    <section className="module-table-card">
+      <div className="module-toolbar"><div><strong>All hires</strong><span>{hires.length} records</span></div><button onClick={load}>↻ Refresh</button></div>
+      {loading ? <div className="data-state">Loading hires…</div> : !hires.length ? <div className="data-state">No vendor hires yet. Confirm a spot hire from an order, or add one here.</div> :
+      <div className="table-wrap"><table><thead><tr><th>Order</th><th>Vendor</th><th>Vehicle</th><th>Agreed rate</th><th>Basis</th><th>Status</th></tr></thead>
+        <tbody>{hires.map(hire => <tr key={hire.id} className="clickable" onClick={() => setSelected(hire)}>
+          <td><strong>{hire.order_number}</strong></td>
+          <td>{hire.vendor_name}</td>
+          <td>{hire.outside_vehicle_number || "—"}</td>
+          <td>{rupees(hire.agreed_rate)}</td>
+          <td>{String(hire.rate_basis).replaceAll("_", " ")}</td>
+          <td><span className={"status " + hire.status}>{hireStatusLabel[hire.status] || hire.status}</span></td>
+        </tr>)}</tbody></table></div>}
+    </section>
+
+    {selected && <div className="record-backdrop" onMouseDown={() => setSelected(null)}><aside className="record-drawer" onMouseDown={event => event.stopPropagation()}>
+      <div className="record-head"><div><p className="eyebrow">HIRE FOR {selected.order_number}</p><h2>{selected.vendor_name}</h2><span className={"status " + selected.status}>{hireStatusLabel[selected.status] || selected.status}</span></div><button className="panel-close" onClick={() => setSelected(null)}>×</button></div>
+      <div className="record-fields">
+        <div className="record-field"><span>Hire type</span><strong>{selected.hire_type === "contract" ? "Contract rate" : "Spot hire"}</strong></div>
+        <div className="record-field"><span>Vehicle</span><strong>{selected.outside_vehicle_number || "—"}{selected.outside_vehicle_type ? ` · ${selected.outside_vehicle_type}` : ""}</strong></div>
+        <div className="record-field"><span>Driver</span><strong>{selected.driver_name || "—"}{selected.driver_phone ? ` · ${selected.driver_phone}` : ""}</strong></div>
+        <div className="record-field"><span>Agreed rate</span><strong>{rupees(selected.agreed_rate)} ({String(selected.rate_basis).replaceAll("_", " ")})</strong></div>
+        <div className="record-field"><span>Loading / unloading</span><strong>{rupees(selected.loading_charge)} + {rupees(selected.unloading_charge)}</strong></div>
+        <div className="record-field"><span>Detention</span><strong>{rupees(selected.detention_rate_per_day)}/day, {selected.toll_responsibility === "ours" ? "toll on us" : "toll on vendor"}</strong></div>
+        <div className="record-field"><span>Advance paid</span><strong>{rupees(selected.advance_amount)}</strong></div>
+        <div className="record-field"><span>Payment terms</span><strong>{selected.payment_terms_days} days</strong></div>
+        <div className="record-field"><span>Created</span><strong>{stamp(selected.created_at)}</strong></div>
+        <div className="record-field"><span>Last updated</span><strong>{stamp(selected.updated_at)}</strong></div>
+      </div>
+
+      {payable && <div className="record-section">
+        <p className="eyebrow">PAYABLE BREAKDOWN</p>
+        <div className="margin-strip">
+          <div><span>Gross</span><strong>{rupees(payable.gross_amount)}</strong></div>
+          <div><span>TDS ({payable.tds_percent}%)</span><strong>{rupees(payable.tds_amount)}</strong></div>
+          <div><span>Balance due</span><strong className={payable.balance_due > 0 ? "bad" : "good"}>{rupees(payable.balance_due)}</strong></div>
+        </div>
+        <div className="tracking-grid">
+          <div><span>Base amount</span><strong>{rupees(payable.base_amount)}</strong></div>
+          <div><span>Detention</span><strong>{rupees(payable.detention_amount)}</strong></div>
+          <div><span>Extra charges</span><strong>{rupees(payable.extra_charges)}</strong></div>
+          <div><span>Deductions</span><strong>{rupees(payable.deductions)}</strong></div>
+          <div><span>Advance paid</span><strong>{rupees(payable.advance_amount)}</strong></div>
+          <div><span>Total payable</span><strong>{rupees(payable.total_payable)}</strong></div>
+        </div>
+      </div>}
+
+      <div className="record-actions">
+        <button className="secondary" disabled={busy || selected.status !== "draft"} onClick={() => call("confirm", () => "Hire confirmed")}>Confirm hire</button>
+        <button className="secondary" disabled={busy} onClick={() => call("send-confirmation", payload => `Vendor emailed at ${payload.to}`)}>Email vendor</button>
+        <button className="primary" disabled={busy || selected.status === "cancelled"} onClick={() => call("raise-bill", payload => payload.created ? `Bill ${payload.bill_number} raised` : `Already billed on ${payload.bill_number}`)}>Raise bill</button>
       </div>
     </aside></div>}
   </div>;
@@ -2235,7 +2646,7 @@ export default function Home() {
             <div className="section-heading"><div><p className="eyebrow">ACTIVE MOVEMENT</p><h2>Recent trips</h2></div><button className="link-button" onClick={() => show("All trips opened")}>View all trips →</button></div>
             <div className="table-wrap"><table><thead><tr><th>Trip & route</th><th>Vehicle</th><th>Driver</th><th>Status</th><th>ETA / POD</th><th>Revenue</th></tr></thead><tbody>{(dashboard?.recent_trips || []).map((t: any) => <tr key={t.id}><td><strong>{t.number}</strong><small>{t.origin} → {t.destination}</small></td><td>{t.vehicle_number}</td><td>{t.driver_name}</td><td><span className={`status ${t.status.toLowerCase().replaceAll("_","-")}`}>{t.status.replaceAll("_"," ")}</span></td><td>{t.planned_departure ? new Date(t.planned_departure).toLocaleString("en-IN") : "—"}</td><td><strong>₹{Number(t.estimated_cost || 0).toLocaleString("en-IN")}</strong></td></tr>)}</tbody></table></div>
           </section>
-        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Tracking" ? <TrackingView reloadKey={dataVersion} onAction={show} /> : active === "Fleets" ? <FleetsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
+        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Hires" ? <HiresView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Fleet" ? <FleetVehiclesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Tracking" ? <TrackingView reloadKey={dataVersion} onAction={show} /> : active === "Fleets" ? <FleetsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
       </section>
       {action && <ActionPanel type={action} onClose={() => setAction("")} onCreated={() => setDataVersion(v => v + 1)} />}
       {toast && <div className={"toast " + toast.tone}>{toast.tone === "warn" ? "⚠" : "✓"} {toast.text}</div>}
