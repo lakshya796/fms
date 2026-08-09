@@ -960,6 +960,14 @@ class GeometryValidationTests(TestCase):
         self.assertEqual([e["type"] for e in response.data["blank"]["elements"]], ["barcode"])
         self.assertTrue(all(entry["defaults"] for entry in response.data["palette"]))
 
+    def test_catalogue_still_answers_a_browser_from_before_the_designer(self):
+        """The page and this API deploy separately. A tab still running the old
+        editor reads `fields` and `defaults`; dropping them breaks that tab
+        mid-rollout for no reason."""
+        response = self.client.get("/api/v1/voucher-portal/templates/field-catalogue/")
+        self.assertIn("barcode", {field["key"] for field in response.data["fields"]})
+        self.assertEqual(response.data["defaults"]["version"], 2)
+
     def test_catalogue_starters_are_valid_layouts(self):
         response = self.client.get("/api/v1/voucher-portal/templates/field-catalogue/")
         for starter in response.data["starters"]:
