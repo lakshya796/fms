@@ -424,6 +424,21 @@ tr.clickable:hover td{background:#f8faf7}
 .geo-props input[type=file]{padding:5px;font-size:10px}
 .geo-props input:focus,.geo-props select:focus,.geo-props textarea:focus{border-color:var(--voucher-purple);box-shadow:0 0 0 3px #4e327d1a}
 
+/* Card-design picker inside the create-batch form: the same miniature the
+   library shows, so choosing a design means looking at it, not at a name. */
+.voucher-picker{border:1px solid var(--voucher-line);border-radius:10px;padding:12px 14px}
+.voucher-picker-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+.voucher-picker-head>span{font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--voucher-muted)}
+.voucher-picker-actions{display:flex;gap:14px}
+.voucher-picker-row{display:flex;gap:12px;overflow-x:auto;padding-bottom:4px}
+.voucher-picker-card{flex:none;display:flex;flex-direction:column;align-items:center;gap:6px;width:166px;
+  border:1.5px solid var(--voucher-line);border-radius:10px;background:#fff;padding:8px;cursor:pointer;text-align:center}
+.voucher-picker-card:hover{border-color:#c9bfe0}
+.voucher-picker-card.selected{border-color:var(--voucher-purple);box-shadow:0 0 0 3px #4e327d1a}
+.voucher-picker-card>span{font-size:11px;font-weight:600;color:var(--voucher-ink);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.voucher-picker-card>small{font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--voucher-purple)}
+.voucher-picker-card .card-surface{pointer-events:none}
 .voucher-template-thumb{display:flex;justify-content:center;align-items:center;background:#f6f4fa;border-radius:8px;padding:10px;overflow:hidden}
 .voucher-form-wide{grid-column:1 / -1}
 .voucher-form button.primary{background:var(--voucher-purple);height:42px}

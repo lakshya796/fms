@@ -156,11 +156,12 @@ the environment file and back-fills it on existing installs. Without it the
 settings default is `BASE_DIR/media`, i.e. inside the current release, so every
 deploy silently orphaned whatever had been uploaded.
 
-**Uploading artwork from the create form**: the create-batch form has its own
-"Voucher artwork" file input that `POST`s straight to `templates/` (multipart,
-`name` + `artwork`), gets back a template id, and includes it as `template` on
-the batch payload. A template created that way starts empty apart from the
-barcode, like any other.
+**Uploading artwork**: the designer's "new card design" form and its *Replace
+artwork* control both go straight to `templates/` (multipart, `name` +
+`artwork`), and a template created that way starts empty apart from the
+barcode, like any other. The create-batch form no longer has its own artwork
+input — it picks a design and offers shortcuts into the designer instead (see
+below), which is the same upload one screen along.
 
 Watch for this if you touch `VoucherTemplateSerializer`: DRF's `BooleanField`
 treats a key that's simply absent from a `multipart/form-data` body as `False`
@@ -376,6 +377,16 @@ so filtering never repaints a series out from under the reader.
 The template screen is a card designer, not a field-nudger. A design starts
 empty and the user builds it:
 
+- **From the create-batch form** — the form carries a card-design picker
+  (miniatures, not a dropdown of names), defaulting to the `is_default`
+  template so the plain "just make me a batch" path needs no interaction with
+  it. Next to it sit two shortcuts: *Edit this design* and *New design*. Both
+  hand the user to the designer and hand them back to the same half-filled
+  form afterwards, with the design they just worked on selected and the
+  preview invalidated. Because the design can change between preview and save,
+  `payload_hash` now covers the template's `field_geometry` as well as its id —
+  restyling a card after previewing invalidates the preview server-side, not
+  just in the browser.
 - **Library screen** — every design, each shown as a live miniature of its
   actual layout (the same renderer the designer canvas uses, so a thumbnail
   can't disagree with the editor). Create a new card with a name, a size
@@ -410,7 +421,14 @@ empty and the user builds it:
   geometry to see an edit *before* committing it, without creating a batch
   and burning real voucher numbers.
 - `POST templates/{id}/reset-geometry/` empties the card back to just the
-  barcode.
+  barcode. Administrator-only, unlike the rest of the designer.
+
+**Who may design.** Designing a card is part of creating a batch, and
+requesters are who use that form, so anyone with `create` may add a template
+and change its design (`POST`/`PATCH` on `templates/`). What stays
+administrator-only is which design *everyone else* gets — `is_default` and
+`is_active` — plus deleting a template and resetting a layout. A role without
+`create` (Report Viewer, Approver) can look but not touch.
 
 `validators.validate_field_geometry` is what stands between a careless drag
 and a print run of unreadable vouchers. It rejects: unknown element types,
@@ -455,7 +473,7 @@ department permissions").
 
 ## Tests
 
-`python manage.py test voucher_portal` — 115 tests: numbering (including a real
+`python manage.py test voucher_portal` — 119 tests: numbering (including a real
 concurrent-allocation test across 8 threads), discount validation, the
 preview-hash invalidation flow, the full draft → submit → approve → generate
 → issue → redeem workflow (both via `services/workflow.py` directly and
@@ -466,7 +484,8 @@ each), the template library, the card designer (a new template starting empty,
 user-added elements saving and rendering, out-of-bounds/unknown-type/unknown-
 variable/unknown-font/bad-colour/duplicate-id rejection, the mandatory barcode
 being un-deletable and un-hideable, catalogue/renderer agreement, unsaved-
-geometry preview, reset-to-empty, card resizing, and non-admin lockout), card
+geometry preview, reset-to-empty, card resizing, who may design a card versus
+who may change which design everyone else gets, and non-admin lockout), card
 rendering (every catalogue variable resolving for a real voucher, per-voucher
 barcode uniqueness, hidden and `hide_if_empty` elements, prefix/suffix, and
 version 1/2 layouts still printing), team-access management,

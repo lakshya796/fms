@@ -86,18 +86,39 @@ class VoucherTemplateViewSet(AdminWriteMixin, viewsets.ModelViewSet):
     # is a nested structure that a form encoder can't carry.
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
+    # Designing a card is part of creating a batch: the create-batch form picks
+    # a template and offers "edit this design" / "new design" next to it, and
+    # requesters are who use that form. So anyone with "create" may add a
+    # template and change its design. What stays administrator-only is which
+    # template everyone else gets - `is_default` and `is_active` - along with
+    # deleting one and resetting a layout.
+    DESIGNER_METHODS = ("POST", "PATCH", "PUT")
+    ADMIN_ONLY_FIELDS = ("is_default", "is_active")
+
     def get_permissions(self):
-        # Uploading artwork from the create-batch form (see app/voucher-portal)
-        # is a "create" action, not an admin-only one - anyone who can create a
-        # batch can add a template that way. Everything else stays admin-only.
-        if self.request.method == "POST":
+        if self.request.method in self.DESIGNER_METHODS:
             return [HasPortalAccess()]
         return super().get_permissions()
 
-    def perform_create(self, serializer):
+    def _require_designer(self):
         access = self.request.portal_access
         if not (access.can("admin") or access.can("create")):
-            raise PermissionDenied("You don't have permission to add a template.")
+            raise PermissionDenied("You don't have permission to change voucher card designs.")
+        return access
+
+    def perform_create(self, serializer):
+        self._require_designer()
+        serializer.save()
+
+    def perform_update(self, serializer):
+        access = self._require_designer()
+        if not access.can("admin"):
+            changed = [field for field in self.ADMIN_ONLY_FIELDS
+                       if field in serializer.validated_data
+                       and serializer.validated_data[field] != getattr(serializer.instance, field)]
+            if changed:
+                raise PermissionDenied(
+                    "Only an administrator can change which card design is the default or active.")
         serializer.save()
 
     @action(detail=False, methods=["get"], url_path="field-catalogue")

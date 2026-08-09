@@ -209,6 +209,16 @@ class PreviewAndGenerationTests(TestCase):
     def test_hash_stable_for_identical_payload(self):
         self.assertEqual(payload_hash(self._form()), payload_hash(self._form()))
 
+    def test_hash_changes_when_the_card_design_changes(self):
+        """The create form can open the designer and come back, so restyling
+        the card between preview and save has to invalidate the preview - the
+        template id alone stays the same."""
+        before = payload_hash(self._form())
+        self.template.field_geometry = designed_geometry(text_element(text="Restyled"))
+        self.template.save()
+        self.template.refresh_from_db()
+        self.assertNotEqual(before, payload_hash(self._form(template=self.template)))
+
     def test_create_draft_batch_creates_no_vouchers_yet(self):
         """A draft is just the submitted settings - no numbers burned, no
         vouchers created, until it's approved and generated."""
@@ -731,10 +741,11 @@ def _make_image_upload(width, height, name="art.png"):
 
 @override_settings(MEDIA_ROOT=tempfile.mkdtemp(prefix="voucher-artwork-tests-"))
 class ArtworkUploadTests(TestCase):
-    """Covers the create-batch form's inline artwork upload, which POSTs straight
-    to the templates/ endpoint - see validators.py for the size/ratio rules,
-    derived from the approved coupon's own proportions (2.74:1) - and serving
-    those files back through the API."""
+    """Covers uploading a card's background artwork - the designer's "new card"
+    form and its Replace artwork control both POST/PATCH straight to the
+    templates/ endpoint - see validators.py for the size/ratio rules, derived
+    from the card's own proportions - and serving those files back through the
+    API."""
 
     def setUp(self):
         self.user = User.objects.create_user("tester", password="x", is_staff=True)
@@ -1062,6 +1073,42 @@ class GeometryValidationTests(TestCase):
         client = APIClient()
         client.force_authenticate(requester)
         response = client.post(f"/api/v1/voucher-portal/templates/{self.template.id}/reset-geometry/")
+        self.assertEqual(response.status_code, 403)
+
+    def _as(self, role):
+        user = User.objects.create_user(f"designer_{role}", password="x")
+        dept = Department.objects.create(code=role[:4].upper(), name=role)
+        grant(user, role, [dept])
+        client = APIClient()
+        client.force_authenticate(user)
+        return client
+
+    def test_a_batch_creator_can_change_a_card_design(self):
+        """Designing is part of creating a batch - the create form offers
+        "edit this design" next to the template it picks - so a requester has
+        to be able to save one."""
+        client = self._as("requester")
+        response = client.patch(f"/api/v1/voucher-portal/templates/{self.template.id}/",
+                                {"field_geometry": designed_geometry(text_element())}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.template.refresh_from_db()
+        self.assertEqual(len(self.template.field_geometry["elements"]), 2)
+
+    def test_a_batch_creator_cannot_change_which_design_everyone_else_gets(self):
+        client = self._as("requester")
+        other = VoucherTemplate.objects.create(name="Someone else's")
+        self.assertEqual(client.patch(f"/api/v1/voucher-portal/templates/{other.id}/",
+                                      {"is_default": True}, format="json").status_code, 403)
+        self.assertEqual(client.patch(f"/api/v1/voucher-portal/templates/{other.id}/",
+                                      {"is_active": False}, format="json").status_code, 403)
+        other.refresh_from_db()
+        self.assertFalse(other.is_default)
+        self.assertTrue(other.is_active)
+
+    def test_a_reader_cannot_change_a_card_design(self):
+        client = self._as("report_viewer")
+        response = client.patch(f"/api/v1/voucher-portal/templates/{self.template.id}/",
+                                {"field_geometry": designed_geometry(text_element())}, format="json")
         self.assertEqual(response.status_code, 403)
 
 

@@ -54,6 +54,12 @@ def _canonical(value):
 
 def payload_hash(data: dict) -> str:
     canonical = {key: _canonical(data.get(key)) for key in HASH_FIELDS}
+    # The card's *design*, not just which template was chosen. The create form
+    # can now open the designer and come back, so "preview, restyle the card,
+    # save" would otherwise generate a batch that looks nothing like what was
+    # approved on screen.
+    template = data.get("template")
+    canonical["template_design"] = getattr(template, "field_geometry", None)
     blob = json.dumps(canonical, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()
 
