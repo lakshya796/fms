@@ -178,6 +178,8 @@ class VendorBill(Timestamped):
     with the TDS that Indian transporters deduct at source."""
     number = models.CharField(max_length=40, unique=True)
     vendor = models.ForeignKey("fleet.Vendor", on_delete=models.PROTECT, related_name="bills")
+    hire = models.ForeignKey("fleet.VehicleHire", on_delete=models.SET_NULL, null=True, blank=True, related_name="bills",
+                             help_text="The outside-sourced trip this bill settles, when it is a freight hire")
     branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True, blank=True, related_name="vendor_bills")
     bill_date = models.DateField(default=timezone.localdate)
     due_date = models.DateField(null=True, blank=True)

@@ -9,9 +9,10 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from accounting.models import JournalEntry
+from iam.models import OutboundMessage
 from .models import (ComplianceDocument, Customer, Driver, Fleet, FuelEntry, Invoice, Issue, MaintenanceSchedule, Order,
-                     Place, ProofOfDelivery, ServiceArea, ServiceRate, TripExpense, Vehicle, Vendor, Waypoint, Zone,
-                     haversine_km)
+                     Place, ProofOfDelivery, ServiceArea, ServiceRate, TripExpense, Vehicle, VehicleHire, Vendor,
+                     Waypoint, Zone, haversine_km)
 
 
 class BaseFleetOpsTest(TestCase):
@@ -452,6 +453,93 @@ class AutomaticInvoiceTests(OrderLifecycleTests):
                                          additional_charges=500, tax_amount=525, total_amount=1,
                                          due_date=timezone.localdate())
         self.assertEqual(invoice.total_amount, Decimal("11025.00"))
+
+
+class VendorHireTests(AutomaticInvoiceTests):
+    """Outside-sourced trips: the commercial terms, the payable, the bill and the
+    four-sided settlement sheet."""
+
+    def setUp(self):
+        super().setUp()
+        self.vendor = Vendor.objects.create(name="Anand Roadlines", code="VN-ANAND", email="ops@anandroadlines.example",
+                                            tds_percent=Decimal("2"))
+
+    def create_hire(self, order, **overrides):
+        payload = {"order": order.id, "vendor": self.vendor.id, "hire_type": "spot", "rate_basis": "trip",
+                  "agreed_rate": "12000", "outside_vehicle_number": "MH 12 AB 4455", "outside_vehicle_type": "20 ft SXL",
+                  "driver_name": "Suresh Patil", "driver_phone": "9812345670", "advance_amount": "3000"}
+        payload.update(overrides)
+        response = self.client.post("/api/v1/hires/", payload, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        return VehicleHire.objects.get(pk=response.data["id"])
+
+    def test_payable_breakdown_nets_advance_and_tds_off_the_agreed_rate(self):
+        order = self.create_order()
+        hire = self.create_hire(order, loading_charge="800", unloading_charge="800")
+        response = self.client.get(f"/api/v1/hires/{hire.id}/payable/")
+        self.assertEqual(response.status_code, 200)
+        data = response.data
+        self.assertEqual(data["gross_amount"], 13600.0)          # 12000 + 800 + 800
+        self.assertEqual(data["tds_amount"], 272.0)              # 2% of the gross
+        self.assertEqual(data["taxable_amount"], 13600.0)        # no deductions agreed
+        self.assertEqual(data["total_payable"], 13328.0)         # taxable - tds
+        self.assertEqual(data["balance_due"], 10328.0)           # total payable - the 3000 advance
+
+    def test_km_basis_multiplies_the_agreed_rate_by_the_orders_distance(self):
+        order = self.create_order()
+        hire = self.create_hire(order, rate_basis="km", agreed_rate="40", advance_amount="0")
+        response = self.client.get(f"/api/v1/hires/{hire.id}/payable/")
+        self.assertAlmostEqual(response.data["base_amount"], float(order.distance_km) * 40, places=2)
+
+    def test_raise_bill_creates_a_vendor_bill_and_posts_to_the_ledger(self):
+        order = self.create_order()
+        hire = self.create_hire(order)
+        first = self.client.post(f"/api/v1/hires/{hire.id}/raise-bill/", {}, format="json")
+        self.assertEqual(first.status_code, 201, first.data)
+        self.assertTrue(first.data["journal_entry"]["number"].startswith("JV-"))
+        hire.refresh_from_db()
+        self.assertEqual(hire.status, "billed")
+
+        second = self.client.post(f"/api/v1/hires/{hire.id}/raise-bill/", {}, format="json")
+        self.assertEqual(second.status_code, 200)
+        self.assertFalse(second.data["created"])
+        self.assertEqual(second.data["bill_number"], first.data["bill_number"])
+
+    def test_send_confirmation_records_an_outbound_message(self):
+        order = self.create_order()
+        hire = self.create_hire(order)
+        response = self.client.post(f"/api/v1/hires/{hire.id}/send-confirmation/", {}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["to"], "ops@anandroadlines.example")
+        message = OutboundMessage.objects.get(pk=response.data["message_id"])
+        self.assertIn(order.number, message.body)
+        self.assertIn("12000", message.body)
+
+    def test_send_confirmation_requires_a_vendor_email(self):
+        order = self.create_order()
+        no_email_vendor = Vendor.objects.create(name="No Email Transport", code="VN-NOMAIL")
+        hire = self.create_hire(order, vendor=no_email_vendor.id)
+        response = self.client.post(f"/api/v1/hires/{hire.id}/send-confirmation/", {}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_order_settlement_combines_customer_vendor_and_vehicle_sides(self):
+        order = self.create_order()
+        hire = self.create_hire(order)
+        self.deliver(order)
+        order.refresh_from_db()
+        self.client.post(f"/api/v1/orders/{order.id}/invoice/", {}, format="json")
+        self.client.post(f"/api/v1/hires/{hire.id}/raise-bill/", {}, format="json")
+        FuelEntry.objects.create(vehicle=self.vehicle, trip=order.trip, odometer_km=self.vehicle.current_odometer_km + 150,
+                                 volume_litres=Decimal("40"), rate_per_litre=Decimal("95"))
+
+        response = self.client.get(f"/api/v1/orders/{order.id}/settlement/")
+        self.assertEqual(response.status_code, 200)
+        data = response.data
+        self.assertEqual(data["customer"]["total_amount"], float(order.total_amount))
+        self.assertEqual(data["vendor"]["vendor"], "Anand Roadlines")
+        self.assertEqual(data["vendor"]["bill_status"], "raised")
+        self.assertEqual(data["vehicle"]["fuel"], 3800.0)
+        self.assertAlmostEqual(data["total_cost"], 12000.0 + 3800.0, places=2)
 
 
 class LaneProjectionTests(BaseFleetOpsTest):

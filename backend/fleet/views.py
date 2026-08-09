@@ -150,14 +150,16 @@ from rest_framework import status as http_status
 from rest_framework.exceptions import ValidationError
 from .models import (Vendor, ServiceArea, Zone, Place, Fleet, ServiceRate, ServiceQuote, Order, Waypoint,
                      TrackingActivity, ProofOfDelivery, FuelEntry, TripExpense, Issue, ComplianceDocument,
-                     MaintenanceSchedule, ORDER_STATUSES, haversine_km, money)
+                     MaintenanceSchedule, VehicleHire, ORDER_STATUSES, haversine_km, money)
 from .serializers import (VendorSerializer, ServiceAreaSerializer, ZoneSerializer, PlaceSerializer, FleetSerializer,
                           ServiceRateSerializer, ServiceQuoteSerializer, OrderSerializer, WaypointSerializer,
                           TrackingActivitySerializer, ProofOfDeliverySerializer, PublicOrderTrackingSerializer,
                           FuelEntrySerializer, TripExpenseSerializer, IssueSerializer, ComplianceDocumentSerializer,
-                          MaintenanceScheduleSerializer, QuoteRequestSerializer, ProjectionRequestSerializer)
+                          MaintenanceScheduleSerializer, VehicleHireSerializer, QuoteRequestSerializer, ProjectionRequestSerializer)
 from .billing import BillingError, build_invoice_from_order, project_lane
+from .vendor_billing import HireBillingError, confirmation_email, raise_vendor_bill, vendor_payable
 from accounting.services import PostingError, post_customer_invoice
+from iam import messaging as outbound_messaging
 
 
 class FilterableViewSet(viewsets.ModelViewSet):
@@ -510,6 +512,116 @@ class OrderViewSet(FilterableViewSet):
                          "journal_entry": ledger, "ledger_error": ledger_error,
                          "order": self.get_serializer(order).data},
                         status=http_status.HTTP_201_CREATED if created else http_status.HTTP_200_OK)
+
+    @action(detail=True, methods=["get"])
+    def settlement(self, request, pk=None):
+        """The four-sided settlement sheet: what the customer owes, what the vendor
+        is owed, what the driver is owed, and what the vehicle actually cost - on
+        one screen, so nobody has to open four modules to see if a trip is closed out.
+        """
+        order = self.get_object()
+        invoice = order.invoices.order_by("created_at").first()
+        customer_side = None
+        if invoice:
+            received = invoice.allocations.aggregate(value=Sum("amount"))["value"] or 0
+            customer_side = {"invoice_number": invoice.number, "total_amount": float(invoice.total_amount),
+                             "received": float(money(received)), "outstanding": float(money(invoice.total_amount - received)),
+                             "status": invoice.status}
+
+        hire = order.hires.exclude(status="cancelled").order_by("-created_at").first()
+        vendor_side = None
+        if hire:
+            payable = vendor_payable(hire)
+            bill = hire.bills.order_by("-created_at").first()
+            vendor_side = {"vendor": hire.vendor.name, "hire_status": hire.status, "payable": payable,
+                          "bill_number": bill.number if bill else None,
+                          "bill_status": bill.status if bill else None}
+
+        driver_side = None
+        if order.trip_id:
+            settlement = Settlement.objects.filter(trip_id=order.trip_id).order_by("-created_at").first()
+            if settlement:
+                driver_side = {"driver": settlement.driver.name, "advance_amount": float(settlement.advance_amount),
+                               "approved_expenses": float(settlement.approved_expenses),
+                               "net_payable": float(settlement.net_payable), "status": settlement.status}
+
+        fuel = FuelEntry.objects.filter(trip_id=order.trip_id).aggregate(value=Sum("amount"))["value"] or 0 if order.trip_id else 0
+        expenses = TripExpense.objects.filter(order=order).aggregate(value=Sum("amount"))["value"] or 0
+        vehicle_side = {"fuel": float(money(fuel)), "trip_expenses": float(money(expenses)),
+                        "total_cost": float(money(Decimal(str(fuel)) + Decimal(str(expenses))))}
+
+        revenue = money(invoice.total_amount if invoice else order.total_amount)
+        vendor_cost = money(vendor_side["payable"]["gross_amount"]) if vendor_side else Decimal("0")
+        total_cost = money(vendor_cost + Decimal(str(fuel)) + Decimal(str(expenses)))
+        actual_profit = money(revenue - total_cost)
+
+        return Response({
+            "order": order.number, "order_status": order.status,
+            "customer": customer_side, "vendor": vendor_side, "driver": driver_side, "vehicle": vehicle_side,
+            "revenue": float(revenue), "total_cost": float(total_cost), "actual_profit": float(actual_profit),
+            "settled": bool(customer_side and customer_side["outstanding"] <= 0
+                          and (not vendor_side or (vendor_side["payable"]["balance_due"] <= 0))),
+        })
+
+
+class VehicleHireViewSet(FilterableViewSet):
+    """The commercial terms of an outside-sourced trip, and its settlement."""
+    queryset = VehicleHire.objects.select_related("order", "vendor", "trip").all()
+    serializer_class = VehicleHireSerializer
+    required_permission = "operations.view"; required_write_permission = "operations.manage"
+    filter_fields = ["order", "vendor", "trip", "status", "hire_type"]
+    search_fields = ["outside_vehicle_number", "driver_name", "vendor__name"]
+
+    @action(detail=True, methods=["post"])
+    def confirm(self, request, pk=None):
+        hire = self.get_object()
+        if hire.status != "draft":
+            raise ValidationError(f"A hire that is {hire.status} cannot be confirmed again.")
+        hire.status = "confirmed"
+        hire.save(update_fields=["status", "updated_at"])
+        return Response(self.get_serializer(hire).data)
+
+    @action(detail=True, methods=["get"])
+    def payable(self, request, pk=None):
+        hire = self.get_object()
+        detention_days = request.query_params.get("detention_days")
+        return Response(vendor_payable(hire, detention_days=Decimal(detention_days) if detention_days else None))
+
+    @action(detail=True, methods=["post"], url_path="raise-bill")
+    @transaction.atomic
+    def raise_bill(self, request, pk=None):
+        hire = self.get_object()
+        try:
+            bill, created = raise_vendor_bill(hire, detention_days=request.data.get("detention_days"),
+                                             created_by=request.user.get_username())
+        except HireBillingError as error:
+            raise ValidationError(str(error))
+        ledger, ledger_error = None, ""
+        if request.data.get("post_to_ledger", True):
+            from accounting.services import post_vendor_bill
+            try:
+                entry = post_vendor_bill(bill, created_by=request.user.get_username())
+                ledger = {"number": entry.number, "id": entry.pk}
+            except PostingError as error:
+                ledger_error = str(error)
+        return Response({"bill_number": bill.number, "bill_id": bill.pk, "created": created,
+                         "journal_entry": ledger, "ledger_error": ledger_error,
+                         "hire": self.get_serializer(hire).data},
+                        status=http_status.HTTP_201_CREATED if created else http_status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="send-confirmation")
+    def send_confirmation(self, request, pk=None):
+        """Email the transport owner what they need to put a truck on the road,
+        recorded and resendable through the outbound-messages log."""
+        hire = self.get_object()
+        if not hire.vendor.email:
+            raise ValidationError(f"{hire.vendor.name} has no email address on file.")
+        subject, body = confirmation_email(hire)
+        message = outbound_messaging.send_email(to=hire.vendor.email, subject=subject, body=body,
+                                                template_key="vendor_confirmation", reference_type="hire",
+                                                reference_id=hire.pk, created_by=request.user.get_username())
+        return Response({"message_id": message.pk, "status": message.status, "to": message.to_address,
+                         "error": message.error})
 
 
 class WaypointViewSet(FilterableViewSet):

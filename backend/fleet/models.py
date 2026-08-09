@@ -902,3 +902,60 @@ class Indent(Timestamped):
 
     def __str__(self):
         return self.number
+
+
+# ---------------------------------------------------------------------------
+# Vendor hire commercials: the terms agreed with a transport owner for a single
+# outside-sourced trip, kept alongside the customer's rate card so margin on a
+# hired truck is computable rather than assumed.
+# ---------------------------------------------------------------------------
+
+HIRE_TYPES = [("contract", "Contract rate"), ("spot", "Spot hire")]
+HIRE_RATE_BASIS = [("trip", "Per trip"), ("km", "Per km"), ("day", "Per day"), ("ton", "Per ton"), ("other", "Other")]
+TOLL_RESPONSIBILITY = [("ours", "Fleet pays"), ("vendor", "Vendor pays")]
+HIRE_STATUSES = [("draft", "Draft"), ("confirmed", "Confirmed"), ("billed", "Billed"),
+                 ("settled", "Settled"), ("cancelled", "Cancelled")]
+
+
+class VehicleHire(Timestamped):
+    """The commercial terms agreed with a vendor for one outside-sourced trip.
+
+    `Order.vendor` says who; this says on what terms - the agreed rate, its basis,
+    detention and toll terms, and the advance - which is what `vendor_billing.py`
+    needs to compute a payable rather than have someone type one in by hand.
+    """
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="hires")
+    trip = models.ForeignKey(Trip, on_delete=models.SET_NULL, null=True, blank=True, related_name="hires")
+    vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name="hires")
+    hire_type = models.CharField(max_length=10, choices=HIRE_TYPES, default="spot")
+
+    outside_vehicle_number = models.CharField(max_length=20, blank=True)
+    outside_vehicle_type = models.CharField(max_length=60, blank=True)
+    outside_capacity_kg = models.PositiveIntegerField(default=0)
+    driver_name = models.CharField(max_length=120, blank=True)
+    driver_phone = models.CharField(max_length=20, blank=True)
+    driver_licence = models.CharField(max_length=40, blank=True)
+    gps_available = models.BooleanField(default=False)
+
+    agreed_rate = models.DecimalField(max_digits=12, decimal_places=2, default=0,
+                                      help_text="A total for 'per trip', otherwise a per-unit rate for rate_basis")
+    rate_basis = models.CharField(max_length=10, choices=HIRE_RATE_BASIS, default="trip")
+    loading_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    unloading_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    detention_free_hours = models.DecimalField(max_digits=6, decimal_places=2, default=24)
+    detention_rate_per_day = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    toll_responsibility = models.CharField(max_length=10, choices=TOLL_RESPONSIBILITY, default="vendor")
+    other_charges = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    advance_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    deductions = models.DecimalField(max_digits=12, decimal_places=2, default=0,
+                                     help_text="Agreed penalty for shortage, damage or delay")
+    payment_terms_days = models.PositiveIntegerField(default=30)
+    remarks = models.CharField(max_length=240, blank=True)
+    status = models.CharField(max_length=10, choices=HIRE_STATUSES, default="draft")
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["status", "-created_at"])]
+
+    def __str__(self):
+        return f"Hire {self.vendor.name} for {self.order.number}"
