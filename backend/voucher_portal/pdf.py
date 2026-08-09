@@ -33,7 +33,7 @@ def _date(value):
 
 
 def _draw_field(c, field, text, page_h):
-    if not field or text is None:
+    if not field or field.get("enabled", True) is False or text is None:
         return
     x = field.get("x", 0)
     y_top = field.get("y", 0)
@@ -48,7 +48,7 @@ def _draw_field(c, field, text, page_h):
 
 
 def _draw_multiline(c, field, lines):
-    if not field or not lines:
+    if not field or field.get("enabled", True) is False or not lines:
         return
     x = field.get("x", 0)
     y_top = field.get("y", 0)
@@ -82,6 +82,18 @@ def _draw_one(c, batch, voucher, geometry):
         c.drawImage(str(artwork_path), artwork.get("x", 0), -artwork.get("y", 0) - artwork["h"],
                    width=artwork["w"], height=artwork["h"], mask="auto")
 
+    # Optional panel behind the left-hand copy. Its alpha is part of the
+    # snapshotted template, so browser preview and generated PDFs agree.
+    panel = fields.get("content_panel", {})
+    if panel.get("enabled", True) is not False and panel.get("w"):
+        c.saveState()
+        if hasattr(c, "setFillAlpha"):
+            c.setFillAlpha(panel.get("opacity", 1))
+        c.setFillColor(_color(panel.get("fill"), "#FFFFFF"))
+        c.rect(panel.get("x", 0), -panel.get("y", 0) - panel.get("h", 0),
+               panel["w"], panel["h"], stroke=0, fill=1)
+        c.restoreState()
+
     if geometry.get("version") == 2:
         # Designer-owned copy. These layers are intentionally not connected to
         # a batch model: the confirmed text is snapshotted with the template.
@@ -95,6 +107,18 @@ def _draw_one(c, batch, voucher, geometry):
         _draw_field(c, fields.get("recipient_name"), getattr(voucher, "recipient_name", "") or "", coupon_h)
         _draw_field(c, fields.get("recipient_phone"), getattr(voucher, "recipient_phone", "") or "", coupon_h)
         _draw_field(c, fields.get("recipient_email"), getattr(voucher, "recipient_email", "") or "", coupon_h)
+        numeral = trim_decimal(batch.percentage_value) if batch.discount_type == "percentage" else f"{batch.fixed_value:,.0f}"
+        unit = "%" if batch.discount_type == "percentage" else batch.currency
+        _draw_field(c, fields.get("discount_numeral"), numeral, coupon_h)
+        _draw_field(c, fields.get("discount_unit"), unit, coupon_h)
+        _draw_field(c, fields.get("off_label"), "off", coupon_h)
+        _draw_field(c, fields.get("qualifier"), fields.get("qualifier", {}).get("static", "on the value of"), coupon_h)
+        cap = f"Up to {batch.currency} {batch.max_discount_value:,.2f}" if batch.discount_type == "percentage" and batch.max_discount_value else ""
+        _draw_field(c, fields.get("cap_line"), cap, coupon_h)
+        _draw_field(c, fields.get("valid_label"), fields.get("valid_label", {}).get("static", "Discount Valid Until :"), coupon_h)
+        _draw_field(c, fields.get("valid_date"), _date(batch.valid_to), coupon_h)
+        _draw_field(c, fields.get("restrictions_label"), fields.get("restrictions_label", {}).get("static", "Coupon Restrictions :"), coupon_h)
+        _draw_multiline(c, fields.get("restrictions_body"), textwrap.wrap(batch.restrictions, width=48)[:5])
     else:
         # Existing immutable batch snapshots continue to print exactly as they
         # did before the layer editor was introduced.
@@ -113,8 +137,12 @@ def _draw_one(c, batch, voucher, geometry):
             _draw_multiline(c, fields.get("restrictions_body"), textwrap.wrap(batch.restrictions, width=48)[:5])
 
     # --- barcode
+    plate = fields.get("barcode_plate", {})
+    if plate.get("enabled", True) is not False and plate.get("w"):
+        c.setFillColor(_color(plate.get("fill"), "#FFFFFF"))
+        c.rect(plate.get("x", 0), -plate.get("y", 0) - plate.get("h", 0), plate["w"], plate["h"], stroke=0, fill=1)
     bc_field = fields.get("barcode", {})
-    if bc_field.get("w"):
+    if bc_field.get("enabled", True) is not False and bc_field.get("w"):
         barcode = code128.Code128(voucher.number, barHeight=bc_field.get("h", 13) - 2, barWidth=0.28)
         scale = bc_field["w"] / max(barcode.width, 1)
         c.saveState()
@@ -122,6 +150,7 @@ def _draw_one(c, batch, voucher, geometry):
         c.scale(scale, 1)
         barcode.drawOn(c, 0, 0)
         c.restoreState()
+    _draw_field(c, fields.get("voucher_code"), voucher.number, coupon_h)
 
     c.restoreState()
 

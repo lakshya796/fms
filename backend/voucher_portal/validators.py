@@ -112,7 +112,12 @@ def validate_field_geometry(geometry, *, coupon_width=None, coupon_height=None):
         for numeric_key in _NUMERIC_FIELD_KEYS:
             if numeric_key in entry:
                 check_bounds(entry, numeric_key, key)
-    if "barcode" not in seen:
+        if "opacity" in entry:
+            opacity = _number(entry, "opacity", key)
+            if not 0 <= opacity <= 1:
+                raise GeometryError(f'{key}: "opacity" must be between 0 and 1.')
+    barcode = next((entry for entry in fields if entry.get("key") == "barcode"), None)
+    if barcode is None or barcode.get("enabled", True) is False:
         raise GeometryError('The mandatory "barcode" field is missing.')
 
     text_layers = geometry.get("text_layers", [])

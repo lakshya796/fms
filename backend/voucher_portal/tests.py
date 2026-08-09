@@ -3,6 +3,7 @@ import os
 import tempfile
 import threading
 import time
+from unittest import mock
 from datetime import timedelta
 from decimal import Decimal
 
@@ -571,6 +572,7 @@ class PortalApiWorkflowTests(TestCase):
                                     {**payload, "preview_hash": preview["X-Preview-Hash"]}, format="json")
         return response.data["id"]
 
+    @mock.patch.object(storage, "_S3_BUCKET", "")
     def test_full_http_workflow_to_issuing(self):
         batch_id = self._create_draft(quantity=5, discount_type="fixed", fixed_value="100",
                                       percentage_value=None, max_discount_value=None)
