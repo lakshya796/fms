@@ -4,6 +4,7 @@
 those terms plus whatever was approved against the trip into a payable, mirroring
 the shape of `billing.build_invoice_from_order` on the customer side.
 """
+from datetime import timedelta
 from decimal import Decimal
 from uuid import uuid4
 
@@ -125,7 +126,7 @@ def raise_vendor_bill(hire, *, detention_days=None, created_by=""):
     bill = VendorBill(
         number="VB-" + timezone.now().strftime("%y%m%d") + uuid4().hex[:6].upper(),
         vendor=hire.vendor, hire=hire, bill_date=timezone.localdate(),
-        due_date=timezone.localdate() + timezone.timedelta(days=hire.payment_terms_days),
+        due_date=timezone.localdate() + timedelta(days=hire.payment_terms_days),
         taxable_amount=money(payable["taxable_amount"]), gst_amount=Decimal("0"),
         tds_amount=money(payable["tds_amount"]), paid_amount=money(payable["advance_amount"]),
         narration=f"Vendor hire for order {hire.order.number}", status="raised")
