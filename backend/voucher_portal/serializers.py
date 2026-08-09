@@ -54,14 +54,21 @@ class VoucherTemplateSerializer(serializers.ModelSerializer):
     # `layout`, so opening a template authored before the designer existed
     # shows its fields as ordinary, editable elements instead of failing.
     layout = serializers.SerializerMethodField()
+    # Where to actually fetch the artwork. `artwork` is the file field's own
+    # media URL, which nothing serves in production (see the viewset's artwork
+    # action) - clients should load this API path instead.
+    artwork_path = serializers.SerializerMethodField()
 
     class Meta:
         model = VoucherTemplate
-        fields = ["id", "name", "artwork", "page_width", "page_height", "coupon_width", "coupon_height",
-                 "field_geometry", "layout", "is_default", "is_active"]
+        fields = ["id", "name", "artwork", "artwork_path", "page_width", "page_height",
+                 "coupon_width", "coupon_height", "field_geometry", "layout", "is_default", "is_active"]
 
     def get_layout(self, template):
         return to_elements(template.field_geometry)
+
+    def get_artwork_path(self, template):
+        return f"voucher-portal/templates/{template.pk}/artwork/" if template.artwork else None
 
     def _dimension(self, name, fallback):
         """This template's card size - the incoming value if it's being changed

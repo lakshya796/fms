@@ -11,7 +11,8 @@ import { fmsRequest, fmsRequestRaw, login, logout, UNAUTHORISED_EVENT } from "..
 type Department = { id: number; code: string; name: string };
 type VoucherType = { id: number; code: string; name: string; department: number };
 type Prefix = { id: number; prefix: string; label: string; department: number; voucher_type: number; sequence_length: number; next_sequence: number };
-type Template = { id: number; name: string; artwork: string | null; is_default: boolean; is_active: boolean };
+type Template = { id: number; name: string; artwork: string | null; artwork_path?: string | null;
+  is_default: boolean; is_active: boolean };
 type Batch = {
   id: number; name: string; department: number; department_name: string; voucher_type_name: string; quantity: number;
   discount_type: string; display_value: string; currency: string; valid_from: string; valid_to: string;
@@ -1136,6 +1137,31 @@ function ElementView({ element, scale, values }: { element: CardElement; scale: 
   }}>{lines.join("\n")}</div>;
 }
 
+/** Loads a template's artwork through the authenticated API.
+ *
+ *  The stored media URL is a 404 in production - nothing serves /media/ there
+ *  - and an <img src> can't carry the session token anyway, so the bytes are
+ *  fetched the same way voucher PDFs are and handed to the tag as an object
+ *  URL. */
+function useArtwork(path: string | null | undefined) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!path) { setUrl(null); return; }
+    let cancelled = false;
+    let objectUrl = "";
+    (async () => {
+      try {
+        const response = await fmsRequestRaw(path);
+        objectUrl = URL.createObjectURL(await response.blob());
+        if (cancelled) URL.revokeObjectURL(objectUrl);
+        else setUrl(objectUrl);
+      } catch { if (!cancelled) setUrl(null); }
+    })();
+    return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [path]);
+  return url;
+}
+
 /** The card itself: artwork, background and every element, drawn to scale.
  *  Shared by the designer canvas and the small previews on the library screen,
  *  so a thumbnail can never disagree with the editor about a layout. */
@@ -1164,7 +1190,8 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
   const [doc, setDoc] = useState<CardDocument | null>(null);
   const [saved, setSaved] = useState("");
   const [card, setCard] = useState({ w: 479.52, h: 178 });
-  const [artwork, setArtwork] = useState<string | null>(template.artwork);
+  const [artworkPath, setArtworkPath] = useState<string | null | undefined>(template.artwork_path);
+  const artwork = useArtwork(artworkPath);
 
   const [selected, setSelected] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
@@ -1201,7 +1228,7 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
           return;
         }
         setCatalogue(cat);
-        setArtwork(full.artwork);
+        setArtworkPath(full.artwork_path);
         setCard({ w: full.coupon_width || 479.52, h: full.coupon_height || 178 });
         setDoc(layout);
         setSaved(JSON.stringify(layout));
@@ -1484,7 +1511,7 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
       const body = new FormData();
       body.append("artwork", file);
       const updated = await fmsRequest<TemplateDetail>(`voucher-portal/templates/${template.id}/`, { method: "PATCH", body });
-      setArtwork(updated.artwork);
+      setArtworkPath(updated.artwork_path);
       setProofUrl("");
     } catch (err: any) { setError(parseApiError(err)); }
     finally { setBusy(""); }
@@ -1842,6 +1869,16 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
   </section>;
 }
 
+/** A library card's miniature. Its own component so each one can fetch its
+ *  artwork through the API independently. */
+function CardThumbnail({ template, document: doc, width, height, values }: {
+  template: Template; document: CardDocument; width: number; height: number; values: Record<string, string>;
+}) {
+  const artwork = useArtwork(template.artwork_path);
+  return <CardPreview document={doc} artwork={artwork} width={width} height={height}
+                      scale={200 / width} values={values} />;
+}
+
 function TemplatesScreen({ canAdmin }: { canAdmin: boolean }) {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [layouts, setLayouts] = useState<Record<number, { layout: CardDocument | null; w: number; h: number }>>({});
@@ -1958,8 +1995,8 @@ function TemplatesScreen({ canAdmin }: { canAdmin: boolean }) {
         const count = stored?.layout?.elements?.length ?? 0;
         return <div key={t.id} className="voucher-template-card">
           <div className="voucher-template-thumb">
-            {stored?.layout ? <CardPreview document={stored.layout} artwork={t.artwork} width={stored.w} height={stored.h}
-                                           scale={200 / stored.w} values={sampleValues} />
+            {stored?.layout ? <CardThumbnail template={t} document={stored.layout} width={stored.w}
+                                             height={stored.h} values={sampleValues} />
                     : <div className="voucher-template-placeholder">Layout unavailable</div>}
           </div>
           <strong>{t.name}</strong>

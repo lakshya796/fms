@@ -26,8 +26,16 @@ fi
 if [ ! -f "${APP_ROOT}/shared/fms.env" ]; then
     secret=$("${APP_ROOT}/venv/bin/python" -c 'import secrets; print(secrets.token_urlsafe(64))')
     umask 077
-    printf 'DJANGO_SECRET_KEY=%s\nDJANGO_DEBUG=false\nDJANGO_ALLOWED_HOSTS=api-test.phloz.app,127.0.0.1,localhost\nCORS_ALLOWED_ORIGINS=https://track.phloz.app\nUSE_SQLITE=true\n' "$secret" > "${APP_ROOT}/shared/fms.env"
+    printf 'DJANGO_SECRET_KEY=%s\nDJANGO_DEBUG=false\nDJANGO_ALLOWED_HOSTS=api-test.phloz.app,127.0.0.1,localhost\nCORS_ALLOWED_ORIGINS=https://track.phloz.app\nUSE_SQLITE=true\nMEDIA_ROOT=%s/shared/media\n' "$secret" "${APP_ROOT}" > "${APP_ROOT}/shared/fms.env"
 fi
+
+# Uploads (template artwork) must outlive the release they were uploaded into.
+# Without MEDIA_ROOT the settings default is BASE_DIR/media - inside the
+# release directory - so every deploy silently orphaned them. Installs created
+# before this line get it added here rather than needing a hand-edit.
+mkdir -p "${APP_ROOT}/shared/media"
+grep -q '^MEDIA_ROOT=' "${APP_ROOT}/shared/fms.env" \
+    || echo "MEDIA_ROOT=${APP_ROOT}/shared/media" >> "${APP_ROOT}/shared/fms.env"
 
 set -a
 . "${APP_ROOT}/shared/fms.env"

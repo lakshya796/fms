@@ -138,6 +138,24 @@ Artwork is optional — a card with none prints on its background colour. It doe
 **not** fall back to any bundled design: "I uploaded nothing" must not mean
 "you get someone else's branding".
 
+**Read artwork back from `artwork_path`, never `artwork`.** The `artwork` field
+is the `ImageField`'s own media URL, and *nothing serves `/media/` in
+production*: `urls.py` registers those routes through
+`django.conf.urls.static.static()`, which returns an empty list when `DEBUG` is
+false, and the nginx config only proxies the API's own prefix. That URL is
+therefore a 404 the moment it leaves a dev machine — it uploads fine and then
+can't be fetched. `GET templates/{id}/artwork/` streams the file through the
+authenticated API instead (same reasoning as the PDF downloads), and
+`artwork_path` on the serializer points at it. Because that needs an auth
+header, the browser fetches artwork as a blob and hands the `<img>` an object
+URL, exactly as it already does for PDFs.
+
+Uploads also need `MEDIA_ROOT` pointing outside the release directory —
+`deploy/ec2/deploy-fms.sh` writes `MEDIA_ROOT=/opt/phloz/fms/shared/media` into
+the environment file and back-fills it on existing installs. Without it the
+settings default is `BASE_DIR/media`, i.e. inside the current release, so every
+deploy silently orphaned whatever had been uploaded.
+
 **Uploading artwork from the create form**: the create-batch form has its own
 "Voucher artwork" file input that `POST`s straight to `templates/` (multipart,
 `name` + `artwork`), gets back a template id, and includes it as `template` on
@@ -437,7 +455,7 @@ department permissions").
 
 ## Tests
 
-`python manage.py test voucher_portal` — 111 tests: numbering (including a real
+`python manage.py test voucher_portal` — 115 tests: numbering (including a real
 concurrent-allocation test across 8 threads), discount validation, the
 preview-hash invalidation flow, the full draft → submit → approve → generate
 → issue → redeem workflow (both via `services/workflow.py` directly and
@@ -452,7 +470,8 @@ geometry preview, reset-to-empty, card resizing, and non-admin lockout), card
 rendering (every catalogue variable resolving for a real voucher, per-voucher
 barcode uniqueness, hidden and `hide_if_empty` elements, prefix/suffix, and
 version 1/2 layouts still printing), team-access management,
-and artwork upload (aspect ratio/size rejection, and the `is_active`
+and artwork upload (aspect ratio/size rejection, serving artwork back through
+the API, a clear error when the file has gone missing, and the `is_active`
 multipart regression noted above), and authenticated PDF downloads
 (streaming, auth, department scope, role gating, and a clear error when a
 stored file has gone missing).

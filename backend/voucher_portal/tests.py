@@ -729,10 +729,12 @@ def _make_image_upload(width, height, name="art.png"):
     return SimpleUploadedFile(name, buffer.getvalue(), content_type="image/png")
 
 
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp(prefix="voucher-artwork-tests-"))
 class ArtworkUploadTests(TestCase):
     """Covers the create-batch form's inline artwork upload, which POSTs straight
     to the templates/ endpoint - see validators.py for the size/ratio rules,
-    derived from the approved coupon's own proportions (2.74:1)."""
+    derived from the approved coupon's own proportions (2.74:1) - and serving
+    those files back through the API."""
 
     def setUp(self):
         self.user = User.objects.create_user("tester", password="x", is_staff=True)
@@ -776,6 +778,41 @@ class ArtworkUploadTests(TestCase):
                                     {"name": "Too small", "artwork": upload}, format="multipart")
         self.assertEqual(response.status_code, 400)
         self.assertIn("artwork", response.data)
+
+    def test_artwork_is_served_through_the_api_not_a_media_url(self):
+        """The `artwork` field's own media URL is a 404 in production: Django
+        registers those routes through `static()`, which does nothing when
+        DEBUG is false, and nginx only proxies the API's prefix. `artwork_path`
+        is the route that actually works."""
+        upload = _make_image_upload(1987, 725)
+        created = self.client.post("/api/v1/voucher-portal/templates/",
+                                   {"name": "With artwork", "artwork": upload}, format="multipart")
+        self.assertEqual(created.status_code, 201, created.data)
+        path = created.data["artwork_path"]
+        self.assertEqual(path, f"voucher-portal/templates/{created.data['id']}/artwork/")
+
+        response = self.client.get(f"/api/v1/{path}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/png")
+        self.assertTrue(b"".join(response.streaming_content).startswith(b"\x89PNG"))
+
+    def test_a_template_without_artwork_has_no_artwork_path(self):
+        template = VoucherTemplate.objects.create(name="Plain")
+        response = self.client.get(f"/api/v1/voucher-portal/templates/{template.id}/")
+        self.assertIsNone(response.data["artwork_path"])
+        self.assertEqual(self.client.get(f"/api/v1/voucher-portal/templates/{template.id}/artwork/").status_code, 400)
+
+    def test_artwork_missing_from_disk_reports_clearly(self):
+        """Files uploaded before MEDIA_ROOT moved out of the release directory
+        are gone after a deploy - say so instead of raising a 500."""
+        upload = _make_image_upload(1987, 725)
+        created = self.client.post("/api/v1/voucher-portal/templates/",
+                                   {"name": "Orphaned", "artwork": upload}, format="multipart")
+        template = VoucherTemplate.objects.get(pk=created.data["id"])
+        os.remove(template.artwork.path)
+        response = self.client.get(f"/api/v1/voucher-portal/templates/{template.id}/artwork/")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("missing", str(response.data))
 
     def test_non_admin_requester_can_still_upload_artwork_for_their_own_batch(self):
         requester = User.objects.create_user("plain_requester", password="x")
