@@ -116,7 +116,7 @@ class Command(BaseCommand):
         vehicles = {}
         for registration, vehicle_type, capacity, make_model, odometer in VEHICLES:
             vehicles[registration] = Vehicle.objects.update_or_create(registration_number=registration, defaults={
-                "vehicle_type": vehicle_type, "capacity_kg": capacity, "make_model": make_model, "ownership": "owned",
+                "vehicle_type": vehicle_type, "capacity_kg": capacity, "make_model": make_model, "ownership": "own",
                 "status": "available", "fuel_type": "diesel", "current_odometer_km": odometer,
                 "fastag_id": "FT" + registration.replace(" ", "")[-6:], "insurance_expiry": today + timedelta(days=95),
                 "permit_expiry": today + timedelta(days=210)})[0]

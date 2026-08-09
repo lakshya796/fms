@@ -30,6 +30,16 @@ else:
     }}
 AUTH_PASSWORD_VALIDATORS=[{"NAME":"django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},{"NAME":"django.contrib.auth.password_validation.MinimumLengthValidator","OPTIONS":{"min_length":10}},{"NAME":"django.contrib.auth.password_validation.CommonPasswordValidator"},{"NAME":"django.contrib.auth.password_validation.NumericPasswordValidator"}]
 LANGUAGE_CODE="en-in"; TIME_ZONE="Asia/Kolkata"; USE_I18N=True; USE_TZ=True
+# Outbound mail (vendor confirmations, and any future alert). Defaults to printing to
+# the console so local work and tests need no mail server; point EMAIL_HOST at SES's
+# SMTP interface (or any SMTP relay) in production - no extra package required.
+EMAIL_BACKEND=os.getenv("EMAIL_BACKEND","django.core.mail.backends.console.EmailBackend")
+EMAIL_HOST=os.getenv("EMAIL_HOST","")
+EMAIL_PORT=int(os.getenv("EMAIL_PORT","587"))
+EMAIL_HOST_USER=os.getenv("EMAIL_HOST_USER","")
+EMAIL_HOST_PASSWORD=os.getenv("EMAIL_HOST_PASSWORD","")
+EMAIL_USE_TLS=os.getenv("EMAIL_USE_TLS","true").lower()=="true"
+DEFAULT_FROM_EMAIL=os.getenv("DEFAULT_FROM_EMAIL","no-reply@phloz.example")
 STATIC_URL="/static/"; STATIC_ROOT=BASE_DIR/"staticfiles"; DEFAULT_AUTO_FIELD="django.db.models.BigAutoField"
 # Local fallback for voucher-portal artwork and PDFs, used only while
 # VOUCHER_PORTAL_S3_BUCKET is unset (see voucher_portal/storage.py). MEDIA_ROOT

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Customer, Driver, Vehicle, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement, SalesQuote, MaintenanceWorkOrder
+from .models import Customer, Driver, Vehicle, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement, SalesQuote, MaintenanceWorkOrder, VehicleStatusLog
 
 class MaintenanceWorkOrderSerializer(serializers.ModelSerializer):
     vehicle_number = serializers.CharField(source="vehicle.registration_number", read_only=True)
@@ -12,7 +12,16 @@ class CustomerSerializer(serializers.ModelSerializer):
 class DriverSerializer(serializers.ModelSerializer):
     class Meta: model = Driver; fields = "__all__"
 class VehicleSerializer(serializers.ModelSerializer):
-    class Meta: model = Vehicle; fields = "__all__"
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True, default="")
+    current_place_name = serializers.CharField(source="current_place.name", read_only=True, default="")
+    current_trip_number = serializers.CharField(source="current_trip.number", read_only=True, default="")
+    class Meta: model = Vehicle; fields = "__all__"; read_only_fields = ["status_since"]
+
+
+class VehicleStatusLogSerializer(serializers.ModelSerializer):
+    place_name = serializers.CharField(source="place.name", read_only=True, default="")
+    trip_number = serializers.CharField(source="trip.number", read_only=True, default="")
+    class Meta: model = VehicleStatusLog; fields = "__all__"
 class LorryReceiptSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     class Meta: model = LorryReceipt; fields = "__all__"

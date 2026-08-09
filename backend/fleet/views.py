@@ -8,8 +8,11 @@ from rest_framework.permissions import AllowAny
 from rest_framework.decorators import permission_classes
 from iam.filtering import apply_filters
 from iam.permissions import HasModulePermission, requires
-from .models import Customer, Driver, Vehicle, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement, SalesQuote, MaintenanceWorkOrder
-from .serializers import CustomerSerializer, DriverSerializer, VehicleSerializer, LorryReceiptSerializer, TripSerializer, TrackingEventSerializer, InvoiceSerializer, SettlementSerializer, SalesQuoteSerializer, MaintenanceWorkOrderSerializer
+from .models import (Customer, Driver, Vehicle, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement, SalesQuote,
+                     MaintenanceWorkOrder, VEHICLE_STATUSES, set_vehicle_status)
+from .serializers import (CustomerSerializer, DriverSerializer, VehicleSerializer, VehicleStatusLogSerializer,
+                          LorryReceiptSerializer, TripSerializer, TrackingEventSerializer, InvoiceSerializer,
+                          SettlementSerializer, SalesQuoteSerializer, MaintenanceWorkOrderSerializer)
 
 @requires("reports.view")
 @api_view(["GET"])
@@ -78,6 +81,25 @@ class VehicleViewSet(viewsets.ModelViewSet):
     permission_classes = [HasModulePermission]
     required_permission = "masters.view"; required_write_permission = "masters.manage"
     queryset = Vehicle.objects.all().order_by("registration_number"); serializer_class = VehicleSerializer
+
+    @action(detail=True, methods=["post"], url_path="set-status")
+    def set_status(self, request, pk=None):
+        """Manual status change for states nothing else drives automatically -
+        breakdown, workshop, driver unavailable, idle, and so on."""
+        vehicle = self.get_object()
+        status_value = request.data.get("status")
+        if status_value not in dict(VEHICLE_STATUSES):
+            raise ValidationError(f"status must be one of {[code for code, _ in VEHICLE_STATUSES]}")
+        set_vehicle_status(vehicle, status_value, reason=request.data.get("reason", ""),
+                           changed_by=request.user.get_username(),
+                           latitude=request.data.get("latitude"), longitude=request.data.get("longitude"))
+        return Response(self.get_serializer(vehicle).data)
+
+    @action(detail=True, methods=["get"], url_path="status-history")
+    def status_history(self, request, pk=None):
+        vehicle = self.get_object()
+        records = vehicle.status_log.select_related("place", "trip").all()[:200]
+        return Response(VehicleStatusLogSerializer(records, many=True).data)
 class LorryReceiptViewSet(viewsets.ModelViewSet):
     permission_classes = [HasModulePermission]
     required_permission = "operations.view"; required_write_permission = "operations.manage"
@@ -96,7 +118,7 @@ class TripViewSet(viewsets.ModelViewSet):
     def dispatch_trip(self, request, pk=None):
         trip = self.get_object()
         trip.status = "dispatched"; trip.actual_departure = timezone.now(); trip.save()
-        trip.vehicle.status = "on_trip"; trip.vehicle.save(update_fields=["status"])
+        set_vehicle_status(trip.vehicle, "running", trip=trip, reason="Trip dispatched")
         trip.driver.status = "on_trip"; trip.driver.save(update_fields=["status"])
         trip.lorry_receipts.update(status="dispatched")
         return Response(self.get_serializer(trip).data)
@@ -105,7 +127,7 @@ class TripViewSet(viewsets.ModelViewSet):
     def close(self, request, pk=None):
         trip = self.get_object()
         trip.status = "closed"; trip.arrival_at = trip.arrival_at or timezone.now(); trip.save()
-        trip.vehicle.status = "available"; trip.vehicle.save(update_fields=["status"])
+        set_vehicle_status(trip.vehicle, "available", trip=None, reason="Trip closed")
         trip.driver.status = "available"; trip.driver.save(update_fields=["status"])
         trip.lorry_receipts.update(status="delivered")
         return Response(self.get_serializer(trip).data)
@@ -302,6 +324,8 @@ class OrderViewSet(FilterableViewSet):
             raise ValidationError("Both a driver and a vehicle are required to assign an order.")
         order.status = "assigned"
         order.save()
+        trip = order.ensure_trip()
+        set_vehicle_status(order.vehicle, "allocated", trip=trip, reason=f"Assigned to order {order.number}")
         order.log("assigned", "ORDER_ASSIGNED", f"{order.vehicle.registration_number} · {order.driver.name}")
         return Response(self.get_serializer(order).data)
 
@@ -314,8 +338,13 @@ class OrderViewSet(FilterableViewSet):
         order.status = "dispatched"
         order.dispatched_at = timezone.now()
         order.save()
-        Vehicle.objects.filter(pk=order.vehicle_id).update(status="on_trip")
+        trip = order.ensure_trip()
+        if trip:
+            trip.status = "dispatched"
+            trip.actual_departure = order.dispatched_at
+            trip.save(update_fields=["status", "actual_departure", "updated_at"])
         Driver.objects.filter(pk=order.driver_id).update(status="on_trip")
+        set_vehicle_status(order.vehicle, "running", trip=trip, place=order.pickup, reason="Order dispatched")
         order.log("dispatched", "ORDER_DISPATCHED", f"Loaded at {order.pickup.name}", city=order.pickup.city)
         return Response(self.get_serializer(order).data)
 
@@ -426,8 +455,12 @@ class OrderViewSet(FilterableViewSet):
         order.completed_at = timezone.now()
         order.save()
         order.waypoints.filter(status="pending").update(status="completed", actual_arrival=timezone.now())
+        if order.trip_id:
+            order.trip.status = "closed"
+            order.trip.arrival_at = order.completed_at
+            order.trip.save(update_fields=["status", "arrival_at", "updated_at"])
         if order.vehicle_id:
-            Vehicle.objects.filter(pk=order.vehicle_id).update(status="available")
+            set_vehicle_status(order.vehicle, "available", trip=None, place=order.dropoff, reason="Order completed")
         if order.driver_id:
             Driver.objects.filter(pk=order.driver_id).update(status="available")
         order.log("completed", "ORDER_COMPLETED", proof.receiver_name if proof else "Delivered", city=order.dropoff.city)
@@ -436,8 +469,13 @@ class OrderViewSet(FilterableViewSet):
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
         order = self.get_object()
+        was_committed = order.status in ("assigned", "dispatched")
         order.status = "cancelled"
         order.save(update_fields=["status", "updated_at"])
+        if was_committed and order.vehicle_id and order.vehicle.current_trip_id == order.trip_id:
+            # Only release the vehicle if it is still on this order's own trip - a
+            # vehicle already reallocated elsewhere should not be yanked back.
+            set_vehicle_status(order.vehicle, "available", trip=None, reason="Order cancelled")
         order.log("cancelled", "ORDER_CANCELLED", request.data.get("reason", ""))
         return Response(self.get_serializer(order).data)
 
@@ -794,6 +832,7 @@ class IndentViewSet(FilterableViewSet):
             order.save(update_fields=["distance_km"])
         if order.service_rate:
             order.price_from_rate_card()
+        order.ensure_trip()
         order.log("assigned", "ORDER_FROM_INDENT", f"Converted from indent {indent.number}", city=order.pickup.city)
         indent.order = order
         indent.status = "converted"

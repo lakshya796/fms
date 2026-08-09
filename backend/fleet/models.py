@@ -34,13 +34,101 @@ class Driver(Timestamped):
     monthly_salary=models.DecimalField(max_digits=10,decimal_places=2,default=0); daily_allowance=models.DecimalField(max_digits=8,decimal_places=2,default=0)
     def __str__(self): return self.name
 
+OWNERSHIP_TYPES = [("own", "Own vehicle"), ("attached", "Attached vehicle"), ("leased", "Leased"),
+                   ("outside", "Outside-sourced (vendor hire)")]
+# The spec's core principle: own, attached and outside-sourced are handled differently
+# everywhere cost and margin are computed, so this is a closed choice, not free text.
+
+VEHICLE_STATUSES = [
+    ("available", "Available"), ("idle", "Idle"), ("allocated", "Allocated"), ("running", "Running"),
+    ("loaded", "Loaded"), ("unloaded", "Unloaded"), ("under_maintenance", "Under maintenance"),
+    ("driver_unavailable", "Driver unavailable"), ("breakdown", "Breakdown"),
+    ("at_customer_location", "At customer location"), ("awaiting_loading", "Awaiting loading"),
+    ("awaiting_unloading", "Awaiting unloading"), ("inactive", "Inactive"),
+    # "on_trip" predates this vocabulary and is kept as a synonym of "running" so
+    # existing dispatch/close call sites and historical data keep working.
+    ("on_trip", "On trip"),
+]
+
+
 class Vehicle(Timestamped):
     registration_number=models.CharField(max_length=20,unique=True); vehicle_type=models.CharField(max_length=60); capacity_kg=models.PositiveIntegerField(default=0)
-    ownership=models.CharField(max_length=20,default="owned"); status=models.CharField(max_length=20,default="available"); gps_device_id=models.CharField(max_length=100,blank=True)
+    ownership=models.CharField(max_length=20,choices=OWNERSHIP_TYPES,default="own")
+    vendor=models.ForeignKey("Vendor",on_delete=models.SET_NULL,null=True,blank=True,related_name="vehicles",
+                             help_text="Set when this vehicle is attached or outside-sourced")
+    owner_name=models.CharField(max_length=180,blank=True,help_text="Transport owner, when not this fleet's own vendor record")
+    contract_reference=models.CharField(max_length=80,blank=True)
+    status=models.CharField(max_length=20,choices=VEHICLE_STATUSES,default="available"); gps_device_id=models.CharField(max_length=100,blank=True)
+    status_since=models.DateTimeField(default=timezone.now)
+    current_place=models.ForeignKey("Place",on_delete=models.SET_NULL,null=True,blank=True,related_name="vehicles_here")
+    current_trip=models.ForeignKey("Trip",on_delete=models.SET_NULL,null=True,blank=True,related_name="vehicles_now")
+    current_latitude=models.DecimalField(max_digits=9,decimal_places=6,null=True,blank=True)
+    current_longitude=models.DecimalField(max_digits=9,decimal_places=6,null=True,blank=True)
+    expected_available_at=models.DateTimeField(null=True,blank=True)
     insurance_expiry=models.DateField(null=True,blank=True); permit_expiry=models.DateField(null=True,blank=True)
     make_model=models.CharField(max_length=120,blank=True); chassis_number=models.CharField(max_length=40,blank=True); engine_number=models.CharField(max_length=40,blank=True)
     fuel_type=models.CharField(max_length=20,default="diesel"); fastag_id=models.CharField(max_length=40,blank=True); current_odometer_km=models.PositiveIntegerField(default=0)
     def __str__(self): return self.registration_number
+
+
+class VehicleStatusLog(Timestamped):
+    """One row per status the vehicle has held, so running/idle/available time can be
+    reconstructed later without re-deriving it from scattered updates."""
+    vehicle = models.ForeignKey(Vehicle, on_delete=models.CASCADE, related_name="status_log")
+    status = models.CharField(max_length=20, choices=VEHICLE_STATUSES)
+    trip = models.ForeignKey("Trip", on_delete=models.SET_NULL, null=True, blank=True, related_name="vehicle_status_events")
+    place = models.ForeignKey("Place", on_delete=models.SET_NULL, null=True, blank=True, related_name="vehicle_status_events")
+    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    reason = models.CharField(max_length=240, blank=True)
+    changed_by = models.CharField(max_length=150, blank=True)
+    started_at = models.DateTimeField(default=timezone.now)
+    ended_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-started_at", "-id"]
+        indexes = [models.Index(fields=["vehicle", "-started_at"])]
+
+    def __str__(self):
+        return f"{self.vehicle_id} -> {self.status} @ {self.started_at:%Y-%m-%d %H:%M}"
+
+
+_UNSET = object()
+
+
+def set_vehicle_status(vehicle, status, *, trip=_UNSET, place=None, latitude=None, longitude=None,
+                       reason="", changed_by="", expected_available_at=None):
+    """Move a vehicle to a new status and keep the log honest: close the open row,
+    open the next one, and update the denormalised fields the availability views read.
+
+    `trip` defaults to leaving the vehicle's current trip alone; pass `trip=None`
+    explicitly to clear it (a vehicle going "available" should not still point at the
+    trip it just finished). `place`, `latitude` and `longitude` update only when given,
+    since most transitions know the vehicle's status but not a fresh position.
+    """
+    now = timezone.now()
+    trip_value = vehicle.current_trip_id and vehicle.current_trip if trip is _UNSET else trip
+    if vehicle.status != status:
+        VehicleStatusLog.objects.filter(vehicle=vehicle, ended_at__isnull=True).update(ended_at=now)
+        VehicleStatusLog.objects.create(vehicle=vehicle, status=status, trip=trip_value if trip_value else None,
+                                        place=place, latitude=latitude, longitude=longitude, reason=reason,
+                                        changed_by=changed_by, started_at=now)
+        vehicle.status = status
+        vehicle.status_since = now
+    if trip is not _UNSET:
+        vehicle.current_trip = trip
+    if place is not None:
+        vehicle.current_place = place
+    if latitude is not None:
+        vehicle.current_latitude = latitude
+    if longitude is not None:
+        vehicle.current_longitude = longitude
+    if expected_available_at is not None:
+        vehicle.expected_available_at = expected_available_at
+    vehicle.save(update_fields=["status", "status_since", "current_trip", "current_place",
+                                "current_latitude", "current_longitude", "expected_available_at", "updated_at"])
+    return vehicle
+
 
 class LorryReceipt(Timestamped):
     number=models.CharField(max_length=30,unique=True); customer=models.ForeignKey(Customer,on_delete=models.PROTECT,related_name="lorry_receipts")
@@ -398,6 +486,27 @@ class Order(Timestamped):
     def log(self, status, code, details="", latitude=None, longitude=None, city=""):
         return TrackingActivity.objects.create(order=self, status=status, code=code, details=details,
                                                latitude=latitude, longitude=longitude, city=city, recorded_at=timezone.now())
+
+    def ensure_trip(self):
+        """The one trip carrying this consignment's cost stack.
+
+        Every order that has a driver and a vehicle gets exactly one trip, created the
+        first time this is called and reused after. Fuel, on-road expenses and vendor
+        hire all key off `Trip`, so an order that never gets a trip never accumulates a
+        real cost - this is what keeps `order.trip` from staying permanently null.
+        """
+        if self.trip_id:
+            return self.trip
+        if not self.driver_id or not self.vehicle_id:
+            return None
+        trip = Trip.objects.create(
+            number="TRP-" + timezone.now().strftime("%y%m%d") + uuid4().hex[:6].upper(),
+            vehicle=self.vehicle, driver=self.driver,
+            origin=self.pickup.city or self.pickup.name, destination=self.dropoff.city or self.dropoff.name,
+            planned_departure=self.scheduled_at or timezone.now(), status="planned")
+        self.trip = trip
+        self.save(update_fields=["trip", "updated_at"])
+        return trip
 
     def current_position(self):
         """The most recent tracking activity that carries a GPS fix, if any.
