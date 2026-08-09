@@ -12,7 +12,9 @@ type Department = { id: number; code: string; name: string };
 type VoucherType = { id: number; code: string; name: string; department: number };
 type Prefix = { id: number; prefix: string; label: string; department: number; voucher_type: number; sequence_length: number; next_sequence: number };
 type Template = { id: number; name: string; artwork: string | null; artwork_path?: string | null;
-  is_default: boolean; is_active: boolean };
+  is_default: boolean; is_active: boolean;
+  // Sent by every templates endpoint; optional so an older API can't crash the picker.
+  layout?: CardDocument; field_geometry?: CardDocument; coupon_width?: number; coupon_height?: number };
 type Batch = {
   id: number; name: string; department: number; department_name: string; voucher_type_name: string; quantity: number;
   discount_type: string; display_value: string; currency: string; valid_from: string; valid_to: string;
@@ -27,12 +29,13 @@ type Voucher = {
 };
 type Access = { role: string; actions: string[]; department_ids: number[] | null; is_django_staff: boolean };
 type Notice = { id: number; batch: number; batch_name: string; kind: string; message: string; read_at: string | null; created_at: string };
+type DesignIntent = { mode: "edit"; template: Template } | { mode: "new" } | null;
 type AccessGrant = { id: number; user: string; username: string; role: string; department_ids: number[]; department_names: string[]; is_active: boolean };
 
 const EMPTY_FORM = {
   name: "", department: "", voucher_type: "", description: "", quantity: "10",
   discount_type: "fixed", percentage_value: "", max_discount_value: "", fixed_value: "", currency: "AED",
-  valid_to: "", restrictions: "", terms: "", prefix: "",
+  valid_to: "", restrictions: "", terms: "", prefix: "", template: "",
 };
 
 const ROLE_LABELS: Record<string, string> = {
@@ -144,6 +147,11 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
   const [departments, setDepartments] = useState<Department[]>([]);
   const [voucherTypes, setVoucherTypes] = useState<VoucherType[]>([]);
   const [prefixes, setPrefixes] = useState<Prefix[]>([]);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  // Set when the create-batch form sends the user off to design a card; it
+  // brings them back to the half-filled form afterwards.
+  const [designIntent, setDesignIntent] = useState<DesignIntent>(null);
+  const [sampleValues, setSampleValues] = useState<Record<string, string>>({});
   const [batches, setBatches] = useState<Batch[]>([]);
   const [loadingBatches, setLoadingBatches] = useState(false);
 
@@ -158,11 +166,6 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
   const [previewError, setPreviewError] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
-
-  const [artworkPreviewUrl, setArtworkPreviewUrl] = useState("");
-  const [templateId, setTemplateId] = useState<number | "">("");
-  const [artworkUploading, setArtworkUploading] = useState(false);
-  const [artworkError, setArtworkError] = useState("");
 
   const [activeBatch, setActiveBatch] = useState<Batch | null>(null);
   const [vouchers, setVouchers] = useState<Voucher[]>([]);
@@ -188,6 +191,23 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
       fmsRequest<{ results: Prefix[] } | Prefix[]>("voucher-portal/prefixes/?page_size=200"),
     ]);
     setDepartments(unwrap(d)); setVoucherTypes(unwrap(t)); setPrefixes(unwrap(p));
+    await loadTemplates();
+    // Sample values come from the server so a picker thumbnail shows the same
+    // stand-ins as the designer canvas and the PDF proof.
+    try {
+      const catalogue = await fmsRequest<Catalogue>("voucher-portal/templates/field-catalogue/");
+      if (usableCatalogue(catalogue)) {
+        setSampleValues(Object.fromEntries(catalogue.variables.map(v => [v.key, v.sample])));
+      }
+    } catch { /* an older API has no catalogue; thumbnails just show fewer values */ }
+  };
+
+  const loadTemplates = async () => {
+    const data = await fmsRequest<{ results: Template[] } | Template[]>(
+      "voucher-portal/templates/?page_size=100");
+    const list = unwrap(data).filter(template => template.is_active);
+    setTemplates(list);
+    return list;
   };
 
   const loadBatches = async () => {
@@ -234,10 +254,21 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
   };
 
   const resetCreateForm = () => {
-    setForm(EMPTY_FORM); setPreviewHash(""); setPreviewUrl(""); setPreviewError(""); setCreateError("");
-    setArtworkPreviewUrl(""); setTemplateId(""); setArtworkError("");
+    // Keeps the picked card design: it's a choice about the batch, not a value
+    // typed into it, and re-picking it on every new batch is busywork.
+    setForm({ ...EMPTY_FORM, template: form.template });
+    setPreviewHash(""); setPreviewUrl(""); setPreviewError(""); setCreateError("");
   };
 
+  // Pick the default design up front so the form is usable without touching
+  // the picker at all - it stays the "just make me a batch" path.
+  useEffect(() => {
+    if (!templates.length || form.template) return;
+    const fallback = templates.find(t => t.is_default) || templates[0];
+    if (fallback) setForm(f => ({ ...f, template: String(fallback.id) }));
+  }, [templates, form.template]);
+
+  const selectedTemplate = templates.find(t => String(t.id) === form.template) || null;
   const departmentPrefixes = prefixes.filter(p => !form.department || String(p.department) === form.department);
   const departmentTypes = voucherTypes.filter(t => !form.department || String(t.department) === form.department);
   const visibleDepartments = access?.department_ids
@@ -249,24 +280,6 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
     setPreviewHash(""); setPreviewUrl(""); // any change invalidates the preview
   };
 
-  const uploadArtwork = async (file: File) => {
-    setArtworkUploading(true); setArtworkError("");
-    setArtworkPreviewUrl(URL.createObjectURL(file));
-    setPreviewHash(""); setPreviewUrl(""); // new artwork invalidates any existing preview
-    try {
-      const body = new FormData();
-      body.append("name", `${form.name || "Custom"} artwork`);
-      body.append("artwork", file);
-      const template = await fmsRequest<{ id: number }>("voucher-portal/templates/", { method: "POST", body });
-      setTemplateId(template.id);
-    } catch (error: any) {
-      setArtworkError(parseApiError(error));
-      setArtworkPreviewUrl(""); setTemplateId("");
-    } finally { setArtworkUploading(false); }
-  };
-
-  const clearArtwork = () => { setArtworkPreviewUrl(""); setTemplateId(""); setArtworkError(""); setPreviewHash(""); setPreviewUrl(""); };
-
   const buildPayload = () => ({
     name: form.name, department: form.department, voucher_type: form.voucher_type, description: form.description,
     quantity: form.quantity, discount_type: form.discount_type,
@@ -275,7 +288,7 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
     fixed_value: form.discount_type === "fixed" ? form.fixed_value : undefined,
     currency: form.currency, valid_to: form.valid_to,
     restrictions: form.restrictions, terms: form.terms, prefix: form.prefix,
-    template: templateId || undefined,
+    template: form.template || undefined,
   });
 
   const runPreview = async () => {
@@ -375,7 +388,7 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
     <nav className="voucher-nav">
       <button type="button" className={"link-button" + (screen === "batches" ? " active" : "")} onClick={() => { setScreen("batches"); setActiveBatch(null); }}>Batches</button>
       {access.actions.includes("report") && <button type="button" className={"link-button" + (screen === "reports" ? " active" : "")} onClick={() => setScreen("reports")}>Reports</button>}
-      {(access.actions.includes("admin") || access.actions.includes("create")) && <button type="button" className={"link-button" + (screen === "templates" ? " active" : "")} onClick={() => setScreen("templates")}>Templates</button>}
+      {(access.actions.includes("admin") || access.actions.includes("create")) && <button type="button" className={"link-button" + (screen === "templates" ? " active" : "")} onClick={() => { setDesignIntent(null); setScreen("templates"); }}>Templates</button>}
       {access.actions.includes("admin") && <button type="button" className={"link-button" + (screen === "access" ? " active" : "")} onClick={() => setScreen("access")}>Team access</button>}
     </nav>
     <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
@@ -395,7 +408,10 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
           </div>)}
         </div>}
       </div>
-      {screen === "batches" && !activeBatch && access.actions.includes("create") &&
+      {/* Hidden while a design shortcut has taken over the screen: it belongs to
+          the batch form, and pressing it there would quietly discard the draft
+          the user is coming back to. */}
+      {screen === "batches" && !activeBatch && !designIntent && access.actions.includes("create") &&
         <button className="primary" onClick={() => { setShowCreate(v => !v); resetCreateForm(); }}>{showCreate ? "Close" : "New batch"}</button>}
       <button className="secondary" onClick={onSignOut}>Sign out</button>
     </div>
@@ -404,8 +420,19 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
   if (screen === "reports") {
     return <main className="voucher-page">{nav}<ReportsScreen departments={departments} voucherTypes={voucherTypes} /></main>;
   }
-  if (screen === "templates") {
-    return <main className="voucher-page">{nav}<TemplatesScreen canAdmin={access.actions.includes("admin")} /></main>;
+  if (screen === "templates" || designIntent) {
+    return <main className="voucher-page">{nav}
+      <TemplatesScreen canAdmin={access.actions.includes("admin")} intent={designIntent}
+        onIntentDone={async designed => {
+          setDesignIntent(null);
+          const list = await loadTemplates();
+          // Come back to the form the shortcut was launched from, with the
+          // design they just worked on selected and the preview invalidated -
+          // it was rendered against the old design.
+          if (designed && list.some(t => t.id === designed)) updateForm({ template: String(designed) });
+          else { setPreviewHash(""); setPreviewUrl(""); }
+        }} />
+    </main>;
   }
   if (screen === "access") {
     return <main className="voucher-page">{nav}<AccessScreen departments={departments} /></main>;
@@ -577,16 +604,36 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
           <textarea rows={3} value={form.terms} onChange={e => updateForm({ terms: e.target.value })} />
         </label>
 
-        <label className="voucher-form-wide">Voucher artwork <small>(optional — uses the default ADCOOP design if not provided; JPEG or PNG, 2.74:1, 1500–4000px wide, up to 5 MB)</small>
-          <input type="file" accept="image/png,image/jpeg" disabled={artworkUploading}
-            onChange={e => e.target.files?.[0] && uploadArtwork(e.target.files[0])} />
-        </label>
-        {artworkUploading && <div className="data-state voucher-form-wide">Uploading…</div>}
-        {artworkError && <div className="form-error voucher-form-wide">{artworkError}</div>}
-        {artworkPreviewUrl && !artworkUploading && <div className="voucher-form-wide voucher-artwork-preview">
-          <img src={artworkPreviewUrl} alt="Uploaded artwork" />
-          <button type="button" className="link-button" onClick={clearArtwork}>Remove — use default design</button>
-        </div>}
+        <div className="voucher-form-wide voucher-picker">
+          <div className="voucher-picker-head">
+            <span>Card design</span>
+            <div className="voucher-picker-actions">
+              {selectedTemplate && <button type="button" className="link-button"
+                onClick={() => setDesignIntent({ mode: "edit", template: selectedTemplate })}>
+                Edit this design
+              </button>}
+              <button type="button" className="link-button" onClick={() => setDesignIntent({ mode: "new" })}>
+                New design
+              </button>
+            </div>
+          </div>
+          <div className="voucher-picker-row">
+            {templates.map(template => (
+              <button key={template.id} type="button"
+                      className={"voucher-picker-card" + (String(template.id) === form.template ? " selected" : "")}
+                      onClick={() => updateForm({ template: String(template.id) })}>
+                <CardThumbnail template={template} document={cardDocument(template)}
+                               width={template.coupon_width || 479.52} height={template.coupon_height || 178}
+                               display={150} values={sampleValues} />
+                <span>{template.name}</span>
+                {template.is_default && <small>Default</small>}
+              </button>
+            ))}
+            {templates.length === 0 && <div className="data-state">
+              No card designs yet — “New design” creates one.
+            </div>}
+          </div>
+        </div>
 
         {previewError && <div className="form-error voucher-form-wide">{previewError}</div>}
         <button type="button" className="secondary voucher-form-wide" disabled={previewing} onClick={runPreview}>
@@ -990,11 +1037,8 @@ type Catalogue = {
   fonts: string[]; alignments: Align[]; coupon_presets: CouponPreset[];
   starters: Starter[]; blank: CardDocument;
 };
-type TemplateSummary = Template & {
-  layout?: CardDocument; field_geometry?: CardDocument;
-  coupon_width?: number; coupon_height?: number;
-};
-type TemplateDetail = TemplateSummary;
+type TemplateSummary = Template;
+type TemplateDetail = Template;
 
 const API_TOO_OLD = "This screen needs a newer version of the voucher portal API than the server is running. " +
   "Ask an administrator to deploy the latest backend, then reload.";
@@ -1871,15 +1915,21 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
 
 /** A library card's miniature. Its own component so each one can fetch its
  *  artwork through the API independently. */
-function CardThumbnail({ template, document: doc, width, height, values }: {
-  template: Template; document: CardDocument; width: number; height: number; values: Record<string, string>;
+function CardThumbnail({ template, document: doc, width, height, values, display = 200 }: {
+  template: Template; document: CardDocument | null; width: number; height: number;
+  values: Record<string, string>; display?: number;
 }) {
   const artwork = useArtwork(template.artwork_path);
   return <CardPreview document={doc} artwork={artwork} width={width} height={height}
-                      scale={200 / width} values={values} />;
+                      scale={display / width} values={values} />;
 }
 
-function TemplatesScreen({ canAdmin }: { canAdmin: boolean }) {
+function TemplatesScreen({ canAdmin, intent, onIntentDone }: {
+  canAdmin: boolean;
+  /** Set when the create-batch form sent the user here to design a card. */
+  intent?: DesignIntent;
+  onIntentDone?: (designedTemplateId?: number) => void;
+}) {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [layouts, setLayouts] = useState<Record<number, { layout: CardDocument | null; w: number; h: number }>>({});
   const [catalogue, setCatalogue] = useState<Catalogue | null>(null);
@@ -1914,6 +1964,15 @@ function TemplatesScreen({ canAdmin }: { canAdmin: boolean }) {
       .then(cat => setCatalogue(usableCatalogue(cat) ? cat : null))
       .catch(() => setCatalogue(null));
   }, []);
+
+  useEffect(() => {
+    if (!intent) return;
+    if (intent.mode === "edit") setEditing(intent.template);
+    else setShowNew(true);
+  }, [intent]);
+
+  /** Hands the user back to whatever sent them here. */
+  const finishIntent = (templateId?: number) => onIntentDone?.(templateId);
 
   const sampleValues = useMemo(() => {
     const map: Record<string, string> = {};
@@ -1954,16 +2013,26 @@ function TemplatesScreen({ canAdmin }: { canAdmin: boolean }) {
   };
 
   if (editing) {
-    return <TemplateDesigner template={editing} canAdmin={canAdmin} onClose={() => { setEditing(null); load(); }}
+    return <TemplateDesigner template={editing} canAdmin={canAdmin}
+                             onClose={() => {
+                               const designed = editing.id;
+                               setEditing(null);
+                               if (intent) finishIntent(designed); else load();
+                             }}
                              onSaved={load} />;
   }
 
   return <section className="voucher-card">
     <div className="voucher-card-head">
       <h2>Voucher cards</h2>
-      <button type="button" className="primary designer-btn" onClick={() => setShowNew(open => !open)}>
-        {showNew ? "Cancel" : "New card design"}
-      </button>
+      <div className="designer-actions">
+        {intent && <button type="button" className="secondary designer-btn" onClick={() => finishIntent()}>
+          Back to the batch
+        </button>}
+        <button type="button" className="primary designer-btn" onClick={() => setShowNew(open => !open)}>
+          {showNew ? "Cancel" : "New card design"}
+        </button>
+      </div>
     </div>
 
     {showNew && <div className="voucher-inline-form" style={{ marginBottom: 18 }}>
