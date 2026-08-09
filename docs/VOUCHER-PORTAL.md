@@ -75,38 +75,74 @@ that's already been printed and handed to someone
 
 ## Template and PDF rendering
 
-`voucher_portal/geometry.py` holds the default field layout, measured directly
-from the attached `DiscountCoupon.pdf`'s content stream — a 479.52 × 178pt
-coupon on a 594.72 × 792pt page, with every dynamic field positioned in points
-from the coupon's top-left corner. `voucher_portal/pdf.py` draws a **fixed,
-known set of fields** (discount numeral, cap line, valid-until, restrictions,
-barcode, code) at those configurable positions — not a generic layout
-interpreter. That's enough for Phase 3's "editable field positions" to be a
-geometry change, not new code, as long as new designs stay within this field
-set.
+A template's `field_geometry` is a **layout document** (`voucher_portal/
+geometry.py`). Version 3 — what the designer writes — is a free-form,
+ordered list of elements the user added, positioned in points from the card's
+top-left corner:
 
-Artwork upload rules (`voucher_portal/validators.py`), derived from the
-template's proportions:
+```jsonc
+{
+  "version": 3,
+  "coupon": {"w": 479.52, "h": 178},   // card size (also on the model)
+  "background": "#FFFFFF",
+  "artwork": {"x": 0, "y": 0, "w": 479.52, "h": 178},
+  "elements": [                         // array order == paint order
+    {"id": "barcode", "type": "barcode", "x": 289.5, "y": 128, "w": 150, "h": 24},
+    {"id": "t1", "type": "text",  "text": "EID GIFT", "x": 16, "y": 24, "size": 22, ...},
+    {"id": "f1", "type": "field", "source": "valid_to", "prefix": "Valid until ", ...}
+  ]
+}
+```
+
+Element types are `text` (wording the user types), `field` (a voucher/batch
+variable resolved at print time), `box`, `line` and `barcode`.
+`voucher_portal/pdf.py` is a **generic interpreter** — it draws whatever is in
+`elements` — so a new design needs no renderer change.
+
+**Nothing is prefilled.** A new template is an empty card carrying only the
+mandatory barcode (`geometry.blank_geometry()`, which is `VoucherTemplate.
+field_geometry`'s model default). The old fixed ADCOOP field set is still
+available, but only as an opt-in *starter* in the designer that drops those
+fields in as ordinary, editable elements.
+
+**The barcode is mandatory and unique per voucher.** It encodes
+`PortalVoucher.number`, which is `unique=True` and allocated under a row lock
+(`services/numbering.py`), so two vouchers can never carry the same barcode.
+`validate_field_geometry` refuses to save a layout with no visible barcode, or
+one smaller than 40 × 8pt (too small to scan reliably).
+
+**Versions 1 and 2** (the old fixed `fields` catalogue, plus `text_layers`)
+are still readable: `geometry.to_elements()` converts them to the version 3
+shape, preserving position, size, font, colour and paint order. That conversion
+runs on the way into the renderer, so a batch generated before the designer
+existed — which carries its own immutable version 2 `template_snapshot` —
+keeps printing exactly as it did. It also runs on the way to the browser as the
+serializer's read-only `layout` field, so an old template opens in the designer
+as editable elements. Nothing is rewritten on disk until the user saves.
+
+Card size is per template (`coupon_width` / `coupon_height`, with presets in
+the designer). The page a card is printed on grows to fit if a design is
+bigger than the stored page size, and the designer's own PDF proof is rendered
+trimmed to the card itself (`build_voucher_pdf(..., fit_page=True)`).
+
+Artwork upload rules (`voucher_portal/validators.py`):
 
 | Rule | Value |
 | --- | --- |
-| Required aspect ratio | 2.74 : 1 (± 2%) |
-| Width | 1500–4000 px (1987px = the template's native size at 300 DPI) |
+| Required aspect ratio | the template's own card ratio (± 2%), 2.74 : 1 by default |
+| Width | 1500–4000 px (1987px = the ADCOOP coupon's native size at 300 DPI) |
 | Formats | JPEG, PNG, RGB |
 | Max size | 5 MB |
 
-Until a real design is uploaded, every template falls back to
-`voucher_portal/assets/default_artwork.png` — the sample artwork from the
-attached PDF.
+Artwork is optional — a card with none prints on its background colour. It does
+**not** fall back to any bundled design: "I uploaded nothing" must not mean
+"you get someone else's branding".
 
-**Uploading artwork from the create form**: the frontend doesn't route through a
-separate template-management screen for Phase 1 — the create-batch form has its
-own "Voucher artwork" file input that `POST`s straight to `templates/`
-(multipart, `name` + `artwork`), gets back a template id, and includes it as
-`template` on the batch payload. A brand-new template created this way still
-gets the coupon's known field positions automatically (`VoucherTemplate.
-field_geometry`'s model default is the same `DEFAULT_FIELD_GEOMETRY`, not an
-empty dict) — only the artwork image changes, never where things are drawn.
+**Uploading artwork from the create form**: the create-batch form has its own
+"Voucher artwork" file input that `POST`s straight to `templates/` (multipart,
+`name` + `artwork`), gets back a template id, and includes it as `template` on
+the batch payload. A template created that way starts empty apart from the
+barcode, like any other.
 
 Watch for this if you touch `VoucherTemplateSerializer`: DRF's `BooleanField`
 treats a key that's simply absent from a `multipart/form-data` body as `False`
@@ -317,32 +353,55 @@ below 3:1 contrast on white, which is why both charts ship direct value
 labels and a table view. Series colour follows the *measure*, not its rank,
 so filtering never repaints a series out from under the reader.
 
-## Template library and layout editor (§5 "Configurable templates")
+## Card designer (§5 "Configurable templates")
 
-Templates supported multipart CRUD from Phase 1 (the create-form's inline
-artwork upload). On top of that:
+The template screen is a card designer, not a field-nudger. A design starts
+empty and the user builds it:
 
-- **Library screen** — list every template, set which is `is_default`,
-  activate/deactivate old designs.
-- **Layout editor** — drag any field to reposition it, or type exact
-  coordinates. The canvas is the coupon's own coordinate space (points from
-  the top-left corner) scaled to fit, so what's dragged is what prints.
-  Alongside position it edits font size, colour, line spacing, box
-  width/height, and the qualifier's static text.
-- `GET templates/field-catalogue/` is the single source of truth for which
-  fields exist: `pdf.py` draws exactly these keys, `validate_field_geometry`
-  accepts exactly these keys, and the editor offers exactly these keys. A
-  field the renderer can't draw therefore can't be introduced by editing
-  geometry.
-- `GET|POST templates/{id}/preview/` renders a sample coupon — POST unsaved
+- **Library screen** — every design, each shown as a live miniature of its
+  actual layout (the same renderer the designer canvas uses, so a thumbnail
+  can't disagree with the editor). Create a new card with a name, a size
+  preset and optional artwork, and land straight in the designer.
+- **Designer** — add text, voucher fields, boxes, lines and barcodes from a
+  palette; drag to move, drag a corner to resize, nudge with the arrow keys
+  (Shift = 10pt, Alt = finer than the 0.5pt snap); reorder, hide, duplicate
+  and delete via the layers list; align to any card edge or centre; undo/redo
+  (Ctrl+Z / Ctrl+Shift+Z). The canvas is the card's own coordinate space
+  scaled to fit and every element is drawn the way it prints — same fonts,
+  sizes, colours and sample values as the PDF — so what you drag really is
+  what prints.
+- **Live PDF proof** — the server-rendered card, refreshed ~0.9s after you
+  stop editing, sitting under the canvas. It is the source of truth, and it
+  surfaces the same validation the save will run, so a design can't be a
+  surprise at print time.
+- **Per-element controls** — wording or bound variable (with `before`/`after`
+  text around it), position, size, font, colour, alignment, line spacing, line
+  limit, fill/opacity/border/radius for boxes, bar colour and whether the
+  number prints under the barcode. Any element can be set to *only show when*
+  a chosen variable has a value (`hide_if_empty`), which is how a
+  "Restrictions:" label disappears on a batch with no restrictions.
+- **Starters** — "Blank card" and "ADCOOP coupon", both of which drop in as
+  ordinary editable elements. Opt-in only.
+- `GET templates/field-catalogue/` is the single source of truth for what the
+  designer may offer: element types, bindable variables (with the sample
+  values the canvas and the proof both draw), fonts, alignments, card-size
+  presets, the blank document and the starters. `pdf.py` draws exactly these,
+  `validate_field_geometry` accepts exactly these — so the browser can't offer
+  a font or a variable the renderer will refuse.
+- `GET|POST templates/{id}/preview/` renders a sample card — POST unsaved
   geometry to see an edit *before* committing it, without creating a batch
   and burning real voucher numbers.
-- `POST templates/{id}/reset-geometry/` restores the measured default layout.
+- `POST templates/{id}/reset-geometry/` empties the card back to just the
+  barcode.
 
 `validators.validate_field_geometry` is what stands between a careless drag
-and a print run of unreadable vouchers: it rejects unknown field keys,
-duplicates, non-numeric values, negatives, and any position outside the
-coupon's own dimensions.
+and a print run of unreadable vouchers. It rejects: unknown element types,
+duplicate ids, unknown variables, fonts reportlab doesn't have, malformed
+colours, non-numeric values, negatives, any position outside the card's own
+dimensions, empty text elements, a missing or hidden barcode, and a barcode
+too small to scan. The font and colour checks matter more than they look:
+both raise inside the *background* PDF-generation thread, which means a batch
+that fails minutes after a layout that looked fine on screen.
 
 One gotcha worth knowing if you extend the template endpoints: they accept
 `MultiPartParser`, `FormParser` **and** `JSONParser`. Multipart carries the
@@ -378,16 +437,21 @@ department permissions").
 
 ## Tests
 
-`python manage.py test voucher_portal` — 86 tests: numbering (including a real
+`python manage.py test voucher_portal` — 111 tests: numbering (including a real
 concurrent-allocation test across 8 threads), discount validation, the
 preview-hash invalidation flow, the full draft → submit → approve → generate
 → issue → redeem workflow (both via `services/workflow.py` directly and
 through the HTTP API), self-approval blocking, role and department-scope
 enforcement, notifications, reporting (summary, breakdowns, the dense monthly
 trend, batch-level rows, every filter, and department-scoped visibility on
-each), the template library, the geometry editor (valid moves, out-of-bounds
-and unknown-key rejection, catalogue/renderer agreement, unsaved-geometry
-preview, reset-to-default, and non-admin lockout), team-access management,
+each), the template library, the card designer (a new template starting empty,
+user-added elements saving and rendering, out-of-bounds/unknown-type/unknown-
+variable/unknown-font/bad-colour/duplicate-id rejection, the mandatory barcode
+being un-deletable and un-hideable, catalogue/renderer agreement, unsaved-
+geometry preview, reset-to-empty, card resizing, and non-admin lockout), card
+rendering (every catalogue variable resolving for a real voucher, per-voucher
+barcode uniqueness, hidden and `hide_if_empty` elements, prefix/suffix, and
+version 1/2 layouts still printing), team-access management,
 and artwork upload (aspect ratio/size rejection, and the `is_active`
 multipart regression noted above), and authenticated PDF downloads
 (streaming, auth, department scope, role gating, and a clear error when a

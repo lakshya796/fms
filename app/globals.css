@@ -329,34 +329,102 @@ tr.clickable:hover td{background:#f8faf7}
 .viz-tooltip span i{width:8px;height:8px;border-radius:2px;flex:none}
 .viz-tooltip span b{margin-left:auto;color:var(--voucher-ink);font-variant-numeric:tabular-nums}
 
-/* Template geometry editor - the canvas is the coupon's own coordinate space,
-   scaled, so a dragged position maps 1:1 onto what the PDF renderer draws. */
-.geo-layout{display:grid;grid-template-columns:minmax(0,auto) 260px;gap:22px;align-items:start}
-@media(max-width:1120px){.geo-layout{grid-template-columns:1fr}}
-.geo-canvas{position:relative;border:1px solid var(--voucher-line);border-radius:8px;background:#EFEBF6;
-  background-size:cover;background-position:center;touch-action:none;max-width:100%;overflow:hidden}
-.geo-canvas-note{position:absolute;right:10px;bottom:8px;font-size:9px;color:var(--voucher-muted);
-  background:rgba(255,255,255,.86);border-radius:5px;padding:3px 7px;pointer-events:none}
-.geo-card-box{position:absolute;background:rgba(255,255,255,.92);border:1px dashed rgba(78,50,125,.5);border-radius:3px;pointer-events:none}
-.geo-chip{position:absolute;transform:translateY(-50%);border:1px solid var(--voucher-purple);background:rgba(255,255,255,.94);
-  color:var(--voucher-purple);font-size:9px;font-weight:700;padding:2px 6px;border-radius:5px;cursor:grab;white-space:nowrap;line-height:1.5}
-.geo-chip:hover{background:#fff}
-.geo-chip.selected{background:var(--voucher-purple);color:#fff;z-index:3}
-.geo-chip:active{cursor:grabbing}
-.geo-free-text{position:absolute;transform:translateY(-50%);padding:1px 3px;border:1px dashed transparent;
-  background:transparent;white-space:pre;cursor:grab;line-height:1}
-.geo-free-text:hover,.geo-free-text.selected{border-color:var(--voucher-purple);background:rgba(255,255,255,.72)}
-.geo-panel{border:1px solid var(--voucher-line);border-radius:10px;padding:14px}
+/* Voucher card designer. The canvas is the card's own coordinate space (points
+   from its top-left corner) scaled to fit, so a dragged position maps 1:1 onto
+   what the PDF renderer draws - and every element is drawn the way it prints,
+   not as a placeholder chip. */
+.designer-head{align-items:flex-start;gap:16px;flex-wrap:wrap}
+.designer-sub{margin:4px 0 0;font-size:10.5px;color:var(--voucher-muted)}
+.designer-actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-left:auto}
+.designer-btn{width:auto!important;padding:0 16px;height:34px}
+.designer-zoom{display:flex;align-items:center;gap:7px;font-size:10px;font-weight:700;color:var(--voucher-muted)}
+.designer-zoom input{width:96px}
+.designer-zoom span{font-variant-numeric:tabular-nums;min-width:34px}
+.designer-warning{margin-bottom:12px;padding:9px 12px;border-radius:9px;background:#fff6e9;border:1px solid #f0d8b4;color:#8a5a12;font-size:11px}
+
+.designer-layout{display:grid;grid-template-columns:minmax(0,1fr) 292px;gap:22px;align-items:start}
+@media(max-width:1180px){.designer-layout{grid-template-columns:1fr}}
+.designer-stage{min-width:0}
+
+.designer-toolbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:12px}
+.designer-toolbar-label{font-size:9px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--voucher-muted)}
+.designer-menu-wrap{position:relative}
+.designer-menu{position:absolute;top:calc(100% + 6px);left:0;z-index:6;width:260px;max-height:320px;overflow-y:auto;
+  background:#fff;border:1px solid var(--voucher-line);border-radius:10px;box-shadow:0 12px 30px rgba(35,27,54,.16);padding:8px}
+.designer-menu p{margin:2px 6px 8px;font-size:9px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--voucher-muted)}
+.designer-menu button{display:flex;flex-direction:column;gap:2px;width:100%;text-align:left;border:0;background:transparent;
+  padding:7px 8px;border-radius:7px;cursor:pointer}
+.designer-menu button:hover{background:#f6f4fa}
+.designer-menu button strong{font-size:11px;color:var(--voucher-ink);font-weight:600}
+.designer-menu button small{font-size:9.5px;color:var(--voucher-muted)}
+
+.designer-canvas-wrap{overflow:auto;padding-bottom:4px}
+.designer-canvas{position:relative;display:inline-block;touch-action:none;
+  background:repeating-conic-gradient(#f3f1f8 0% 25%,#fff 0% 50%) 50%/16px 16px}
+.designer-hint{margin:9px 0 0;font-size:10px;color:var(--voucher-muted)}
+
+/* The card as it prints: shared by the designer canvas and the library
+   thumbnails, so a preview can never disagree with the editor. */
+.card-surface{position:relative;overflow:hidden;border:1px solid var(--voucher-line);border-radius:6px}
+.card-artwork{position:absolute;object-fit:fill;pointer-events:none}
+.card-el-box{position:absolute;pointer-events:none}
+.card-el-text{position:absolute;pointer-events:none}
+
+.designer-hit{position:absolute;cursor:grab;border:1px solid transparent;border-radius:2px;min-width:8px;min-height:8px}
+.designer-hit:hover{border-color:rgba(78,50,125,.45);background:rgba(78,50,125,.06)}
+.designer-hit.selected{border-color:var(--voucher-purple);background:rgba(78,50,125,.08);z-index:4}
+.designer-hit.hidden{opacity:.4;border-style:dashed}
+.designer-hit:active{cursor:grabbing}
+.designer-handle{position:absolute;width:8px;height:8px;background:#fff;border:1.5px solid var(--voucher-purple);border-radius:2px}
+.designer-handle.h-nw{left:-5px;top:-5px;cursor:nwse-resize}
+.designer-handle.h-n{left:calc(50% - 4px);top:-5px;cursor:ns-resize}
+.designer-handle.h-ne{right:-5px;top:-5px;cursor:nesw-resize}
+.designer-handle.h-e{right:-5px;top:calc(50% - 4px);cursor:ew-resize}
+.designer-handle.h-se{right:-5px;bottom:-5px;cursor:nwse-resize}
+.designer-handle.h-s{left:calc(50% - 4px);bottom:-5px;cursor:ns-resize}
+.designer-handle.h-sw{left:-5px;bottom:-5px;cursor:nesw-resize}
+.designer-handle.h-w{left:-5px;top:calc(50% - 4px);cursor:ew-resize}
+
+.designer-proof{margin-top:18px;border-top:1px solid var(--voucher-line);padding-top:14px}
+.designer-proof-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px;font-size:10.5px;color:var(--voucher-muted)}
+.designer-proof-head .checkbox-row{margin-top:0;font-size:10.5px;font-weight:700;color:var(--voucher-ink)}
+.designer-proof-head em{font-style:normal;color:var(--voucher-muted);font-weight:400}
+.designer-proof-frame{width:100%;height:340px;border:1px solid var(--voucher-line);border-radius:10px;background:#fff}
+
+.designer-panel{display:flex;flex-direction:column;gap:16px;border:1px solid var(--voucher-line);border-radius:10px;padding:14px}
+.designer-section+.designer-section{border-top:1px solid var(--voucher-line);padding-top:14px}
+.designer-panel .geo-panel-title small{font-weight:600;letter-spacing:0;text-transform:none}
+.designer-layers{list-style:none;margin:0 0 10px;padding:0;display:flex;flex-direction:column;gap:2px;max-height:280px;overflow-y:auto}
+.designer-layers li{display:flex;align-items:center;gap:2px;border-radius:7px}
+.designer-layers li.selected{background:var(--voucher-purple)}
+.designer-layers li.selected .designer-layer-name,.designer-layers li.selected .designer-layer-icon{color:#fff}
+.designer-layer-name{flex:1;min-width:0;display:flex;align-items:center;gap:7px;text-align:left;border:0;background:transparent;
+  padding:6px 8px;font-size:11px;color:var(--voucher-ink);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.designer-layer-type{display:grid;place-items:center;width:16px;height:16px;flex:none;border-radius:4px;
+  background:rgba(78,50,125,.12);color:var(--voucher-purple);font-size:8.5px;font-weight:800}
+.designer-layers li.selected .designer-layer-type{background:rgba(255,255,255,.24);color:#fff}
+.designer-layer-icon{border:0;background:transparent;color:var(--voucher-muted);font-size:11px;padding:5px 4px;cursor:pointer;line-height:1}
+.designer-layer-icon:hover{color:var(--voucher-purple)}
+.designer-row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-top:4px}
+.designer-pair{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.designer-note{margin:0;font-size:10px;line-height:1.5;color:var(--voucher-muted)}
+.designer-field{display:flex;flex-direction:column;gap:5px;font-size:10px;font-weight:700;color:var(--voucher-muted);margin-bottom:10px}
+.designer-field small{font-weight:600;color:var(--voucher-muted)}
+.link-button.danger{color:#b95544}
+
 .geo-panel-title{font-size:9px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--voucher-muted);margin:0 0 10px}
-.geo-field-list{list-style:none;margin:0 0 16px;padding:0;display:flex;flex-direction:column;gap:2px;max-height:400px;overflow-y:auto}
-.geo-field-list button{width:100%;text-align:left;border:0;background:transparent;padding:6px 8px;border-radius:6px;font-size:11px;color:var(--voucher-ink);cursor:pointer}
-.geo-field-list button:hover{background:#f6f4fa}
-.geo-field-list button.selected{background:var(--voucher-purple);color:#fff;font-weight:600}
-.geo-props{border-top:1px solid var(--voucher-line);padding-top:14px;display:flex;flex-direction:column;gap:9px}
+.geo-props{display:flex;flex-direction:column;gap:9px}
 .geo-props label{display:flex;flex-direction:column;gap:4px;font-size:10px;font-weight:700;color:var(--voucher-muted)}
-.geo-props input{border:1px solid var(--voucher-line);border-radius:7px;padding:7px 9px;font-size:11px;font-family:inherit;color:var(--voucher-ink);outline:none}
+.geo-props small{font-weight:600;text-transform:none;letter-spacing:0}
+.geo-props input,.geo-props select,.geo-props textarea{border:1px solid var(--voucher-line);border-radius:7px;padding:7px 9px;
+  font-size:11px;font-family:inherit;color:var(--voucher-ink);outline:none;background:#fff;width:100%;box-sizing:border-box}
+.geo-props textarea{resize:vertical;min-height:56px}
 .geo-props input[type=color]{padding:2px;height:30px}
-.geo-props input:focus{border-color:var(--voucher-purple);box-shadow:0 0 0 3px #4e327d1a}
+.geo-props input[type=range]{padding:0;border:0}
+.geo-props input[type=file]{padding:5px;font-size:10px}
+.geo-props input:focus,.geo-props select:focus,.geo-props textarea:focus{border-color:var(--voucher-purple);box-shadow:0 0 0 3px #4e327d1a}
+
+.voucher-template-thumb{display:flex;justify-content:center;align-items:center;background:#f6f4fa;border-radius:8px;padding:10px;overflow:hidden}
 .voucher-form-wide{grid-column:1 / -1}
 .voucher-form button.primary{background:var(--voucher-purple);height:42px}
 .voucher-success{margin-top:14px;padding:12px 14px;border-radius:10px;background:#f1eefa;color:var(--voucher-purple);font-size:11px}

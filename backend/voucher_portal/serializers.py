@@ -4,6 +4,7 @@ from django.contrib.auth.models import User
 from django.utils import timezone
 from rest_framework import serializers
 
+from .geometry import DEFAULT_COUPON_HEIGHT, DEFAULT_COUPON_WIDTH, to_elements
 from .models import (Department, Notification, PortalBatch, PortalUserAccess, PortalVoucher, VoucherPrefix,
                      VoucherTemplate, VoucherType)
 from .validators import ArtworkError, GeometryError, validate_artwork, validate_field_geometry
@@ -48,43 +49,69 @@ class VoucherPrefixSerializer(serializers.ModelSerializer):
 class VoucherTemplateSerializer(serializers.ModelSerializer):
     is_active = serializers.BooleanField(default=True)
     is_default = serializers.BooleanField(default=False)
+    # The stored document in whatever version it was saved as, plus the same
+    # document normalised to the current element shape. The designer reads
+    # `layout`, so opening a template authored before the designer existed
+    # shows its fields as ordinary, editable elements instead of failing.
+    layout = serializers.SerializerMethodField()
 
     class Meta:
         model = VoucherTemplate
         fields = ["id", "name", "artwork", "page_width", "page_height", "coupon_width", "coupon_height",
-                 "field_geometry", "is_default", "is_active"]
+                 "field_geometry", "layout", "is_default", "is_active"]
+
+    def get_layout(self, template):
+        return to_elements(template.field_geometry)
+
+    def _dimension(self, name, fallback):
+        """This template's card size - the incoming value if it's being changed
+        in the same request, otherwise the stored one."""
+        raw = self.initial_data.get(name) if hasattr(self, "initial_data") else None
+        if raw not in (None, ""):
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                return fallback
+        return getattr(self.instance, name, None) or fallback
 
     def validate_artwork(self, value):
         if not value:
             return value
+        width = self._dimension("coupon_width", DEFAULT_COUPON_WIDTH)
+        height = self._dimension("coupon_height", DEFAULT_COUPON_HEIGHT)
         try:
-            validate_artwork(value)
+            validate_artwork(value, target_ratio=width / height if height else None)
         except ArtworkError as error:
             raise serializers.ValidationError(str(error))
         return value
 
     def validate_field_geometry(self, value):
-        # Bound-check against this template's own coupon size - the incoming
-        # value if it's being changed in the same request, otherwise the
-        # stored one.
-        def dimension(name, fallback):
-            raw = self.initial_data.get(name) if hasattr(self, "initial_data") else None
-            if raw not in (None, ""):
-                try:
-                    return float(raw)
-                except (TypeError, ValueError):
-                    return fallback
-            return getattr(self.instance, name, None) or fallback
-
         try:
             validate_field_geometry(
                 value,
-                coupon_width=dimension("coupon_width", 479.52),
-                coupon_height=dimension("coupon_height", 178.0),
+                coupon_width=self._dimension("coupon_width", DEFAULT_COUPON_WIDTH),
+                coupon_height=self._dimension("coupon_height", DEFAULT_COUPON_HEIGHT),
             )
         except GeometryError as error:
             raise serializers.ValidationError(str(error))
         return value
+
+    def validate(self, attrs):
+        # Shrinking the card without touching the layout would push elements
+        # off the edge silently, so re-check the stored layout against the new
+        # size whenever the size alone changes.
+        resizing = {"coupon_width", "coupon_height"} & set(attrs)
+        if resizing and "field_geometry" not in attrs and self.instance is not None:
+            try:
+                validate_field_geometry(
+                    self.instance.field_geometry,
+                    coupon_width=attrs.get("coupon_width", self.instance.coupon_width),
+                    coupon_height=attrs.get("coupon_height", self.instance.coupon_height),
+                )
+            except GeometryError as error:
+                raise serializers.ValidationError(
+                    {"coupon_width": f"This card size doesn't fit the current layout - {error}"})
+        return attrs
 
 
 class PortalVoucherSerializer(serializers.ModelSerializer):

@@ -21,14 +21,15 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from .geometry import DEFAULT_FIELD_GEOMETRY
+from .geometry import BLANK_GEOMETRY
 
 
 def default_field_geometry():
-    """A fresh copy every time - a template created with no geometry of its own
-    (e.g. uploading artwork with nothing else specified) still gets the coupon's
-    known field positions, not an empty layout with nothing drawn on it."""
-    return copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
+    """A fresh copy every time. A new template starts as an empty card carrying
+    only the mandatory barcode - everything else is the designer's to add. It
+    used to start with the fifteen measured ADCOOP coupon fields, which meant
+    every design began by deleting someone else's layout."""
+    return copy.deepcopy(BLANK_GEOMETRY)
 
 
 def money(value):
@@ -94,9 +95,10 @@ class VoucherPrefix(Timestamped):
 
 
 class VoucherTemplate(Timestamped):
-    """One printable design. `field_geometry` positions every dynamic field in
-    points from the coupon's top-left corner - see docs/VOUCHER-PORTAL.md for the
-    default layout, measured from the approved ADCOOP coupon artwork."""
+    """One printable design. `field_geometry` is the layout document the
+    designer edits: an ordered list of user-added elements positioned in points
+    from the card's top-left corner (see voucher_portal/geometry.py). A new
+    template holds only the mandatory barcode."""
     name = models.CharField(max_length=120)
     artwork = models.ImageField(upload_to="voucher-portal/templates/", blank=True, null=True)
     page_width = models.FloatField(default=594.72, help_text="Points (A4 width)")
