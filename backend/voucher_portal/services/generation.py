@@ -30,6 +30,7 @@ from decimal import Decimal
 from django.db import close_old_connections, transaction
 
 from .. import storage
+from ..geometry import SAMPLE_CONTEXT
 from ..models import PortalBatch, PortalVoucher, StatusChange
 from ..pdf import build_batch_pdf, build_voucher_pdf
 from .numbering import allocate
@@ -68,16 +69,22 @@ def _template_snapshot(template):
 
 
 class _PreviewBatch:
-    """An unsaved, PortalBatch-shaped object so pdf.py can render a sample
-    without a database row existing yet."""
+    """An unsaved, PortalBatch-shaped object so pdf.py can render a sample of
+    the create-batch form without a database row existing yet."""
     def __init__(self, data, template):
+        self.name = data.get("name") or ""
+        self.department = data.get("department")
+        self.voucher_type = data.get("voucher_type")
+        self.description = data.get("description") or ""
         self.discount_type = data["discount_type"]
         self.percentage_value = data.get("percentage_value")
         self.max_discount_value = data.get("max_discount_value")
         self.fixed_value = data.get("fixed_value")
         self.currency = data.get("currency") or "AED"
+        self.valid_from = data.get("valid_from")
         self.valid_to = data["valid_to"]
         self.restrictions = data.get("restrictions") or ""
+        self.terms = data.get("terms") or ""
         self.template_snapshot = _template_snapshot(template)
 
 
@@ -87,6 +94,14 @@ class _PreviewVoucher:
         self.recipient_name = "Sample Name"
         self.recipient_phone = "+971 50 123 4567"
         self.recipient_email = "name@example.com"
+        self.recipient_reference = "REF-001"
+
+
+class _SampleCard:
+    """Carries only a template snapshot: the designer's preview supplies its
+    own variable values, so there is no batch to imitate."""
+    def __init__(self, snapshot):
+        self.template_snapshot = snapshot
 
 
 def refresh_voucher_pdf(voucher):
@@ -107,16 +122,14 @@ def render_preview(data: dict) -> bytes:
 
 
 def render_template_sample(template, geometry=None) -> bytes:
-    """Render one coupon for a template on its own, with stand-in values.
+    """Render one card for a template on its own, with stand-in values.
 
-    The geometry editor needs to show what moving a field actually does before
-    anyone commits the layout, and creating a throwaway batch just to see that
-    would burn real voucher numbers. Passing `geometry` renders unsaved edits;
-    omitting it renders what's stored."""
-    from datetime import timedelta
-
-    from django.utils import timezone
-
+    The designer needs to show what an edit actually prints before anyone
+    commits the layout, and creating a throwaway batch just to see that would
+    burn real voucher numbers. Passing `geometry` renders unsaved edits;
+    omitting it renders what's stored. The stand-in values are exactly
+    `SAMPLE_CONTEXT`, which the designer's own canvas also draws, so the two
+    previews can't disagree about what a field will contain."""
     if geometry is not None:
         original = template.field_geometry
         template.field_geometry = geometry
@@ -127,14 +140,10 @@ def render_template_sample(template, geometry=None) -> bytes:
     else:
         snapshot = _template_snapshot(template)
 
-    sample = _PreviewBatch({
-        "discount_type": "percentage", "percentage_value": Decimal("50"),
-        "max_discount_value": Decimal("50"), "currency": "AED",
-        "valid_to": timezone.localdate() + timedelta(days=365),
-        "restrictions": "Brands : Sample\nStores : Not Restricted",
-    }, template)
-    sample.template_snapshot = snapshot
-    return build_voucher_pdf(sample, _PreviewVoucher("SAMPLE0001"))
+    # Trimmed to the card itself: a proof is for reading the design, and a
+    # coupon floating on an A4 sheet is a postage stamp in a PDF viewer.
+    sample = _SampleCard(snapshot)
+    return build_voucher_pdf(sample, None, context=dict(SAMPLE_CONTEXT), fit_page=True)
 
 
 @transaction.atomic

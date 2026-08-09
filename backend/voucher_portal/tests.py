@@ -15,8 +15,8 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from . import storage
-from .geometry import DEFAULT_FIELD_GEOMETRY
-from .pdf import build_batch_pdf, build_voucher_pdf
+from .geometry import BLANK_GEOMETRY, LEGACY_ADCOOP_GEOMETRY, VARIABLES, blank_geometry, to_elements
+from .pdf import build_batch_pdf, build_context, build_voucher_pdf
 from .models import (Department, Notification, PortalBatch, PortalUserAccess, PortalVoucher, VoucherPrefix,
                      VoucherTemplate, VoucherType)
 from .services import workflow
@@ -34,7 +34,8 @@ def make_reference_data():
     vtype = VoucherType.objects.create(code="EMP", name="Employee Voucher", department=dept)
     prefix = VoucherPrefix.objects.create(prefix="EMP", label="Employee", department=dept, voucher_type=vtype,
                                           sequence_length=4)
-    template = VoucherTemplate.objects.create(name="Default", field_geometry=DEFAULT_FIELD_GEOMETRY, is_default=True)
+    template = VoucherTemplate.objects.create(name="Default", field_geometry=copy.deepcopy(BLANK_GEOMETRY),
+                                              is_default=True)
     return dept, vtype, prefix, template
 
 
@@ -744,9 +745,10 @@ class ArtworkUploadTests(TestCase):
                                     {"name": "Custom artwork", "artwork": upload}, format="multipart")
         self.assertEqual(response.status_code, 201, response.data)
         template = VoucherTemplate.objects.get(pk=response.data["id"])
-        # A template created with no geometry of its own still gets the coupon's
-        # known field positions, not an empty layout with nothing drawn on it.
-        self.assertEqual(template.field_geometry, DEFAULT_FIELD_GEOMETRY)
+        # A new template is an empty card carrying only the mandatory barcode -
+        # no ADCOOP coupon fields to delete before designing anything.
+        self.assertEqual(template.field_geometry, BLANK_GEOMETRY)
+        self.assertEqual([e["type"] for e in template.field_geometry["elements"]], ["barcode"])
 
     def test_uploaded_template_is_active_without_saying_so(self):
         """Regression: DRF's BooleanField treats an omitted key in a multipart
@@ -825,9 +827,24 @@ class PortalUserAccessApiTests(TestCase):
         self.assertEqual(response.status_code, 403)
 
 
+def text_element(**overrides):
+    element = {"id": "headline", "type": "text", "name": "Headline", "text": "50% OFF",
+               "x": 20, "y": 20, "size": 18, "font": "Helvetica-Bold", "color": "#231B36",
+               "align": "left", "line_height": 20}
+    element.update(overrides)
+    return element
+
+
+def designed_geometry(*elements):
+    """A blank card (barcode only) plus whatever the test is designing."""
+    geometry = blank_geometry()
+    geometry["elements"].extend(elements)
+    return geometry
+
+
 class GeometryValidationTests(TestCase):
-    """The geometry editor is the only thing that can move fields on a printed
-    voucher, so a bad edit has to be rejected before it's saved, not
+    """The designer is the only thing that can put anything on a printed
+    voucher, so a bad layout has to be rejected before it's saved, not
     discovered on a print run."""
 
     def setUp(self):
@@ -840,68 +857,114 @@ class GeometryValidationTests(TestCase):
         return self.client.patch(f"/api/v1/voucher-portal/templates/{self.template.id}/",
                                  {"field_geometry": geometry}, format="json")
 
-    def test_valid_move_is_accepted(self):
-        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
-        geometry["fields"][0]["x"] = 40
-        geometry["fields"][0]["y"] = 25
+    def test_a_new_template_starts_empty_except_for_the_barcode(self):
+        self.assertEqual([e["type"] for e in self.template.field_geometry["elements"]], ["barcode"])
+
+    def test_user_added_elements_are_saved(self):
+        geometry = designed_geometry(
+            text_element(),
+            {"id": "valid", "type": "field", "name": "Valid until", "source": "valid_to",
+             "prefix": "Valid until ", "x": 20, "y": 60, "size": 9, "font": "Helvetica", "color": "#4A4160"},
+            {"id": "panel", "type": "box", "name": "Panel", "x": 5, "y": 5, "w": 140, "h": 100,
+             "fill": "#FFFFFF", "opacity": 0.9},
+            {"id": "rule", "type": "line", "name": "Divider", "x": 20, "y": 50, "w": 100, "h": 1,
+             "color": "#DCD7E8"},
+        )
         response = self._patch(geometry)
         self.assertEqual(response.status_code, 200, response.data)
         self.template.refresh_from_db()
-        self.assertEqual(self.template.field_geometry["fields"][0]["x"], 40)
+        self.assertEqual([e["id"] for e in self.template.field_geometry["elements"]],
+                         ["barcode", "headline", "valid", "panel", "rule"])
 
-    def test_field_outside_the_coupon_is_rejected(self):
-        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
-        geometry["fields"][0]["y"] = 900  # coupon is only 178pt tall
-        response = self._patch(geometry)
+    def test_valid_move_is_accepted(self):
+        geometry = designed_geometry(text_element(x=40, y=25))
+        self.assertEqual(self._patch(geometry).status_code, 200)
+        self.template.refresh_from_db()
+        self.assertEqual(self.template.field_geometry["elements"][1]["x"], 40)
+
+    def test_element_outside_the_card_is_rejected(self):
+        response = self._patch(designed_geometry(text_element(y=900)))  # card is only 178pt tall
         self.assertEqual(response.status_code, 400)
         self.assertIn("field_geometry", response.data)
 
     def test_negative_position_is_rejected(self):
-        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
-        geometry["fields"][0]["x"] = -5
-        self.assertEqual(self._patch(geometry).status_code, 400)
+        self.assertEqual(self._patch(designed_geometry(text_element(x=-5))).status_code, 400)
 
-    def test_unknown_field_key_is_rejected(self):
-        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
-        geometry["fields"].append({"key": "not_a_real_field", "x": 10, "y": 10, "size": 8})
-        response = self._patch(geometry)
+    def test_unknown_element_type_is_rejected(self):
+        response = self._patch(designed_geometry(text_element(type="hologram")))
         self.assertEqual(response.status_code, 400)
-        self.assertIn("not_a_real_field", str(response.data))
+        self.assertIn("hologram", str(response.data))
+
+    def test_unknown_voucher_field_is_rejected(self):
+        response = self._patch(designed_geometry(
+            {"id": "f", "type": "field", "source": "customer_loyalty_tier", "x": 10, "y": 10, "size": 8}))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("customer_loyalty_tier", str(response.data))
+
+    def test_unknown_font_is_rejected(self):
+        """reportlab raises on an unknown face inside the background generation
+        thread - long after the layout looked fine on screen."""
+        response = self._patch(designed_geometry(text_element(font="Comic Sans")))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Comic Sans", str(response.data))
+
+    def test_malformed_colour_is_rejected(self):
+        self.assertEqual(self._patch(designed_geometry(text_element(color="dark purple"))).status_code, 400)
 
     def test_non_numeric_position_is_rejected(self):
-        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
-        geometry["fields"][0]["x"] = "left-ish"
-        self.assertEqual(self._patch(geometry).status_code, 400)
+        self.assertEqual(self._patch(designed_geometry(text_element(x="left-ish"))).status_code, 400)
 
-    def test_duplicate_field_key_is_rejected(self):
-        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
-        geometry["fields"].append(copy.deepcopy(geometry["fields"][0]))
-        self.assertEqual(self._patch(geometry).status_code, 400)
+    def test_duplicate_element_id_is_rejected(self):
+        response = self._patch(designed_geometry(text_element(), text_element()))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("headline", str(response.data))
+
+    def test_empty_text_element_is_rejected(self):
+        self.assertEqual(self._patch(designed_geometry(text_element(text="   "))).status_code, 400)
 
     def test_barcode_is_mandatory(self):
-        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
-        geometry["fields"] = [field for field in geometry["fields"] if field["key"] != "barcode"]
+        geometry = blank_geometry()
+        geometry["elements"] = [text_element()]
+        response = self._patch(geometry)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("barcode", str(response.data).lower())
+
+    def test_a_layout_with_nothing_in_it_is_rejected(self):
+        response = self._patch({})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("barcode", str(response.data).lower())
+
+    def test_barcode_cannot_be_hidden(self):
+        geometry = blank_geometry()
+        geometry["elements"][0]["hidden"] = True
         response = self._patch(geometry)
         self.assertEqual(response.status_code, 400)
         self.assertIn("mandatory", str(response.data))
 
-    def test_arbitrary_styled_text_is_accepted(self):
-        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
-        geometry["text_layers"].append({
-            "id": "terms-title", "text": "Valid at all branches", "x": 20, "y": 30,
-            "size": 12, "font": "Helvetica-Bold", "color": "#4E327D",
-        })
+    def test_unscannably_small_barcode_is_rejected(self):
+        geometry = blank_geometry()
+        geometry["elements"][0].update({"w": 12, "h": 3})
         response = self._patch(geometry)
-        self.assertEqual(response.status_code, 200, response.data)
-        self.template.refresh_from_db()
-        self.assertEqual(self.template.field_geometry["text_layers"][0]["text"], "Valid at all branches")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("scan", str(response.data))
 
-    def test_field_catalogue_matches_what_the_renderer_draws(self):
+    def test_hide_if_empty_must_name_a_real_field(self):
+        self.assertEqual(self._patch(designed_geometry(text_element(hide_if_empty="nope"))).status_code, 400)
+        self.assertEqual(self._patch(designed_geometry(text_element(hide_if_empty="restrictions"))).status_code, 200)
+
+    def test_catalogue_offers_only_what_the_renderer_can_draw(self):
         response = self.client.get("/api/v1/voucher-portal/templates/field-catalogue/")
         self.assertEqual(response.status_code, 200)
-        catalogue_keys = {f["key"] for f in response.data["fields"]}
-        default_keys = {f["key"] for f in DEFAULT_FIELD_GEOMETRY["fields"]}
-        self.assertEqual(catalogue_keys, default_keys)
+        self.assertEqual({entry["type"] for entry in response.data["palette"]},
+                         set(response.data["element_types"]))
+        self.assertEqual([e["type"] for e in response.data["blank"]["elements"]], ["barcode"])
+        self.assertTrue(all(entry["defaults"] for entry in response.data["palette"]))
+
+    def test_catalogue_starters_are_valid_layouts(self):
+        response = self.client.get("/api/v1/voucher-portal/templates/field-catalogue/")
+        for starter in response.data["starters"]:
+            with self.subTest(starter=starter["key"]):
+                self.assertEqual(self._patch(starter["geometry"]).status_code, 200)
 
     def test_template_preview_renders_without_a_batch(self):
         response = self.client.get(f"/api/v1/voucher-portal/templates/{self.template.id}/preview/")
@@ -913,30 +976,39 @@ class GeometryValidationTests(TestCase):
         self.assertEqual(PortalVoucher.objects.count(), 0)
 
     def test_template_preview_renders_unsaved_geometry(self):
-        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
-        geometry["fields"][0]["x"] = 60
         response = self.client.post(f"/api/v1/voucher-portal/templates/{self.template.id}/preview/",
-                                    {"field_geometry": geometry}, format="json")
+                                    {"field_geometry": designed_geometry(text_element(x=60))}, format="json")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.content.startswith(b"%PDF"))
         self.template.refresh_from_db()  # preview must not save the edit
-        self.assertEqual(self.template.field_geometry["fields"][0]["x"], DEFAULT_FIELD_GEOMETRY["fields"][0]["x"])
+        self.assertEqual(len(self.template.field_geometry["elements"]), 1)
 
     def test_template_preview_rejects_invalid_unsaved_geometry(self):
-        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
-        geometry["fields"][0]["y"] = 5000
         response = self.client.post(f"/api/v1/voucher-portal/templates/{self.template.id}/preview/",
-                                    {"field_geometry": geometry}, format="json")
+                                    {"field_geometry": designed_geometry(text_element(y=5000))}, format="json")
         self.assertEqual(response.status_code, 400)
 
-    def test_reset_geometry_restores_the_default_layout(self):
-        geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
-        geometry["fields"][0]["x"] = 77
-        self._patch(geometry)
+    def test_reset_geometry_empties_the_card(self):
+        self._patch(designed_geometry(text_element()))
         response = self.client.post(f"/api/v1/voucher-portal/templates/{self.template.id}/reset-geometry/")
         self.assertEqual(response.status_code, 200)
         self.template.refresh_from_db()
-        self.assertEqual(self.template.field_geometry, DEFAULT_FIELD_GEOMETRY)
+        self.assertEqual(self.template.field_geometry, BLANK_GEOMETRY)
+
+    def test_card_size_that_would_orphan_the_layout_is_rejected(self):
+        self._patch(designed_geometry(text_element(x=400, y=150)))
+        response = self.client.patch(f"/api/v1/voucher-portal/templates/{self.template.id}/",
+                                     {"coupon_width": 200, "coupon_height": 120}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("coupon_width", response.data)
+
+    def test_card_size_can_be_changed_with_a_layout_that_fits(self):
+        geometry = blank_geometry(242.6, 153.0)  # barcode already inside the smaller card
+        geometry["elements"].append(text_element(x=20, y=20))
+        self.assertEqual(self._patch(geometry).status_code, 200)
+        response = self.client.patch(f"/api/v1/voucher-portal/templates/{self.template.id}/",
+                                     {"coupon_width": 242.6, "coupon_height": 153.0}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
 
     def test_non_admin_cannot_reset_geometry(self):
         requester = User.objects.create_user("geo_requester", password="x")
@@ -946,6 +1018,138 @@ class GeometryValidationTests(TestCase):
         client.force_authenticate(requester)
         response = client.post(f"/api/v1/voucher-portal/templates/{self.template.id}/reset-geometry/")
         self.assertEqual(response.status_code, 403)
+
+
+class CardRenderingTests(TestCase):
+    """What the designer saves is what `pdf.py` has to print, including for
+    templates and batch snapshots authored before the designer existed."""
+
+    def setUp(self):
+        self.dept, self.vtype, self.prefix, self.template = make_reference_data()
+        self.requester = User.objects.create_user("render_requester", password="x", is_staff=True)
+        self.approver = User.objects.create_user("render_approver", password="x", is_staff=True)
+
+    def _generated_batch(self, **overrides):
+        batch = approved_batch(self.dept, self.vtype, self.prefix, self.template,
+                               self.requester, self.approver, **overrides)
+        generate_vouchers(batch)
+        batch.refresh_from_db()
+        return batch
+
+    def test_every_offered_variable_resolves_for_a_real_voucher(self):
+        """The designer only offers variables the catalogue lists, so anything
+        listed has to come back with a value (or a blank) rather than a
+        KeyError at print time."""
+        batch = self._generated_batch(restrictions="Brands : Sample")
+        context = build_context(batch, batch.vouchers.first())
+        for variable in VARIABLES:
+            self.assertIn(variable["key"], context)
+        self.assertEqual(context["voucher_code"], batch.vouchers.first().number)
+        self.assertEqual(context["department"], "HR")
+        self.assertEqual(context["restrictions"], "Brands : Sample")
+
+    def test_designed_card_renders(self):
+        self.template.field_geometry = designed_geometry(
+            text_element(),
+            {"id": "cap", "type": "field", "source": "discount_cap", "x": 20, "y": 60,
+             "size": 8, "font": "Helvetica", "color": "#4A4160"},
+            {"id": "terms", "type": "field", "source": "terms", "x": 20, "y": 90, "w": 150,
+             "size": 6, "font": "Helvetica", "color": "#6B6480", "line_height": 8, "max_lines": 4},
+            {"id": "panel", "type": "box", "x": 5, "y": 5, "w": 140, "h": 100, "fill": "#FFFFFF", "opacity": 0.8},
+            {"id": "rule", "type": "line", "x": 20, "y": 55, "w": 100, "h": 0.75, "color": "#DCD7E8"},
+        )
+        self.template.save()
+        batch = self._generated_batch()
+        self.assertTrue(build_voucher_pdf(batch, batch.vouchers.first()).startswith(b"%PDF"))
+        self.assertTrue(build_batch_pdf(batch, list(batch.vouchers.all())).startswith(b"%PDF"))
+
+    def test_barcode_carries_each_voucher_s_own_unique_number(self):
+        batch = self._generated_batch(quantity=5)
+        numbers = [v.number for v in batch.vouchers.all()]
+        self.assertEqual(len(set(numbers)), 5)
+        for voucher in batch.vouchers.all():
+            self.assertEqual(build_context(batch, voucher)["voucher_code"], voucher.number)
+        # and every rendered card is a distinct document, not five copies of one
+        pdfs = {build_voucher_pdf(batch, voucher) for voucher in batch.vouchers.all()}
+        self.assertEqual(len(pdfs), 5)
+
+    def _drawn_text(self, batch, geometry):
+        """Every string the renderer actually put on the card."""
+        batch.template_snapshot = {**batch.template_snapshot, **geometry}
+        with mock.patch("voucher_portal.pdf._draw_text") as draw:
+            build_voucher_pdf(batch, batch.vouchers.first())
+        return [call.args[2] for call in draw.call_args_list]
+
+    def test_hidden_element_is_not_drawn(self):
+        batch = self._generated_batch()
+        self.assertIn("PRINT ME", self._drawn_text(batch, designed_geometry(text_element(text="PRINT ME"))))
+        self.assertNotIn("PRINT ME",
+                         self._drawn_text(batch, designed_geometry(text_element(text="PRINT ME", hidden=True))))
+
+    def test_hide_if_empty_drops_a_label_with_nothing_to_label(self):
+        label = {"id": "restrictions_label", "type": "text", "text": "Coupon Restrictions :",
+                 "x": 5, "y": 106, "size": 5, "font": "Helvetica", "color": "#6B6480",
+                 "hide_if_empty": "restrictions"}
+        batch = self._generated_batch(restrictions="")
+        self.assertNotIn("Coupon Restrictions :", self._drawn_text(batch, designed_geometry(label)))
+        batch.restrictions = "Brands : Sample"
+        self.assertIn("Coupon Restrictions :", self._drawn_text(batch, designed_geometry(label)))
+
+    def test_a_field_prints_its_prefix_and_suffix_around_the_value(self):
+        batch = self._generated_batch()
+        drawn = self._drawn_text(batch, designed_geometry(
+            {"id": "code", "type": "field", "source": "voucher_code", "prefix": "No. ", "suffix": " *",
+             "x": 20, "y": 20, "size": 8, "font": "Courier", "color": "#231B36"}))
+        self.assertIn(f"No. {batch.vouchers.first().number} *", drawn)
+
+    def test_an_empty_stored_layout_still_prints_a_barcode(self):
+        """Rows stored as `{}` before the model had a real default must not
+        produce a card with nothing to scan."""
+        converted = to_elements({})
+        self.assertEqual([element["type"] for element in converted["elements"]], ["barcode"])
+
+    def test_a_legacy_layout_still_prints(self):
+        """Batches generated before the designer existed carry a version 2
+        snapshot on the row itself; those have to keep printing."""
+        batch = self._generated_batch()
+        batch.template_snapshot = {**batch.template_snapshot, **copy.deepcopy(LEGACY_ADCOOP_GEOMETRY)}
+        self.assertTrue(build_voucher_pdf(batch, batch.vouchers.first()).startswith(b"%PDF"))
+
+    def test_legacy_conversion_keeps_positions_and_paint_order(self):
+        converted = to_elements(LEGACY_ADCOOP_GEOMETRY)
+        self.assertEqual(converted["version"], 3)
+        by_id = {element["id"]: element for element in converted["elements"]}
+        legacy = {field["key"]: field for field in LEGACY_ADCOOP_GEOMETRY["fields"]}
+        for key, field in legacy.items():
+            self.assertEqual((by_id[key]["x"], by_id[key]["y"]), (field["x"], field["y"]))
+        # the panel stays underneath and the barcode on top, as version 2 drew them
+        order = [element["id"] for element in converted["elements"]]
+        self.assertEqual(order[0], "content_panel")
+        self.assertLess(order.index("barcode_plate"), order.index("barcode"))
+        # fields that were switched off come back as hidden, not deleted
+        self.assertTrue(by_id["recipient_name"]["hidden"])
+        # and static wording becomes ordinary editable text
+        self.assertEqual(by_id["valid_label"]["text"], "Discount Valid Until :")
+        self.assertEqual(by_id["valid_date"]["source"], "valid_to")
+
+    def test_serializer_exposes_the_converted_layout(self):
+        self.template.field_geometry = copy.deepcopy(LEGACY_ADCOOP_GEOMETRY)
+        self.template.save()
+        client = APIClient()
+        client.force_authenticate(self.requester)
+        response = client.get(f"/api/v1/voucher-portal/templates/{self.template.id}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["field_geometry"]["version"], 2)  # untouched on disk
+        self.assertEqual(response.data["layout"]["version"], 3)  # editable by the designer
+        self.assertIn("barcode", [e["id"] for e in response.data["layout"]["elements"]])
+
+    def test_a_card_bigger_than_its_page_still_lands_on_the_page(self):
+        self.template.coupon_width = 700
+        self.template.coupon_height = 400
+        self.template.field_geometry = blank_geometry(700, 400)
+        self.template.save()
+        batch = self._generated_batch()
+        self.assertTrue(build_voucher_pdf(batch, batch.vouchers.first()).startswith(b"%PDF"))
 
 
 class AdvancedReportsTests(TestCase):

@@ -6,7 +6,6 @@ superuser status) via `HasPortalAccess`. This is the deliberate split from
 Action-level checks (create/approve/issue/report/admin) and department-scope
 checks both go through `request.portal_access` - see services/access.py.
 """
-import copy
 import csv
 import io
 
@@ -21,7 +20,8 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 from rest_framework.response import Response
 
-from .geometry import DEFAULT_FIELD_GEOMETRY, FIELD_CATALOGUE
+from .geometry import (ALIGNMENTS, COUPON_PRESETS, ELEMENT_TYPES, FONTS, PALETTE, VARIABLES,
+                       blank_geometry, starter_layouts)
 from .models import Department, Notification, PortalBatch, PortalUserAccess, PortalVoucher, VoucherPrefix, \
     VoucherTemplate, VoucherType
 from .validators import GeometryError, validate_field_geometry
@@ -102,13 +102,26 @@ class VoucherTemplateViewSet(AdminWriteMixin, viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="field-catalogue")
     def field_catalogue(self, request):
-        """What the renderer can draw, so the geometry editor offers exactly
-        those fields rather than keeping its own copy of the list."""
-        return Response({"fields": FIELD_CATALOGUE, "defaults": DEFAULT_FIELD_GEOMETRY})
+        """Everything the designer needs to build a card: what can be added,
+        what a voucher can fill in, and what the renderer can actually draw.
+
+        Served from the backend rather than duplicated in the browser so the
+        canvas can't offer a font, a colour or a variable that `pdf.py` will
+        then refuse to print."""
+        return Response({
+            "variables": VARIABLES,
+            "palette": PALETTE,
+            "element_types": ELEMENT_TYPES,
+            "fonts": FONTS,
+            "alignments": ALIGNMENTS,
+            "coupon_presets": COUPON_PRESETS,
+            "starters": starter_layouts(),
+            "blank": blank_geometry(),
+        })
 
     @action(detail=True, methods=["get", "post"])
     def preview(self, request, pk=None):
-        """Render a sample coupon for this template. POST an unsaved
+        """Render a sample card for this template. POST an unsaved
         `field_geometry` to see an edit before committing it; GET renders
         what's stored."""
         template = self.get_object()
@@ -125,10 +138,11 @@ class VoucherTemplateViewSet(AdminWriteMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="reset-geometry")
     def reset_geometry(self, request, pk=None):
+        """Back to an empty card carrying only the mandatory barcode."""
         if not request.portal_access.can("admin"):
             raise PermissionDenied("Only an administrator can reset a template's layout.")
         template = self.get_object()
-        template.field_geometry = copy.deepcopy(DEFAULT_FIELD_GEOMETRY)
+        template.field_geometry = blank_geometry(template.coupon_width, template.coupon_height)
         template.save(update_fields=["field_geometry", "updated_at"])
         return Response(VoucherTemplateSerializer(template).data)
 

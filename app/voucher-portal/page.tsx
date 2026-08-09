@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { fmsRequest, fmsRequestRaw, login, logout, UNAUTHORISED_EVENT } from "../lib/fms-api";
 
 // Authenticated ADCOOP Voucher Portal. Unlike /vouchers (deliberately public),
@@ -948,258 +948,866 @@ function ReportsScreen({ departments, voucherTypes }: { departments: Department[
   </div>;
 }
 
-type GeometryField = { key: string; enabled?: boolean; x: number; y: number; size?: number; w?: number; h?: number; line_height?: number; color?: string; fill?: string; opacity?: number; font?: string; static?: string };
-type TextLayer = { id: string; text: string; x: number; y: number; size: number; color: string; font: string };
-type Geometry = { version?: number; artwork?: any; fields: GeometryField[]; text_layers?: TextLayer[] };
-type CatalogueEntry = { key: string; label: string; kind: string; required?: boolean; editable_text?: boolean };
+// ---------------------------------------------------------------------------
+// Template designer
+//
+// A card starts empty apart from the one mandatory barcode; every other thing
+// on it - headline, validity line, terms, panels, rules - is an element the
+// user adds and positions themselves. The canvas is the card's own coordinate
+// space (points from the top-left corner) scaled to fit, drawn with the same
+// values the server's sample PDF uses, so what you drag really is what prints.
+// ---------------------------------------------------------------------------
 
-/** Drag-to-position editor for a template's field layout (§5 "user-editable
- *  field positions"). Positions are points from the coupon's top-left corner,
- *  which is exactly what the PDF renderer consumes - the canvas below is that
- *  same coordinate space scaled to fit, so what you drag is what prints. */
-function GeometryEditor({ template, onClose, onSaved }: { template: Template; onClose: () => void; onSaved: () => void }) {
-  const COUPON_W = 479.52, COUPON_H = 178;
-  const DISPLAY_W = 720;
-  const scale = DISPLAY_W / COUPON_W;
+type ElementType = "text" | "field" | "box" | "line" | "barcode";
+type Align = "left" | "center" | "right";
 
-  const [catalogue, setCatalogue] = useState<CatalogueEntry[]>([]);
-  const [geometry, setGeometry] = useState<Geometry | null>(null);
+type CardElement = {
+  id: string; type: ElementType; name?: string;
+  x: number; y: number; w?: number; h?: number; hidden?: boolean;
+  text?: string; source?: string; prefix?: string; suffix?: string;
+  size?: number; font?: string; color?: string; align?: Align;
+  line_height?: number; wrap?: number; max_lines?: number;
+  fill?: string; opacity?: number; radius?: number; border_color?: string; border_width?: number;
+  show_value?: boolean; value_size?: number; value_font?: string; value_color?: string;
+  hide_if_empty?: string;
+};
+
+type CardDocument = {
+  version: number;
+  coupon?: { w: number; h: number };
+  background?: string;
+  artwork?: { x: number; y: number; w: number; h: number; hidden?: boolean };
+  elements: CardElement[];
+};
+
+type Variable = { key: string; label: string; sample: string; multiline?: boolean };
+type PaletteEntry = { type: ElementType; label: string; hint: string; defaults: Partial<CardElement> };
+type CouponPreset = { key: string; label: string; w: number; h: number };
+type Starter = { key: string; label: string; description: string; geometry: CardDocument };
+type Catalogue = {
+  variables: Variable[]; palette: PaletteEntry[]; element_types: ElementType[];
+  fonts: string[]; alignments: Align[]; coupon_presets: CouponPreset[];
+  starters: Starter[]; blank: CardDocument;
+};
+type TemplateDetail = Template & {
+  layout: CardDocument; field_geometry: CardDocument;
+  coupon_width: number; coupon_height: number;
+};
+
+const TYPE_LABELS: Record<ElementType, string> = {
+  text: "Text", field: "Voucher field", box: "Box", line: "Line", barcode: "Barcode",
+};
+
+const TYPE_GLYPHS: Record<ElementType, string> = {
+  text: "T", field: "\u0192", box: "\u25AD", line: "\u2014", barcode: "\u2016",
+};
+
+const HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"] as const;
+type Handle = typeof HANDLES[number];
+
+/** reportlab's built-in faces mapped onto something a browser has. */
+function fontStyle(font = "Helvetica"): React.CSSProperties {
+  return {
+    fontFamily: font.startsWith("Times") ? '"Times New Roman", Times, serif'
+      : font.startsWith("Courier") ? '"Courier New", Courier, monospace'
+      : "Helvetica, Arial, sans-serif",
+    fontWeight: font.includes("Bold") ? 700 : 400,
+    fontStyle: font.includes("Oblique") || font.includes("Italic") ? "italic" : "normal",
+  };
+}
+
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+const round = (value: number) => Math.round(value * 10) / 10;
+
+function defaultName(element: CardElement, variables: Variable[]) {
+  if (element.name) return element.name;
+  if (element.type === "text") return (element.text || "Text").split("\n")[0].slice(0, 28) || "Text";
+  if (element.type === "field") return variables.find(v => v.key === element.source)?.label || "Voucher field";
+  return TYPE_LABELS[element.type];
+}
+
+/** What this element prints, given a set of sample or real values. */
+function elementText(element: CardElement, values: Record<string, string>) {
+  if (element.type === "text") return element.text || "";
+  const value = values[element.source || ""] ?? "";
+  if (!String(value).trim()) return "";
+  return `${element.prefix || ""}${value}${element.suffix || ""}`;
+}
+
+/** Bar widths that look like a barcode and stay put between renders, so a
+ *  preview doesn't shimmer while you drag it. The scannable article is in the
+ *  PDF proof - this is a placement guide. */
+function barcodePattern(value: string, color: string) {
+  let seed = 7;
+  for (const character of value || "0") seed = (seed * 31 + character.charCodeAt(0)) % 9973;
+  const stops: string[] = [];
+  let position = 0;
+  while (position < 100) {
+    seed = (seed * 1103515245 + 12345) % 2147483647;
+    const bar = 0.5 + (seed % 5) * 0.42;
+    const gap = 0.5 + ((seed >> 5) % 4) * 0.36;
+    const end = Math.min(position + bar, 100);
+    stops.push(`${color} ${position}%`, `${color} ${end}%`,
+               `transparent ${end}%`, `transparent ${Math.min(end + gap, 100)}%`);
+    position = end + gap;
+  }
+  return `linear-gradient(90deg, ${stops.join(",")})`;
+}
+
+function ElementView({ element, scale, values }: { element: CardElement; scale: number; values: Record<string, string> }) {
+  const left = element.x * scale;
+  const top = element.y * scale;
+
+  if (element.type === "box") {
+    return <div className="card-el-box" style={{
+      left, top, width: (element.w || 0) * scale, height: (element.h || 0) * scale,
+      background: element.fill || "#FFFFFF", opacity: element.opacity ?? 1,
+      borderRadius: (element.radius || 0) * scale,
+      border: element.border_width ? `${Math.max(element.border_width * scale, 1)}px solid ${element.border_color || "#DCD7E8"}` : undefined,
+    }} />;
+  }
+
+  if (element.type === "line") {
+    return <div className="card-el-box" style={{
+      left, top, width: (element.w || 0) * scale, height: Math.max((element.h || 1) * scale, 1),
+      background: element.color || "#DCD7E8",
+    }} />;
+  }
+
+  if (element.type === "barcode") {
+    const value = values.voucher_code || "";
+    const captionSize = (element.value_size || 7) * scale;
+    return <div className="card-el-box" style={{ left, top, width: (element.w || 0) * scale }}>
+      <div style={{ height: (element.h || 0) * scale, backgroundImage: barcodePattern(value, element.color || "#000000") }} />
+      {element.show_value !== false && <div style={{
+        ...fontStyle(element.value_font || "Courier"), fontSize: captionSize, lineHeight: `${captionSize * 1.3}px`,
+        color: element.value_color || "#231B36", textAlign: "center", marginTop: scale,
+      }}>{value}</div>}
+    </div>;
+  }
+
+  // text and field share every typographic control
+  const text = elementText(element, values);
+  if (!text) return null;
+  const size = (element.size || 8) * scale;
+  const lineHeight = (element.line_height || (element.size || 8) + 2) * scale;
+  const width = (element.w || 0) * scale;
+  const align = element.align || "left";
+  let lines = text.split("\n");
+  if (!width && element.wrap) {
+    lines = lines.flatMap(line => line.match(new RegExp(`.{1,${element.wrap}}(\\s|$)`, "g")) || [line]);
+  }
+  if (element.max_lines) lines = lines.slice(0, element.max_lines);
+
+  return <div className="card-el-text" style={{
+    left, // the PDF puts the glyph's cap-top on y; a CSS line box centres it,
+          // so lift the block by the half-leading to line the two up.
+    top: top - (lineHeight - size * 1.117) / 2 - size * 0.128,
+    width: width || undefined,
+    transform: width ? undefined : align === "center" ? "translateX(-50%)" : align === "right" ? "translateX(-100%)" : undefined,
+    textAlign: align, color: element.color || "#231B36",
+    fontSize: size, lineHeight: `${lineHeight}px`,
+    whiteSpace: width ? "pre-wrap" : "pre",
+    maxHeight: element.max_lines ? lineHeight * element.max_lines : undefined,
+    overflow: element.max_lines ? "hidden" : undefined,
+    ...fontStyle(element.font),
+  }}>{lines.join("\n")}</div>;
+}
+
+/** The card itself: artwork, background and every element, drawn to scale.
+ *  Shared by the designer canvas and the small previews on the library screen,
+ *  so a thumbnail can never disagree with the editor about a layout. */
+function CardPreview({ document: doc, artwork, width, height, scale, values, children }: {
+  document: CardDocument; artwork: string | null; width: number; height: number;
+  scale: number; values: Record<string, string>; children?: React.ReactNode;
+}) {
+  return <div className="card-surface" style={{
+    width: width * scale, height: height * scale, background: doc.background || "#FFFFFF",
+  }}>
+    {artwork && !doc.artwork?.hidden && <img src={artwork} alt="" className="card-artwork" style={{
+      left: (doc.artwork?.x ?? 0) * scale, top: (doc.artwork?.y ?? 0) * scale,
+      width: (doc.artwork?.w ?? width) * scale, height: (doc.artwork?.h ?? height) * scale,
+    }} />}
+    {(doc.elements || []).filter(element => !element.hidden).map(element => (
+      <ElementView key={element.id} element={element} scale={scale} values={values} />
+    ))}
+    {children}
+  </div>;
+}
+
+function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
+  template: Template; canAdmin: boolean; onClose: () => void; onSaved: () => void;
+}) {
+  const [catalogue, setCatalogue] = useState<Catalogue | null>(null);
+  const [doc, setDoc] = useState<CardDocument | null>(null);
+  const [saved, setSaved] = useState("");
+  const [card, setCard] = useState({ w: 479.52, h: 178 });
+  const [artwork, setArtwork] = useState<string | null>(template.artwork);
+
   const [selected, setSelected] = useState<string | null>(null);
-  const [dragging, setDragging] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [showProof, setShowProof] = useState(true);
+  const [proofUrl, setProofUrl] = useState("");
+  const [proofing, setProofing] = useState(false);
   const [error, setError] = useState("");
-  const [previewUrl, setPreviewUrl] = useState("");
-  const [previewing, setPreviewing] = useState(false);
+  const [warning, setWarning] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState("");
+  const [past, setPast] = useState<CardDocument[]>([]);
+  const [future, setFuture] = useState<CardDocument[]>([]);
+  const [addingField, setAddingField] = useState(false);
+
   const canvasRef = useRef<HTMLDivElement | null>(null);
-  const previewSequence = useRef(0);
+  const dragRef = useRef<{ id: string; mode: "move" | Handle; x: number; y: number; from: CardElement } | null>(null);
+  const coalesce = useRef<{ key: string; at: number } | null>(null);
+  const proofSequence = useRef(0);
 
   useEffect(() => {
     (async () => {
-      const cat = await fmsRequest<{ fields: CatalogueEntry[]; defaults: Geometry }>("voucher-portal/templates/field-catalogue/");
-      setCatalogue(cat.fields);
-      const full = await fmsRequest<Template & { field_geometry: Geometry }>(`voucher-portal/templates/${template.id}/`);
-      // Old templates used discount-specific fixed fields. Opening one in the
-      // new editor upgrades it to the four-variable layer document locally;
-      // nothing is persisted until Confirm & save is clicked.
-      if (full.field_geometry?.version === 2) {
-        const stored = new Map((full.field_geometry.fields || []).map(field => [field.key, field]));
-        setGeometry({ ...cat.defaults, ...full.field_geometry,
-          fields: cat.defaults.fields.map(field => ({ ...field, ...(stored.get(field.key) || {}) })) });
-      } else setGeometry(cat.defaults);
+      try {
+        const [cat, full] = await Promise.all([
+          fmsRequest<Catalogue>("voucher-portal/templates/field-catalogue/"),
+          fmsRequest<TemplateDetail>(`voucher-portal/templates/${template.id}/`),
+        ]);
+        setCatalogue(cat);
+        setArtwork(full.artwork);
+        setCard({ w: full.coupon_width, h: full.coupon_height });
+        // `layout` is the stored document normalised to the current element
+        // shape, so a template authored before the designer existed opens as
+        // ordinary, editable elements rather than failing to load.
+        setDoc(full.layout);
+        setSaved(JSON.stringify(full.layout));
+      } catch (err: any) { setError(parseApiError(err)); }
     })();
   }, [template.id]);
 
-  const labelFor = (key: string) => catalogue.find(c => c.key === key)?.label || key;
-  const kindFor = (key: string) => catalogue.find(c => c.key === key)?.kind || "text";
+  // Fit the card to the available column on first load; the zoom control takes
+  // over from there.
+  const displayScale = (720 / card.w) * zoom;
+  const values = useMemo(() => {
+    const map: Record<string, string> = {};
+    (catalogue?.variables || []).forEach(variable => { map[variable.key] = variable.sample; });
+    return map;
+  }, [catalogue]);
 
-  const patchField = (key: string, patch: Partial<GeometryField>) => {
-    setGeometry(g => g && ({ ...g, fields: g.fields.map(f => f.key === key ? { ...f, ...patch } : f) }));
-    setPreviewUrl("");
+  const dirty = !!doc && JSON.stringify(doc) !== saved;
+  const elements = doc?.elements || [];
+  const active = elements.find(element => element.id === selected) || null;
+  const barcodeCount = elements.filter(element => element.type === "barcode").length;
+
+  /** One undo step is pushed when a drag starts, not on every pointer move. */
+  const pushHistory = () => {
+    if (doc) setPast(stack => [...stack.slice(-59), doc]);
+    setFuture([]);
+    coalesce.current = null;
   };
 
-  const patchText = (id: string, patch: Partial<TextLayer>) => {
-    setGeometry(g => g && ({ ...g, text_layers: (g.text_layers || []).map(t => t.id === id ? { ...t, ...patch } : t) }));
-    setPreviewUrl("");
+  /** `key` groups a burst of edits to the same control - typing in a text box
+   *  is one undo step, not one per keystroke. */
+  const edit = (next: CardDocument, key = "") => {
+    const now = Date.now();
+    const repeat = !!key && coalesce.current?.key === key && now - coalesce.current.at < 900;
+    if (!repeat && doc) {
+      setPast(stack => [...stack.slice(-59), doc]);
+      setFuture([]);
+    }
+    coalesce.current = key ? { key, at: now } : null;
+    setDoc(next);
+    setWarning("");
   };
 
-  const addText = () => {
-    const id = `text-${Date.now()}`;
-    setGeometry(g => g && ({ ...g, version: 2, text_layers: [...(g.text_layers || []), {
-      id, text: "New text", x: 24, y: 30, size: 12, color: "#231B36", font: "Helvetica",
-    }] }));
+  /** Mid-drag updates: history was pushed once at pointer-down. */
+  const patch = (id: string, changes: Partial<CardElement>) => {
+    setDoc(current => current && ({
+      ...current, elements: current.elements.map(el => el.id === id ? { ...el, ...changes } : el),
+    }));
+  };
+
+  /** Property-panel edits, which do belong in the undo history. */
+  const setProp = (id: string, changes: Partial<CardElement>, key: string) => {
+    if (!doc) return;
+    edit({ ...doc, elements: doc.elements.map(el => el.id === id ? { ...el, ...changes } : el) }, key);
+  };
+
+  const undo = () => {
+    if (!past.length || !doc) return;
+    setFuture(stack => [doc, ...stack].slice(0, 60));
+    setDoc(past[past.length - 1]);
+    setPast(stack => stack.slice(0, -1));
+    coalesce.current = null;
+  };
+
+  const redo = () => {
+    if (!future.length || !doc) return;
+    setPast(stack => [...stack, doc]);
+    setDoc(future[0]);
+    setFuture(stack => stack.slice(1));
+    coalesce.current = null;
+  };
+
+  const addElement = (type: ElementType, source?: string) => {
+    if (!doc || !catalogue) return;
+    const entry = catalogue.palette.find(item => item.type === type);
+    const id = `${type}-${Date.now().toString(36)}`;
+    const element: CardElement = {
+      id, type, name: undefined,
+      // Cascade down the card so a run of additions doesn't pile up in one spot.
+      x: round(clamp(card.w * 0.08 + (elements.length % 4) * 8, 0, card.w - 20)),
+      y: round(clamp(card.h * 0.1 + elements.length * 16, 0, card.h - 20)),
+      ...(entry?.defaults as Partial<CardElement>),
+      ...(source ? { source } : {}),
+    };
+    if (element.type === "field" && source) {
+      const variable = catalogue.variables.find(item => item.key === source);
+      element.name = variable?.label;
+      if (variable?.multiline) { element.w = round(card.w * 0.3); element.max_lines = 5; }
+    }
+    edit({ ...doc, elements: [...doc.elements, element] });
     setSelected(id);
+    setAddingField(false);
   };
 
-  const removeText = (id: string) => {
-    setGeometry(g => g && ({ ...g, text_layers: (g.text_layers || []).filter(t => t.id !== id) }));
-    setSelected(null); setPreviewUrl("");
+  const duplicate = (id: string) => {
+    if (!doc) return;
+    const source = doc.elements.find(element => element.id === id);
+    if (!source) return;
+    const copy = { ...source, id: `${source.type}-${Date.now().toString(36)}`,
+                   x: round(clamp(source.x + 6, 0, card.w)), y: round(clamp(source.y + 6, 0, card.h)) };
+    edit({ ...doc, elements: [...doc.elements, copy] });
+    setSelected(copy.id);
+  };
+
+  const remove = (id: string) => {
+    if (!doc) return;
+    const element = doc.elements.find(item => item.id === id);
+    if (element?.type === "barcode" && barcodeCount < 2) {
+      setWarning("The barcode is mandatory - it carries each voucher's unique number. Move or resize it instead.");
+      return;
+    }
+    edit({ ...doc, elements: doc.elements.filter(item => item.id !== id) });
+    setSelected(null);
+  };
+
+  const reorder = (id: string, direction: -1 | 1) => {
+    if (!doc) return;
+    const index = doc.elements.findIndex(element => element.id === id);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= doc.elements.length) return;
+    const next = [...doc.elements];
+    [next[index], next[target]] = [next[target], next[index]];
+    edit({ ...doc, elements: next });
+  };
+
+  const alignTo = (edge: "left" | "hcenter" | "right" | "top" | "vcenter" | "bottom") => {
+    if (!doc || !active) return;
+    const width = active.w || 0;
+    const height = active.type === "barcode" || active.type === "box" || active.type === "line"
+      ? (active.h || 0) : (active.line_height || active.size || 8);
+    const map: Record<string, Partial<CardElement>> = {
+      left: { x: 0 }, right: { x: round(card.w - width) }, hcenter: { x: round((card.w - width) / 2) },
+      top: { y: 0 }, bottom: { y: round(card.h - height) }, vcenter: { y: round((card.h - height) / 2) },
+    };
+    edit({ ...doc, elements: doc.elements.map(el => el.id === active.id ? { ...el, ...map[edge] } : el) });
+  };
+
+  const startDrag = (event: React.PointerEvent, id: string, mode: "move" | Handle) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const element = elements.find(item => item.id === id);
+    if (!element) return;
+    setSelected(id);
+    pushHistory();
+    dragRef.current = { id, mode, x: event.clientX, y: event.clientY, from: { ...element } };
+    (event.target as HTMLElement).setPointerCapture?.(event.pointerId);
   };
 
   const onPointerMove = (event: React.PointerEvent) => {
-    if (!dragging || !canvasRef.current) return;
+    const drag = dragRef.current;
+    if (!drag || !canvasRef.current) return;
     const rect = canvasRef.current.getBoundingClientRect();
-    const x = Math.round(Math.max(0, Math.min(COUPON_W, (event.clientX - rect.left) / (rect.width / COUPON_W))) * 10) / 10;
-    const y = Math.round(Math.max(0, Math.min(COUPON_H, (event.clientY - rect.top) / (rect.height / COUPON_H))) * 10) / 10;
-    if ((geometry?.text_layers || []).some(t => t.id === dragging)) patchText(dragging, { x, y });
-    else patchField(dragging, { x, y });
+    const perPoint = rect.width / card.w;
+    const snap = (value: number) => event.altKey ? round(value) : Math.round(value * 2) / 2;
+    let dx = (event.clientX - drag.x) / perPoint;
+    let dy = (event.clientY - drag.y) / perPoint;
+    if (event.shiftKey && drag.mode === "move") {
+      if (Math.abs(dx) > Math.abs(dy)) dy = 0; else dx = 0;
+    }
+    const from = drag.from;
+    const sized = from.type === "box" || from.type === "line" || from.type === "barcode" || !!from.w;
+    const minW = from.type === "barcode" ? 40 : 4;
+    const minH = from.type === "barcode" ? 8 : 1;
+
+    if (drag.mode === "move") {
+      patch(drag.id, {
+        x: snap(clamp(from.x + dx, 0, card.w - (from.w || 0))),
+        y: snap(clamp(from.y + dy, 0, card.h - (from.h || 0))),
+      });
+      return;
+    }
+    if (!sized) return;
+
+    const next: Partial<CardElement> = {};
+    const width = from.w || 0;
+    const height = from.h || 0;
+    if (drag.mode.includes("e")) next.w = snap(clamp(width + dx, minW, card.w - from.x));
+    if (drag.mode.includes("s")) next.h = snap(clamp(height + dy, minH, card.h - from.y));
+    if (drag.mode.includes("w")) {
+      const x = snap(clamp(from.x + dx, 0, from.x + width - minW));
+      next.x = x; next.w = snap(width + (from.x - x));
+    }
+    if (drag.mode.includes("n")) {
+      const y = snap(clamp(from.y + dy, 0, from.y + height - minH));
+      next.y = y; next.h = snap(height + (from.y - y));
+    }
+    if (from.type === "text" || from.type === "field") delete next.h;
+    patch(drag.id, next);
+  };
+
+  const endDrag = (event: React.PointerEvent) => {
+    if (dragRef.current) (event.target as HTMLElement).releasePointerCapture?.(event.pointerId);
+    dragRef.current = null;
+  };
+
+  // Keyboard: nudge, duplicate, delete, undo/redo. Ignored while a form control
+  // has focus so typing a label doesn't move the element behind it.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement;
+      if (["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName)) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        event.shiftKey ? redo() : undo();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") { event.preventDefault(); redo(); return; }
+      if (!selected || !doc) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "d") { event.preventDefault(); duplicate(selected); return; }
+      if (event.key === "Escape") { setSelected(null); return; }
+      if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); remove(selected); return; }
+      const step = event.shiftKey ? 10 : 1;
+      const moves: Record<string, [number, number]> = {
+        ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step],
+      };
+      const move = moves[event.key];
+      if (!move) return;
+      event.preventDefault();
+      const element = doc.elements.find(item => item.id === selected);
+      if (!element) return;
+      edit({ ...doc, elements: doc.elements.map(item => item.id === selected ? {
+        ...item,
+        x: round(clamp(item.x + move[0], 0, card.w - (item.w || 0))),
+        y: round(clamp(item.y + move[1], 0, card.h - (item.h || 0))),
+      } : item) }, `nudge:${selected}`);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  // The PDF proof is the source of truth for what prints. The canvas above it
+  // is instant; this catches up once you stop moving, and surfaces the same
+  // validation the save will run.
+  useEffect(() => {
+    if (!doc || !showProof) return;
+    const sequence = ++proofSequence.current;
+    const timer = window.setTimeout(async () => {
+      setProofing(true);
+      try {
+        const response = await fmsRequestRaw(`voucher-portal/templates/${template.id}/preview/`, {
+          method: "POST", body: JSON.stringify({ field_geometry: doc }),
+        });
+        const url = URL.createObjectURL(await response.blob());
+        if (sequence === proofSequence.current) {
+          setProofUrl(previous => { if (previous) URL.revokeObjectURL(previous); return url; });
+          setWarning("");
+        } else URL.revokeObjectURL(url);
+      } catch (err: any) {
+        if (sequence === proofSequence.current) setWarning(parseApiError(err));
+      } finally {
+        if (sequence === proofSequence.current) setProofing(false);
+      }
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [doc, showProof, template.id]);
+
+  /** Ignores half-typed sizes: "4" on the way to "479" would otherwise clamp
+   *  every element onto a 4pt card, and no undo would bring the layout back. */
+  const applyCardSize = (width: number, height: number) => {
+    if (!doc || width < 72 || height < 72 || width > 2400 || height > 2400) return;
+    // Shrinking the card would otherwise push elements off the edge, which the
+    // server rejects on save - pull them back in instead.
+    edit({
+      ...doc,
+      coupon: { w: width, h: height },
+      artwork: { ...(doc.artwork || { x: 0, y: 0 }), x: 0, y: 0, w: width, h: height, hidden: doc.artwork?.hidden },
+      elements: doc.elements.map(element => ({
+        ...element,
+        w: element.w ? Math.min(element.w, width) : element.w,
+        h: element.h ? Math.min(element.h, height) : element.h,
+        x: round(clamp(element.x, 0, Math.max(0, width - (element.w || 0)))),
+        y: round(clamp(element.y, 0, Math.max(0, height - (element.h || 0)))),
+      })),
+    }, "card-size");
+    setCard({ w: width, h: height });
+  };
+
+  const uploadArtwork = async (file: File) => {
+    setBusy("artwork"); setError("");
+    try {
+      const body = new FormData();
+      body.append("artwork", file);
+      const updated = await fmsRequest<TemplateDetail>(`voucher-portal/templates/${template.id}/`, { method: "PATCH", body });
+      setArtwork(updated.artwork);
+      setProofUrl("");
+    } catch (err: any) { setError(parseApiError(err)); }
+    finally { setBusy(""); }
   };
 
   const save = async () => {
-    if (!geometry) return;
+    if (!doc) return;
     setSaving(true); setError("");
     try {
       await fmsRequest(`voucher-portal/templates/${template.id}/`, {
-        method: "PATCH", body: JSON.stringify({ field_geometry: geometry }),
+        method: "PATCH",
+        body: JSON.stringify({ field_geometry: doc, coupon_width: card.w, coupon_height: card.h }),
       });
+      setSaved(JSON.stringify(doc));
       onSaved();
     } catch (err: any) { setError(parseApiError(err)); }
     finally { setSaving(false); }
   };
 
-  const resetToDefault = async () => {
-    setSaving(true); setError("");
-    try {
-      const updated = await fmsRequest<{ field_geometry: Geometry }>(`voucher-portal/templates/${template.id}/reset-geometry/`, { method: "POST", body: "{}" });
-      setGeometry(updated.field_geometry); setPreviewUrl("");
-    } catch (err: any) { setError(parseApiError(err)); }
-    finally { setSaving(false); }
+  const applyStarter = (starter: Starter) => {
+    if (!doc) return;
+    if (doc.elements.length > 1 && !window.confirm(`Replace the current design with "${starter.label}"?`)) return;
+    edit({ ...starter.geometry, coupon: { w: card.w, h: card.h } });
+    setSelected(null);
   };
 
-  const renderPreview = async () => {
-    if (!geometry) return;
-    setPreviewing(true); setError("");
-    try {
-      const response = await fmsRequestRaw(`voucher-portal/templates/${template.id}/preview/`, {
-        method: "POST", body: JSON.stringify({ field_geometry: geometry }),
-      });
-      setPreviewUrl(URL.createObjectURL(await response.blob()));
-    } catch (err: any) { setError(parseApiError(err)); }
-    finally { setPreviewing(false); }
+  const clearCard = () => {
+    if (!doc || !catalogue) return;
+    if (!window.confirm("Remove everything except the barcode?")) return;
+    const barcode = doc.elements.find(element => element.type === "barcode") || catalogue.blank.elements[0];
+    edit({ ...doc, elements: [barcode] });
+    setSelected(null);
   };
 
-  // Server-rendered preview is the source of truth. Wait until the user has
-  // stopped moving/typing for two seconds, then replace the iframe only if
-  // this is still the newest render request.
-  useEffect(() => {
-    if (!geometry) return;
-    const sequence = ++previewSequence.current;
-    const timer = window.setTimeout(async () => {
-      setPreviewing(true); setError("");
-      try {
-        const response = await fmsRequestRaw(`voucher-portal/templates/${template.id}/preview/`, {
-          method: "POST", body: JSON.stringify({ field_geometry: geometry }),
-        });
-        const nextUrl = URL.createObjectURL(await response.blob());
-        if (sequence === previewSequence.current) {
-          setPreviewUrl(previous => { if (previous) URL.revokeObjectURL(previous); return nextUrl; });
-        } else URL.revokeObjectURL(nextUrl);
-      } catch (err: any) { if (sequence === previewSequence.current) setError(parseApiError(err)); }
-      finally { if (sequence === previewSequence.current) setPreviewing(false); }
-    }, 2000);
-    return () => window.clearTimeout(timer);
-  }, [geometry, template.id]);
+  const close = () => {
+    if (dirty && !window.confirm("You have unsaved design changes. Close anyway?")) return;
+    onClose();
+  };
 
-  if (!geometry) return <section className="voucher-card"><div className="data-state">Loading layout…</div></section>;
+  if (error && !doc) return <section className="voucher-card"><div className="form-error">{error}</div>
+    <button type="button" className="secondary" style={{ width: 120, marginTop: 12 }} onClick={onClose}>Back</button></section>;
+  if (!doc || !catalogue) return <section className="voucher-card"><div className="data-state">Opening the designer…</div></section>;
 
-  const active = geometry.fields.find(f => f.key === selected) || null;
-  const activeText = (geometry.text_layers || []).find(t => t.id === selected) || null;
+  const sized = active && (active.type === "box" || active.type === "line" || active.type === "barcode");
+  const typographic = active && (active.type === "text" || active.type === "field");
 
-  return <section className="voucher-card">
-    <div className="voucher-card-head">
-      <h2>Layout — {template.name}</h2>
-      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-        <button type="button" className="link-button" onClick={resetToDefault} disabled={saving}>Reset to default</button>
-        <button type="button" className="link-button" onClick={addText}>Add text</button>
-        <button type="button" className="link-button" onClick={renderPreview} disabled={previewing}>{previewing ? "Rendering…" : "Verify PDF"}</button>
-        <button type="button" className="secondary" style={{ width: "auto", padding: "0 14px", height: 34 }} onClick={onClose}>Close</button>
-        <button type="button" className="primary" style={{ width: "auto", padding: "0 16px", height: 34 }} disabled={saving} onClick={save}>{saving ? "Saving…" : "Confirm & save"}</button>
+  return <section className="voucher-card designer">
+    <div className="voucher-card-head designer-head">
+      <div>
+        <h2>{template.name}</h2>
+        <p className="designer-sub">
+          {dirty ? "Unsaved changes" : "All changes saved"} · {elements.length} element{elements.length === 1 ? "" : "s"} ·
+          {" "}{Math.round(card.w)} × {Math.round(card.h)} pt
+        </p>
+      </div>
+      <div className="designer-actions">
+        <button type="button" className="link-button" disabled={!past.length} onClick={undo} title="Undo (Ctrl+Z)">Undo</button>
+        <button type="button" className="link-button" disabled={!future.length} onClick={redo} title="Redo (Ctrl+Shift+Z)">Redo</button>
+        <label className="designer-zoom">
+          Zoom
+          <input type="range" min={0.5} max={2} step={0.1} value={zoom} onChange={e => setZoom(Number(e.target.value))} />
+          <span>{Math.round(zoom * 100)}%</span>
+        </label>
+        <button type="button" className="secondary designer-btn" onClick={close}>Close</button>
+        <button type="button" className="primary designer-btn" disabled={saving || !dirty} onClick={save}>
+          {saving ? "Saving…" : dirty ? "Save design" : "Saved"}
+        </button>
       </div>
     </div>
 
-    <p style={{ fontSize: 11, color: "var(--voucher-muted)", marginBottom: 12 }}>
-      This canvas updates immediately. Barcode is mandatory. Name, phone and email are optional
-      voucher variables; add any other wording as styled text. Confirm only after verifying the PDF.
-    </p>
-    {error && <div className="form-error" style={{ marginBottom: 12 }}>{error}</div>}
+    {error && <div className="form-error" style={{ marginBottom: 10 }}>{error}</div>}
+    {warning && <div className="designer-warning">{warning}</div>}
 
-    <div className="geo-layout">
-      <div>
-        <div ref={canvasRef} className="geo-canvas"
-             style={{ width: DISPLAY_W, height: COUPON_H * scale, backgroundImage: template.artwork ? `url(${template.artwork})` : undefined }}
-             onPointerMove={onPointerMove} onPointerUp={() => setDragging(null)} onPointerLeave={() => setDragging(null)}>
-          {geometry.fields.filter(field => field.enabled !== false).map(field => (
-            <button key={field.key} type="button"
-                    className={"geo-chip" + (selected === field.key ? " selected" : "")}
-                    style={{ left: field.x * scale, top: field.y * scale,
-                      fontSize: field.size ? field.size * scale : undefined,
-                      color: selected === field.key ? undefined : field.color,
-                      fontFamily: field.font,
-                      width: kindFor(field.key) === "box" && field.w ? field.w * scale : undefined,
-                      height: kindFor(field.key) === "box" && field.h ? field.h * scale : undefined,
-                      backgroundColor: kindFor(field.key) === "box" ? field.fill : undefined,
-                      opacity: kindFor(field.key) === "box" ? (field.opacity ?? 1) : undefined }}
-                    onPointerDown={event => { event.preventDefault(); setSelected(field.key); setDragging(field.key); }}
-                    onClick={() => setSelected(field.key)}>
-              {field.key === "content_panel" ? "Content panel" : field.key === "barcode" ? "▥ SAMPLE0001" : field.key === "discount_numeral" ? "50" : field.key === "discount_unit" ? "%" : field.key === "off_label" ? "off" : field.key === "qualifier" ? (field.static || "on the value of") : field.key === "cap_line" ? "Up to AED 50.00" : field.key === "valid_label" ? (field.static || "Discount Valid Until :") : field.key === "valid_date" ? "09-Aug-2027" : field.key === "restrictions_label" ? (field.static || "Coupon Restrictions :") : field.key === "restrictions_body" ? "Brands: Sample" : field.key === "barcode_plate" ? "Barcode background" : field.key === "voucher_code" ? "SAMPLE0001" : field.key === "recipient_name" ? "Sample Name" : field.key === "recipient_phone" ? "+971 50 123 4567" : "name@example.com"}
-            </button>
+    <div className="designer-layout">
+      <div className="designer-stage">
+        <div className="designer-toolbar">
+          <span className="designer-toolbar-label">Add</span>
+          {catalogue.palette.filter(entry => entry.type !== "field").map(entry => (
+            <button key={entry.type} type="button" className="chip" title={entry.hint}
+                    onClick={() => addElement(entry.type)}>+ {entry.label}</button>
           ))}
-          {(geometry.text_layers || []).map(layer => <button key={layer.id} type="button"
-            className={"geo-free-text" + (selected === layer.id ? " selected" : "")}
-            style={{ left: layer.x * scale, top: layer.y * scale, fontSize: layer.size * scale,
-                     color: layer.color, fontFamily: layer.font }}
-            onPointerDown={event => { event.preventDefault(); setSelected(layer.id); setDragging(layer.id); }}>
-            {layer.text}
-          </button>)}
-          {!template.artwork && <span className="geo-canvas-note">No artwork uploaded — the default ADCOOP design prints behind these fields.</span>}
+          <div className="designer-menu-wrap">
+            <button type="button" className="chip" onClick={() => setAddingField(open => !open)}>+ Voucher field ▾</button>
+            {addingField && <div className="designer-menu">
+              <p>Fills in per voucher when it prints</p>
+              {catalogue.variables.map(variable => (
+                <button key={variable.key} type="button" onClick={() => addElement("field", variable.key)}>
+                  <strong>{variable.label}</strong><small>{variable.sample.split("\n")[0]}</small>
+                </button>
+              ))}
+            </div>}
+          </div>
+          {active && <>
+            <span className="designer-toolbar-label">Align</span>
+            {([["left", "⇤"], ["hcenter", "↔"], ["right", "⇥"], ["top", "⇡"], ["vcenter", "↕"], ["bottom", "⇣"]] as const)
+              .map(([edge, glyph]) => (
+                <button key={edge} type="button" className="chip" title={`Align ${edge}`} onClick={() => alignTo(edge)}>{glyph}</button>
+              ))}
+          </>}
         </div>
-        {previewUrl && <iframe src={previewUrl} title="Template preview"
-          style={{ width: DISPLAY_W, height: 320, marginTop: 14, border: "1px solid var(--voucher-line)", borderRadius: 10 }} />}
+
+        <div className="designer-canvas-wrap">
+          <div ref={canvasRef} className="designer-canvas"
+               onPointerMove={onPointerMove} onPointerUp={endDrag} onPointerCancel={endDrag}
+               onPointerDown={() => setSelected(null)}>
+            <CardPreview document={doc} artwork={artwork} width={card.w} height={card.h}
+                         scale={displayScale} values={values}>
+              {elements.map(element => {
+                const isSelected = element.id === selected;
+                const width = (element.w || 0) * displayScale;
+                const height = element.type === "barcode"
+                  ? ((element.h || 0) + (element.show_value !== false ? (element.value_size || 7) * 1.4 : 0)) * displayScale
+                  : (element.h || 0) * displayScale;
+                const box = element.type === "text" || element.type === "field";
+                // Text with no fixed width is only as wide as what it prints, so
+                // the drag target has to be measured from the rendered string.
+                const printed = box ? elementText(element, values).split("\n")
+                  .reduce((longest, line) => line.length > longest.length ? line : longest, "") : "";
+                return <div key={element.id}
+                  className={"designer-hit" + (isSelected ? " selected" : "") + (element.hidden ? " hidden" : "")}
+                  style={{
+                    left: element.x * displayScale,
+                    top: element.y * displayScale,
+                    width: width || (box ? Math.max(16, printed.length * (element.size || 8) * 0.52 * displayScale) : 10),
+                    height: height || (box ? (element.line_height || (element.size || 8) + 2)
+                      * Math.max(1, elementText(element, values).split("\n").length) * displayScale : 10),
+                    transform: box && !element.w && element.align === "center" ? "translateX(-50%)"
+                             : box && !element.w && element.align === "right" ? "translateX(-100%)" : undefined,
+                  }}
+                  onPointerDown={event => startDrag(event, element.id, "move")}>
+                  {isSelected && !element.hidden && HANDLES.map(handle => (
+                    <span key={handle} className={`designer-handle h-${handle}`}
+                          onPointerDown={event => startDrag(event, element.id, handle)} />
+                  ))}
+                </div>;
+              })}
+            </CardPreview>
+          </div>
+          <p className="designer-hint">
+            Drag to move · drag a corner to resize · arrow keys nudge (Shift = 10pt) · Ctrl+D duplicates ·
+            Delete removes · hold Alt for finer positioning
+          </p>
+        </div>
+
+        <div className="designer-proof">
+          <div className="designer-proof-head">
+            <label className="checkbox-row">
+              <input type="checkbox" checked={showProof} onChange={e => setShowProof(e.target.checked)} />
+              Live PDF proof {proofing && <em>· rendering…</em>}
+            </label>
+            <span>Exactly what prints, with sample values.</span>
+          </div>
+          {showProof && proofUrl && <iframe src={proofUrl} title="PDF proof" className="designer-proof-frame" />}
+          {showProof && !proofUrl && <div className="data-state">Rendering the first proof…</div>}
+        </div>
       </div>
 
-      <div className="geo-panel">
-        <p className="geo-panel-title">Fields</p>
-        <ul className="geo-field-list">
-          {geometry.fields.map(field => (
-            <li key={field.key}>
-              <button type="button" className={selected === field.key ? "selected" : ""} onClick={() => setSelected(field.key)}>
-                {field.enabled === false ? "○ " : "● "}{labelFor(field.key)}
-              </button>
-            </li>
-          ))}
-          {(geometry.text_layers || []).map(layer => <li key={layer.id}><button type="button"
-            className={selected === layer.id ? "selected" : ""} onClick={() => setSelected(layer.id)}>
-            {layer.text || "Untitled text"}
-          </button></li>)}
-        </ul>
+      <div className="designer-panel">
+        <div className="designer-section">
+          <p className="geo-panel-title">Layers <small>(top of the list prints last)</small></p>
+          <ul className="designer-layers">
+            {[...elements].reverse().map(element => (
+              <li key={element.id} className={element.id === selected ? "selected" : ""}>
+                <button type="button" className="designer-layer-name" onClick={() => setSelected(element.id)}>
+                  <span className="designer-layer-type">{TYPE_GLYPHS[element.type]}</span>
+                  {defaultName(element, catalogue.variables)}
+                </button>
+                <button type="button" className="designer-layer-icon" title={element.hidden ? "Show" : "Hide"}
+                        onClick={() => setProp(element.id, { hidden: !element.hidden }, "")}>
+                  {element.hidden ? "◌" : "●"}
+                </button>
+                <button type="button" className="designer-layer-icon" title="Bring forward"
+                        onClick={() => reorder(element.id, 1)}>↑</button>
+                <button type="button" className="designer-layer-icon" title="Send backward"
+                        onClick={() => reorder(element.id, -1)}>↓</button>
+              </li>
+            ))}
+          </ul>
+          <div className="designer-row">
+            <button type="button" className="link-button" onClick={clearCard}>Clear card</button>
+            {catalogue.starters.map(starter => (
+              <button key={starter.key} type="button" className="link-button" title={starter.description}
+                      onClick={() => applyStarter(starter)}>Use {starter.label}</button>
+            ))}
+          </div>
+        </div>
 
-        {active && <div className="geo-props">
-          <p className="geo-panel-title">{labelFor(active.key)}</p>
-          <label className="checkbox-row"><input type="checkbox" checked={active.enabled !== false}
-            disabled={catalogue.find(c => c.key === active.key)?.required}
-            onChange={e => patchField(active.key, { enabled: e.target.checked })} /> Show on voucher</label>
-          <label>X (pt)<input type="number" step="0.1" min={0} max={COUPON_W} value={active.x}
-            onChange={e => patchField(active.key, { x: Number(e.target.value) })} /></label>
-          <label>Y (pt)<input type="number" step="0.1" min={0} max={COUPON_H} value={active.y}
-            onChange={e => patchField(active.key, { y: Number(e.target.value) })} /></label>
-          {kindFor(active.key) === "box" ? <>
-            <label>Width (pt)<input type="number" step="0.1" min={0} value={active.w ?? 0}
-              onChange={e => patchField(active.key, { w: Number(e.target.value) })} /></label>
-            <label>Height (pt)<input type="number" step="0.1" min={0} value={active.h ?? 0}
-              onChange={e => patchField(active.key, { h: Number(e.target.value) })} /></label>
-          </> : <>
-            <label>Font size (pt)<input type="number" step="0.5" min={0} value={active.size ?? 8}
-              onChange={e => patchField(active.key, { size: Number(e.target.value) })} /></label>
-            {kindFor(active.key) === "multiline" && <label>Line spacing (pt)<input type="number" step="0.5" min={0} value={active.line_height ?? 9}
-              onChange={e => patchField(active.key, { line_height: Number(e.target.value) })} /></label>}
-            <label>Colour<input type="color" value={active.color || "#231B36"}
-              onChange={e => patchField(active.key, { color: e.target.value })} /></label>
-            <label>Font<select value={active.font || "Helvetica"} onChange={e => patchField(active.key, { font: e.target.value })}>
-              <option>Helvetica</option><option>Helvetica-Bold</option><option>Times-Roman</option><option>Times-Bold</option><option>Courier</option>
-            </select></label>
+        {active && <div className="designer-section geo-props">
+          <p className="geo-panel-title">{TYPE_LABELS[active.type]} — {defaultName(active, catalogue.variables)}</p>
+
+          {active.type === "text" && <label>Text
+            <textarea rows={3} value={active.text || ""}
+                      onChange={e => setProp(active.id, { text: e.target.value }, `text:${active.id}`)} />
+          </label>}
+
+          {active.type === "field" && <>
+            <label>Shows
+              <select value={active.source || ""} onChange={e => setProp(active.id, { source: e.target.value }, "")}>
+                {catalogue.variables.map(variable => <option key={variable.key} value={variable.key}>{variable.label}</option>)}
+              </select>
+            </label>
+            <div className="designer-pair">
+              <label>Before<input value={active.prefix || ""}
+                onChange={e => setProp(active.id, { prefix: e.target.value }, `prefix:${active.id}`)} /></label>
+              <label>After<input value={active.suffix || ""}
+                onChange={e => setProp(active.id, { suffix: e.target.value }, `suffix:${active.id}`)} /></label>
+            </div>
+            <p className="designer-note">Prints “{elementText(active, values) || "—"}” on the sample.</p>
           </>}
-          {kindFor(active.key) === "box" && <label>Fill colour<input type="color" value={active.fill || "#FFFFFF"}
-            onChange={e => patchField(active.key, { fill: e.target.value })} /></label>}
-          {kindFor(active.key) === "box" && <label>Opacity ({Math.round((active.opacity ?? 1) * 100)}%)
-            <input type="range" min={0} max={1} step={0.05} value={active.opacity ?? 1}
-              onChange={e => patchField(active.key, { opacity: Number(e.target.value) })} /></label>}
-          {catalogue.find(c => c.key === active.key)?.editable_text && <label>Text<input value={active.static || ""}
-            onChange={e => patchField(active.key, { static: e.target.value })} /></label>}
+
+          <div className="designer-pair">
+            <label>X (pt)<input type="number" step="0.5" min={0} max={card.w} value={active.x}
+              onChange={e => setProp(active.id, { x: Number(e.target.value) }, `x:${active.id}`)} /></label>
+            <label>Y (pt)<input type="number" step="0.5" min={0} max={card.h} value={active.y}
+              onChange={e => setProp(active.id, { y: Number(e.target.value) }, `y:${active.id}`)} /></label>
+          </div>
+
+          {(sized || typographic) && <div className="designer-pair">
+            <label>Width (pt){typographic && <small> — 0 = fit text</small>}
+              <input type="number" step="0.5" min={0} max={card.w} value={active.w ?? 0}
+                     onChange={e => setProp(active.id, { w: Number(e.target.value) }, `w:${active.id}`)} /></label>
+            {sized && <label>Height (pt)<input type="number" step="0.5" min={0} max={card.h} value={active.h ?? 0}
+              onChange={e => setProp(active.id, { h: Number(e.target.value) }, `h:${active.id}`)} /></label>}
+          </div>}
+
+          {typographic && <>
+            <div className="designer-pair">
+              <label>Size (pt)<input type="number" step="0.5" min={1} value={active.size ?? 10}
+                onChange={e => setProp(active.id, { size: Number(e.target.value) }, `size:${active.id}`)} /></label>
+              <label>Line spacing<input type="number" step="0.5" min={1} value={active.line_height ?? ((active.size ?? 10) + 2)}
+                onChange={e => setProp(active.id, { line_height: Number(e.target.value) }, `lh:${active.id}`)} /></label>
+            </div>
+            <label>Font
+              <select value={active.font || "Helvetica"} onChange={e => setProp(active.id, { font: e.target.value }, "")}>
+                {catalogue.fonts.map(font => <option key={font} value={font}>{font}</option>)}
+              </select>
+            </label>
+            <div className="designer-pair">
+              <label>Colour<input type="color" value={active.color || "#231B36"}
+                onChange={e => setProp(active.id, { color: e.target.value }, `color:${active.id}`)} /></label>
+              <label>Align
+                <select value={active.align || "left"} onChange={e => setProp(active.id, { align: e.target.value as Align }, "")}>
+                  {catalogue.alignments.map(align => <option key={align} value={align}>{align}</option>)}
+                </select>
+              </label>
+            </div>
+            <label>Maximum lines <small>(0 = no limit)</small>
+              <input type="number" min={0} step={1} value={active.max_lines ?? 0}
+                     onChange={e => setProp(active.id, { max_lines: Number(e.target.value) || undefined }, `ml:${active.id}`)} />
+            </label>
+          </>}
+
+          {active.type === "box" && <>
+            <div className="designer-pair">
+              <label>Fill<input type="color" value={active.fill || "#FFFFFF"}
+                onChange={e => setProp(active.id, { fill: e.target.value }, `fill:${active.id}`)} /></label>
+              <label>Corner radius<input type="number" min={0} step={0.5} value={active.radius ?? 0}
+                onChange={e => setProp(active.id, { radius: Number(e.target.value) }, `radius:${active.id}`)} /></label>
+            </div>
+            <label>Opacity ({Math.round((active.opacity ?? 1) * 100)}%)
+              <input type="range" min={0} max={1} step={0.05} value={active.opacity ?? 1}
+                     onChange={e => setProp(active.id, { opacity: Number(e.target.value) }, `opacity:${active.id}`)} />
+            </label>
+            <div className="designer-pair">
+              <label>Border<input type="color" value={active.border_color || "#DCD7E8"}
+                onChange={e => setProp(active.id, { border_color: e.target.value }, `bc:${active.id}`)} /></label>
+              <label>Border width<input type="number" min={0} step={0.25} value={active.border_width ?? 0}
+                onChange={e => setProp(active.id, { border_width: Number(e.target.value) }, `bw:${active.id}`)} /></label>
+            </div>
+          </>}
+
+          {active.type === "line" && <label>Colour<input type="color" value={active.color || "#DCD7E8"}
+            onChange={e => setProp(active.id, { color: e.target.value }, `color:${active.id}`)} /></label>}
+
+          {active.type === "barcode" && <>
+            <p className="designer-note">
+              Mandatory. Encodes each voucher's own number, which is unique across the whole portal.
+            </p>
+            <label>Bar colour<input type="color" value={active.color || "#000000"}
+              onChange={e => setProp(active.id, { color: e.target.value }, `color:${active.id}`)} /></label>
+            <label className="checkbox-row">
+              <input type="checkbox" checked={active.show_value !== false}
+                     onChange={e => setProp(active.id, { show_value: e.target.checked }, "")} />
+              Print the number underneath
+            </label>
+            {active.show_value !== false && <div className="designer-pair">
+              <label>Number size<input type="number" min={4} step={0.5} value={active.value_size ?? 7}
+                onChange={e => setProp(active.id, { value_size: Number(e.target.value) }, `vs:${active.id}`)} /></label>
+              <label>Number colour<input type="color" value={active.value_color || "#231B36"}
+                onChange={e => setProp(active.id, { value_color: e.target.value }, `vc:${active.id}`)} /></label>
+            </div>}
+          </>}
+
+          {active.type !== "barcode" && <label>Only show when
+            <select value={active.hide_if_empty || ""} onChange={e => setProp(active.id, { hide_if_empty: e.target.value || undefined }, "")}>
+              <option value="">Always show</option>
+              {catalogue.variables.map(variable => (
+                <option key={variable.key} value={variable.key}>{variable.label} has a value</option>
+              ))}
+            </select>
+          </label>}
+
+          <div className="designer-row">
+            <button type="button" className="link-button" onClick={() => duplicate(active.id)}>Duplicate</button>
+            <button type="button" className="link-button" onClick={() => setProp(active.id, { hidden: !active.hidden }, "")}>
+              {active.hidden ? "Show" : "Hide"}
+            </button>
+            <button type="button" className="link-button danger" onClick={() => remove(active.id)}>Delete</button>
+          </div>
         </div>}
-        {activeText && <div className="geo-props">
-          <p className="geo-panel-title">Text</p>
-          <label>Content<textarea value={activeText.text} onChange={e => patchText(activeText.id, { text: e.target.value })} /></label>
-          <label>X (pt)<input type="number" step="0.1" min={0} max={COUPON_W} value={activeText.x}
-            onChange={e => patchText(activeText.id, { x: Number(e.target.value) })} /></label>
-          <label>Y (pt)<input type="number" step="0.1" min={0} max={COUPON_H} value={activeText.y}
-            onChange={e => patchText(activeText.id, { y: Number(e.target.value) })} /></label>
-          <label>Font size (pt)<input type="number" step="0.5" min={1} value={activeText.size}
-            onChange={e => patchText(activeText.id, { size: Number(e.target.value) })} /></label>
-          <label>Font<select value={activeText.font} onChange={e => patchText(activeText.id, { font: e.target.value })}>
-            <option>Helvetica</option><option>Helvetica-Bold</option><option>Times-Roman</option><option>Times-Bold</option><option>Courier</option>
-          </select></label>
-          <label>Colour<input type="color" value={activeText.color} onChange={e => patchText(activeText.id, { color: e.target.value })} /></label>
-          <button type="button" className="link-button danger" onClick={() => removeText(activeText.id)}>Remove text</button>
-        </div>}
+
+        <div className="designer-section geo-props">
+          <p className="geo-panel-title">Card</p>
+          <label>Size
+            <select value={catalogue.coupon_presets.find(p => p.w === card.w && p.h === card.h)?.key || "custom"}
+                    onChange={e => {
+                      const preset = catalogue.coupon_presets.find(p => p.key === e.target.value);
+                      if (preset) applyCardSize(preset.w, preset.h);
+                    }}>
+              {catalogue.coupon_presets.map(preset => <option key={preset.key} value={preset.key}>{preset.label}</option>)}
+              <option value="custom">Custom</option>
+            </select>
+          </label>
+          <div className="designer-pair">
+            <label>Width (pt)<input type="number" min={100} step={1} value={card.w}
+              onChange={e => applyCardSize(Number(e.target.value) || card.w, card.h)} /></label>
+            <label>Height (pt)<input type="number" min={60} step={1} value={card.h}
+              onChange={e => applyCardSize(card.w, Number(e.target.value) || card.h)} /></label>
+          </div>
+          <label>Background<input type="color" value={doc.background || "#FFFFFF"}
+            onChange={e => edit({ ...doc, background: e.target.value }, "background")} /></label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={!doc.artwork?.hidden}
+                   onChange={e => edit({ ...doc, artwork: { x: 0, y: 0, w: card.w, h: card.h, ...doc.artwork, hidden: !e.target.checked } })} />
+            Show background artwork
+          </label>
+          {canAdmin && <label>{artwork ? "Replace artwork" : "Upload artwork"} <small>(JPEG/PNG, matching the card's shape)</small>
+            <input type="file" accept="image/png,image/jpeg" disabled={busy === "artwork"}
+                   onChange={e => e.target.files?.[0] && uploadArtwork(e.target.files[0])} />
+          </label>}
+          {busy === "artwork" && <div className="data-state">Uploading…</div>}
+          {canAdmin && <button type="button" className="link-button danger" disabled={saving} onClick={async () => {
+            if (!window.confirm("Empty this card back to just the barcode? This saves immediately.")) return;
+            setSaving(true);
+            try {
+              const updated = await fmsRequest<TemplateDetail>(`voucher-portal/templates/${template.id}/reset-geometry/`, { method: "POST", body: "{}" });
+              setDoc(updated.layout); setSaved(JSON.stringify(updated.layout)); setPast([]); setFuture([]); setSelected(null);
+            } catch (err: any) { setError(parseApiError(err)); }
+            finally { setSaving(false); }
+          }}>Reset to an empty card</button>}
+        </div>
       </div>
     </div>
   </section>;
@@ -1207,19 +1815,37 @@ function GeometryEditor({ template, onClose, onSaved }: { template: Template; on
 
 function TemplatesScreen({ canAdmin }: { canAdmin: boolean }) {
   const [templates, setTemplates] = useState<Template[]>([]);
+  const [layouts, setLayouts] = useState<Record<number, { layout: CardDocument; w: number; h: number }>>({});
+  const [catalogue, setCatalogue] = useState<Catalogue | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<number | null>(null);
-  const [uploadName, setUploadName] = useState("");
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState("");
+  const [showNew, setShowNew] = useState(false);
+  const [form, setForm] = useState({ name: "", preset: "adcoop" });
+  const [file, setFile] = useState<File | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState("");
   const [editing, setEditing] = useState<Template | null>(null);
 
   const load = async () => {
     setLoading(true);
-    const data = await fmsRequest<{ results: Template[] } | Template[]>("voucher-portal/templates/?page_size=100");
-    setTemplates(unwrap(data)); setLoading(false);
+    const data = await fmsRequest<{ results: (Template & { layout: CardDocument; coupon_width: number; coupon_height: number })[] }
+      | (Template & { layout: CardDocument; coupon_width: number; coupon_height: number })[]>("voucher-portal/templates/?page_size=100");
+    const list = unwrap(data);
+    setTemplates(list);
+    setLayouts(Object.fromEntries(list.map(t => [t.id, { layout: t.layout, w: t.coupon_width, h: t.coupon_height }])));
+    setLoading(false);
   };
-  useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    load();
+    fmsRequest<Catalogue>("voucher-portal/templates/field-catalogue/").then(setCatalogue).catch(() => setCatalogue(null));
+  }, []);
+
+  const sampleValues = useMemo(() => {
+    const map: Record<string, string> = {};
+    (catalogue?.variables || []).forEach(variable => { map[variable.key] = variable.sample; });
+    return map;
+  }, [catalogue]);
 
   const setDefault = async (template: Template) => {
     setBusyId(template.id);
@@ -1232,48 +1858,84 @@ function TemplatesScreen({ canAdmin }: { canAdmin: boolean }) {
     finally { setBusyId(null); }
   };
 
-  const upload = async (file: File) => {
-    setUploading(true); setUploadError("");
+  /** Artwork is optional: a card can be designed from nothing but elements on
+   *  a background colour, which is the point of the designer. */
+  const createTemplate = async () => {
+    setCreating(true); setCreateError("");
     try {
+      const preset = catalogue?.coupon_presets.find(item => item.key === form.preset);
       const body = new FormData();
-      body.append("name", uploadName || file.name);
-      body.append("artwork", file);
-      await fmsRequest("voucher-portal/templates/", { method: "POST", body });
-      setUploadName(""); await load();
-    } catch (error: any) { setUploadError(parseApiError(error)); }
-    finally { setUploading(false); }
+      body.append("name", form.name.trim() || "Untitled card");
+      if (preset) {
+        body.append("coupon_width", String(preset.w));
+        body.append("coupon_height", String(preset.h));
+      }
+      if (file) body.append("artwork", file);
+      const created = await fmsRequest<Template>("voucher-portal/templates/", { method: "POST", body });
+      setShowNew(false); setForm({ name: "", preset: "adcoop" }); setFile(null);
+      await load();
+      setEditing(created);  // straight into the designer - that's what they came for
+    } catch (error: any) { setCreateError(parseApiError(error)); }
+    finally { setCreating(false); }
   };
 
   if (editing) {
-    return <GeometryEditor template={editing} onClose={() => setEditing(null)}
-                           onSaved={() => { setEditing(null); load(); }} />;
+    return <TemplateDesigner template={editing} canAdmin={canAdmin} onClose={() => { setEditing(null); load(); }}
+                             onSaved={load} />;
   }
 
   return <section className="voucher-card">
-    <div className="voucher-card-head"><h2>Voucher templates</h2></div>
-    {canAdmin && <div className="voucher-inline-form" style={{ marginBottom: 18 }}>
-      <input placeholder="Template name" value={uploadName} onChange={e => setUploadName(e.target.value)} style={{ marginBottom: 8 }} />
-      <input type="file" accept="image/png,image/jpeg" disabled={uploading}
-        onChange={e => e.target.files?.[0] && upload(e.target.files[0])} />
-      {uploading && <div className="data-state">Uploading…</div>}
-      {uploadError && <div className="form-error">{uploadError}</div>}
+    <div className="voucher-card-head">
+      <h2>Voucher cards</h2>
+      <button type="button" className="primary designer-btn" onClick={() => setShowNew(open => !open)}>
+        {showNew ? "Cancel" : "New card design"}
+      </button>
+    </div>
+
+    {showNew && <div className="voucher-inline-form" style={{ marginBottom: 18 }}>
+      <label className="designer-field">Name
+        <input placeholder="e.g. Eid gift card" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
+      </label>
+      <label className="designer-field">Card size
+        <select value={form.preset} onChange={e => setForm({ ...form, preset: e.target.value })}>
+          {(catalogue?.coupon_presets || []).map(preset => (
+            <option key={preset.key} value={preset.key}>{preset.label}</option>
+          ))}
+        </select>
+      </label>
+      <label className="designer-field">Background artwork <small>(optional — design on a plain background if you prefer)</small>
+        <input type="file" accept="image/png,image/jpeg" onChange={e => setFile(e.target.files?.[0] || null)} />
+      </label>
+      {createError && <div className="form-error">{createError}</div>}
+      <button type="button" className="primary" disabled={creating} onClick={createTemplate}>
+        {creating ? "Creating…" : "Create and start designing"}
+      </button>
     </div>}
+
     {loading && <div className="data-state">Loading…</div>}
     {!loading && <div className="voucher-template-grid">
-      {templates.map(t => <div key={t.id} className="voucher-template-card">
-        {t.artwork ? <img src={t.artwork} alt={t.name} /> : <div className="voucher-template-placeholder">Default ADCOOP design</div>}
-        <strong>{t.name}</strong>
-        <div className="voucher-template-badges">
-          {t.is_default && <span className="chip active">Default</span>}
-          {!t.is_active && <span className="chip">Inactive</span>}
-        </div>
-        {canAdmin && <div className="voucher-template-actions">
-          {!t.is_default && <button type="button" className="link-button" disabled={busyId === t.id} onClick={() => setDefault(t)}>Set default</button>}
-          <button type="button" className="link-button" disabled={busyId === t.id} onClick={() => toggleActive(t)}>{t.is_active ? "Deactivate" : "Activate"}</button>
-          <button type="button" className="link-button" onClick={() => setEditing(t)}>Edit layout</button>
-        </div>}
-      </div>)}
-      {templates.length === 0 && <div className="data-state">No templates yet.</div>}
+      {templates.map(t => {
+        const stored = layouts[t.id];
+        return <div key={t.id} className="voucher-template-card">
+          <div className="voucher-template-thumb">
+            {stored ? <CardPreview document={stored.layout} artwork={t.artwork} width={stored.w} height={stored.h}
+                                   scale={200 / stored.w} values={sampleValues} />
+                    : <div className="voucher-template-placeholder">No layout</div>}
+          </div>
+          <strong>{t.name}</strong>
+          <div className="voucher-template-badges">
+            {t.is_default && <span className="chip active">Default</span>}
+            {!t.is_active && <span className="chip">Inactive</span>}
+            {stored && <span className="chip">{stored.layout.elements?.length || 0} element{(stored.layout.elements?.length || 0) === 1 ? "" : "s"}</span>}
+          </div>
+          <div className="voucher-template-actions">
+            <button type="button" className="link-button" onClick={() => setEditing(t)}>Design</button>
+            {canAdmin && !t.is_default && <button type="button" className="link-button" disabled={busyId === t.id} onClick={() => setDefault(t)}>Set default</button>}
+            {canAdmin && <button type="button" className="link-button" disabled={busyId === t.id} onClick={() => toggleActive(t)}>{t.is_active ? "Deactivate" : "Activate"}</button>}
+          </div>
+        </div>;
+      })}
+      {templates.length === 0 && <div className="data-state">No card designs yet — create one to get started.</div>}
     </div>}
   </section>;
 }
