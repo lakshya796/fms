@@ -6,20 +6,68 @@ management specification, followed by a plan for what is not there.
 Verdicts are evidence-based: every "present" claim below points at the model, endpoint or
 service that implements it. Everything else is a gap with a proposed design.
 
-**Scorecard — 3 complete, 15 partial, 9 absent.**
+## Implementation update
+
+Phases 0, 2 and 4 of the plan below have been built on branch
+`claude/fms-feature-validation-logi4i` (PR #20) — the three phases identified as the
+shortest path to the spec's central claim: one trip carrying one cost stack, margin on
+a hired truck computable, and allocation as a ranked, costed recommendation rather than
+a dispatcher's guess. All backend work; 278 tests pass, no regressions.
+
+- **Phase 0** — `Order.ensure_trip()` (`fleet/models.py`) creates and reuses one trip per
+  assigned order, wired into assign/dispatch/complete/cancel and `Indent.convert`,
+  fixing the zero-fuel bug in `order_profitability`. `Vehicle.ownership` is now a closed
+  own/attached/leased/outside choice with a `Vendor` FK. `VehicleStatusLog` and
+  `set_vehicle_status()` back the spec's 12-state vocabulary, with a manual
+  `POST /vehicles/{id}/set-status/` for breakdown/workshop/idle and a
+  `GET /vehicles/{id}/status-history/`. `iam.OutboundMessage` +
+  `iam/messaging.py` record and can resend every outbound email
+  (`POST /iam/outbound-messages/{id}/resend/`); `EMAIL_BACKEND` defaults to console
+  output locally, SMTP (including SES's SMTP interface) via env vars in production.
+  Celery/Redis (item 0.4) was deliberately **not** added — nothing in Phases 0/2/4
+  needed asynchronous processing, and it stays a prerequisite for Phase 3/6 instead.
+- **Phase 2** — `fleet.VehicleHire` (`fleet/models.py`) carries the commercial terms of
+  an outside-sourced trip: agreed rate and basis, loading/unloading, detention, toll
+  responsibility, advance, payment terms. `fleet/vendor_billing.py` computes the payable
+  and raises an idempotent `VendorBill` (now linked to the hire) posted to the ledger.
+  `GET /orders/{id}/settlement/` is the four-sided sheet (customer/vendor/driver/vehicle).
+  `POST /hires/{id}/send-confirmation/` sends the vendor confirmation email through the
+  outbox.
+- **Phase 4** — `GET /vehicles/availability/` ranks vehicles by distance from their last
+  known position with a document-expiry flag. `fleet/allocation.py` scores own vehicles
+  (dead km + laden km against this fleet's own running cost) and vendor capacity (the
+  vendor's own hire history, or a flagged estimate) by expected profit, exposed at
+  `POST /orders/{id}/recommend-vehicles/`. `POST /orders/{id}/confirm-vehicle/` commits
+  the choice in one call: links or registers the vehicle, opens the trip once a driver
+  is linked, raises a `VehicleHire` for outside-sourced capacity, flags expired
+  documents, and sends the vendor confirmation.
+
+**What this does not change:** the Next.js console has no screens yet for
+recommend/confirm-vehicle, the settlement sheet, hires, or vehicle status/availability —
+only the API exists. Phases 1 (vehicle requirement capture, tyres, generic documents),
+3 (GPS/telematics/cold chain), 5 (itemised cost model, invoice line items), 6 (alerts,
+MIS, control tower) and 7 (learned estimators) are unbuilt, as originally scoped. The
+allocation scorer in Phase 4 is deliberately simple where later phases would sharpen
+it: dead km is only computable when a vehicle's live position is known (Phase 3), and
+the vendor cost estimate falls back to a flat markup over own cost when a vendor has no
+hire history yet — both are flagged (`dead_km: null`, `estimated_cost: true`) rather
+than silently guessed.
+
+**Scorecard — 3 complete, 15 partial, 9 absent** (pre-implementation baseline; rows
+marked ⬆ below now have real backend support that the table's original wording predates).
 
 | # | Area | Verdict |
 |---|------|---------|
 | 1 | Order / O2A management | 🟡 Partial |
-| 2 | Vehicle master | 🟡 Partial |
-| 3 | Vehicle availability | ❌ Absent |
+| 2 | Vehicle master | 🟡 Partial ⬆ ownership/vendor now real |
+| 3 | Vehicle availability | 🟡 ⬆ `/vehicles/availability/`, status log |
 | 4 | GPS vehicle tracking | 🟡 Thin |
-| 5 | Nearby vehicle recommendation | ❌ Absent |
-| 6 | Vehicle allocation & confirmation | 🟡 Manual only |
-| 7 | Outside-sourced / vendor vehicles | 🟡 Partial |
+| 5 | Nearby vehicle recommendation | 🟡 ⬆ `/orders/{id}/recommend-vehicles/` |
+| 6 | Vehicle allocation & confirmation | 🟡 ⬆ `/orders/{id}/confirm-vehicle/` + vendor email |
+| 7 | Outside-sourced / vendor vehicles | 🟡 ⬆ `VehicleHire` commercials |
 | 8 | Freight rate recommendation | 🟡 Partial |
-| 9 | Profitability analysis | 🟡 Partial |
-| 10 | Trip management | 🟡 Split / thin |
+| 9 | Profitability analysis | 🟡 ⬆ `/orders/{id}/settlement/`, fuel bug fixed |
+| 10 | Trip management | 🟡 ⬆ unified with Order via `ensure_trip()` |
 | 11 | Driver management & payment | 🟡 Partial |
 | 12 | Vehicle expense management | ✅ Present |
 | 13 | Fuel management | ✅ Present |
@@ -28,13 +76,13 @@ service that implements it. Everything else is a gap with a proposed design.
 | 16 | Movement & location reports | ❌ Absent |
 | 17 | POD & delivery management | ✅ Present |
 | 18 | Freight billing | 🟡 Partial |
-| 19 | Vendor billing & payment | 🟡 Partial |
-| 20 | Accounts & complete settlement | 🟡 Partial |
+| 19 | Vendor billing & payment | 🟡 ⬆ `VendorBill.hire`, payable computation |
+| 20 | Accounts & complete settlement | 🟡 ⬆ four-sided settlement sheet |
 | 21 | Dashboard & MIS | 🟡 Partial |
 | 22 | Alerts & notifications | ❌ Absent |
-| 23 | AI-based vehicle allocation | ❌ Absent |
+| 23 | AI-based vehicle allocation | 🟡 ⬆ deterministic scorer built, ML unbuilt |
 | 24 | AI freight recommendation | ❌ Absent |
-| 25 | Predictive vehicle availability | ❌ Absent |
+| 25 | Predictive vehicle availability | ❌ Absent (position-based availability only) |
 | 26 | Predictive maintenance | 🟡 Preventive, not predictive |
 | 27 | Control tower / command centre | ❌ Absent |
 
@@ -50,6 +98,10 @@ missing, and most of the other gaps hang off those three.
 Before the item-by-item audit, two problems in the current design constrain most of the plan.
 
 ### Finding 1 — There are two parallel operational spines that never join
+
+**Status: resolved in PR #20.** `Order.ensure_trip()` now creates and reuses one trip per
+assigned order; `order_profitability` reports real fuel cost. Left below as the original
+diagnosis, since it explains why the fix took the shape it did.
 
 `Trip` (`backend/fleet/models.py:52`) is the older LR/manifest spine: vehicle, driver, many
 lorry receipts, dispatch/close. `Order` (`backend/fleet/models.py:339`) is the FleetOps
@@ -76,6 +128,11 @@ payable — assumes one trip identity carrying one cost stack. Unifying these is
 not cleanup.
 
 ### Finding 2 — There is no asynchronous or outbound-communication capability at all
+
+**Status: partially resolved in PR #20.** `iam.OutboundMessage` + `iam/messaging.py` now
+record and send email (console backend locally, SMTP in production), which is what
+Phase 2's vendor confirmation needed. Celery/Redis async processing is still absent and
+remains a prerequisite for Phase 3 (GPS polling) and Phase 6 (scheduled alerts).
 
 `backend/requirements.txt` is Django, DRF, CORS headers, gunicorn, psycopg, whitenoise,
 reportlab, boto3. There is no Celery, no Redis, no scheduler, no `EMAIL_BACKEND` in
@@ -460,7 +517,7 @@ shippable. Sizing assumes one full-stack engineer familiar with the codebase; "w
 
 The three fastest routes to visible value are marked **⚡**.
 
-### Phase 0 — Structural prerequisites · ~2 weeks · ⚡
+### Phase 0 — Structural prerequisites · ~2 weeks · ⚡ · ✅ Built (PR #20)
 
 Nothing in later phases is safe until these land.
 
@@ -522,7 +579,7 @@ add `document_category`, and add real file upload by lifting the pattern from
 `backend/voucher_portal/storage.py`. Add `TRIP_DOCUMENT_TYPES` for delivery documents and
 temperature reports.
 
-### Phase 2 — Vendor hire commercials · ~2 weeks · ⚡
+### Phase 2 — Vendor hire commercials · ~2 weeks · ⚡ · ✅ Built (PR #20)
 
 The highest-value gap. This is what makes margin computable.
 
@@ -578,7 +635,7 @@ acknowledged by) raised by a detector task. Loading and delivery temperatures ca
 ePOD. A temperature report per trip, exportable as PDF via the existing `reportlab` dependency
 and attachable as a trip document.
 
-### Phase 4 — Availability, recommendation and allocation · ~3 weeks · ⚡
+### Phase 4 — Availability, recommendation and allocation · ~3 weeks · ⚡ · ✅ Built (PR #20)
 
 The heart of the spec, and deterministic — no ML required.
 

@@ -100,6 +100,42 @@ class VehicleViewSet(viewsets.ModelViewSet):
         vehicle = self.get_object()
         records = vehicle.status_log.select_related("place", "trip").all()[:200]
         return Response(VehicleStatusLogSerializer(records, many=True).data)
+
+    @action(detail=False, methods=["get"])
+    def availability(self, request):
+        """Available now, and available shortly nearby - who can take an order at
+        `place`, ranked by distance, with a document-validity flag so a dispatcher
+        does not allocate a truck whose papers have lapsed.
+        """
+        place = None
+        place_id = request.query_params.get("place")
+        if place_id:
+            try:
+                place = Place.objects.get(pk=place_id)
+            except Place.DoesNotExist:
+                raise ValidationError("Unknown place.")
+        radius_km = request.query_params.get("radius_km")
+        queryset = self.get_queryset().select_related("current_place", "current_trip", "vendor")
+        status_filter = request.query_params.get("status")
+        queryset = queryset.filter(status=status_filter) if status_filter else queryset.filter(status__in=["available", "idle", "running", "allocated"])
+        today = timezone.localdate()
+        results = []
+        for vehicle in queryset:
+            distance = None
+            if place is not None and place.latitude is not None and vehicle.current_latitude is not None:
+                distance = haversine_km(vehicle.current_latitude, vehicle.current_longitude, place.latitude, place.longitude)
+            if radius_km is not None and (distance is None or distance > float(radius_km)):
+                continue
+            expired_documents = ComplianceDocument.objects.filter(vehicle=vehicle, expiry_date__isnull=False, expiry_date__lt=today).count()
+            results.append({
+                "id": vehicle.pk, "registration_number": vehicle.registration_number, "vehicle_type": vehicle.vehicle_type,
+                "capacity_kg": vehicle.capacity_kg, "ownership": vehicle.ownership, "status": vehicle.status,
+                "current_place": getattr(vehicle.current_place, "name", ""), "current_trip": getattr(vehicle.current_trip, "number", ""),
+                "distance_km": distance, "available_now": vehicle.status in ("available", "idle"),
+                "expected_available_at": vehicle.expected_available_at, "expired_documents": expired_documents,
+            })
+        results.sort(key=lambda row: (row["distance_km"] is None, row["distance_km"] or 0))
+        return Response({"place": place.name if place else None, "count": len(results), "vehicles": results})
 class LorryReceiptViewSet(viewsets.ModelViewSet):
     permission_classes = [HasModulePermission]
     required_permission = "operations.view"; required_write_permission = "operations.manage"
@@ -150,14 +186,17 @@ from rest_framework import status as http_status
 from rest_framework.exceptions import ValidationError
 from .models import (Vendor, ServiceArea, Zone, Place, Fleet, ServiceRate, ServiceQuote, Order, Waypoint,
                      TrackingActivity, ProofOfDelivery, FuelEntry, TripExpense, Issue, ComplianceDocument,
-                     MaintenanceSchedule, ORDER_STATUSES, haversine_km, money)
+                     MaintenanceSchedule, VehicleHire, ORDER_STATUSES, haversine_km, money)
 from .serializers import (VendorSerializer, ServiceAreaSerializer, ZoneSerializer, PlaceSerializer, FleetSerializer,
                           ServiceRateSerializer, ServiceQuoteSerializer, OrderSerializer, WaypointSerializer,
                           TrackingActivitySerializer, ProofOfDeliverySerializer, PublicOrderTrackingSerializer,
                           FuelEntrySerializer, TripExpenseSerializer, IssueSerializer, ComplianceDocumentSerializer,
-                          MaintenanceScheduleSerializer, QuoteRequestSerializer, ProjectionRequestSerializer)
+                          MaintenanceScheduleSerializer, VehicleHireSerializer, QuoteRequestSerializer, ProjectionRequestSerializer)
 from .billing import BillingError, build_invoice_from_order, project_lane
+from .vendor_billing import HireBillingError, confirmation_email, raise_vendor_bill, vendor_payable
+from .allocation import recommend_vehicles
 from accounting.services import PostingError, post_customer_invoice
+from iam import messaging as outbound_messaging
 
 
 class FilterableViewSet(viewsets.ModelViewSet):
@@ -510,6 +549,206 @@ class OrderViewSet(FilterableViewSet):
                          "journal_entry": ledger, "ledger_error": ledger_error,
                          "order": self.get_serializer(order).data},
                         status=http_status.HTTP_201_CREATED if created else http_status.HTTP_200_OK)
+
+    @action(detail=True, methods=["get"])
+    def settlement(self, request, pk=None):
+        """The four-sided settlement sheet: what the customer owes, what the vendor
+        is owed, what the driver is owed, and what the vehicle actually cost - on
+        one screen, so nobody has to open four modules to see if a trip is closed out.
+        """
+        order = self.get_object()
+        invoice = order.invoices.order_by("created_at").first()
+        customer_side = None
+        if invoice:
+            received = invoice.allocations.aggregate(value=Sum("amount"))["value"] or 0
+            customer_side = {"invoice_number": invoice.number, "total_amount": float(invoice.total_amount),
+                             "received": float(money(received)), "outstanding": float(money(invoice.total_amount - received)),
+                             "status": invoice.status}
+
+        hire = order.hires.exclude(status="cancelled").order_by("-created_at").first()
+        vendor_side = None
+        if hire:
+            payable = vendor_payable(hire)
+            bill = hire.bills.order_by("-created_at").first()
+            vendor_side = {"vendor": hire.vendor.name, "hire_status": hire.status, "payable": payable,
+                          "bill_number": bill.number if bill else None,
+                          "bill_status": bill.status if bill else None}
+
+        driver_side = None
+        if order.trip_id:
+            settlement = Settlement.objects.filter(trip_id=order.trip_id).order_by("-created_at").first()
+            if settlement:
+                driver_side = {"driver": settlement.driver.name, "advance_amount": float(settlement.advance_amount),
+                               "approved_expenses": float(settlement.approved_expenses),
+                               "net_payable": float(settlement.net_payable), "status": settlement.status}
+
+        fuel = FuelEntry.objects.filter(trip_id=order.trip_id).aggregate(value=Sum("amount"))["value"] or 0 if order.trip_id else 0
+        expenses = TripExpense.objects.filter(order=order).aggregate(value=Sum("amount"))["value"] or 0
+        vehicle_side = {"fuel": float(money(fuel)), "trip_expenses": float(money(expenses)),
+                        "total_cost": float(money(Decimal(str(fuel)) + Decimal(str(expenses))))}
+
+        revenue = money(invoice.total_amount if invoice else order.total_amount)
+        vendor_cost = money(vendor_side["payable"]["gross_amount"]) if vendor_side else Decimal("0")
+        total_cost = money(vendor_cost + Decimal(str(fuel)) + Decimal(str(expenses)))
+        actual_profit = money(revenue - total_cost)
+
+        return Response({
+            "order": order.number, "order_status": order.status,
+            "customer": customer_side, "vendor": vendor_side, "driver": driver_side, "vehicle": vehicle_side,
+            "revenue": float(revenue), "total_cost": float(total_cost), "actual_profit": float(actual_profit),
+            "settled": bool(customer_side and customer_side["outstanding"] <= 0
+                          and (not vendor_side or (vendor_side["payable"]["balance_due"] <= 0))),
+        })
+
+    @action(detail=True, methods=["post"], url_path="recommend-vehicles")
+    def recommend_vehicles_action(self, request, pk=None):
+        """The ranked comparison table: own and vendor capacity, dead km, cost,
+        revenue and expected profit, best option first - not simply the nearest.
+        """
+        order = self.get_object()
+        max_dead_km = request.data.get("max_dead_km")
+        candidates = recommend_vehicles(order, max_dead_km=Decimal(str(max_dead_km)) if max_dead_km else None,
+                                        include_vendor=request.data.get("include_vendor", True))
+        return Response({"order": order.number, "count": len(candidates), "candidates": candidates})
+
+    @action(detail=True, methods=["post"], url_path="confirm-vehicle")
+    @transaction.atomic
+    def confirm_vehicle(self, request, pk=None):
+        """Commit a vehicle to the order: link it (creating a Vehicle row for a
+        vendor's own truck when one is not already on file), create the trip, raise
+        a VehicleHire when it is outside-sourced, check document validity, and send
+        the vendor confirmation - the whole of allocation in one call.
+
+        A driver is optional here: an outside-sourced trip's driver is the vendor's
+        own person, recorded on the hire, not forced into the internal driver master.
+        Without a driver, `ensure_trip` cannot yet open a trip - one is created the
+        moment a driver is linked (through `assign`, or a follow-up call here).
+        """
+        order = self.get_object()
+        vehicle_id = request.data.get("vehicle")
+        vendor_id = request.data.get("vendor")
+        driver_id = request.data.get("driver")
+        outside = request.data.get("outside_vehicle") or {}
+        hire_terms = request.data.get("hire") or {}
+
+        vehicle = None
+        if vehicle_id:
+            vehicle = Vehicle.objects.get(pk=vehicle_id)
+        elif outside.get("vehicle_number") and vendor_id:
+            vendor = Vendor.objects.get(pk=vendor_id)
+            vehicle, _ = Vehicle.objects.get_or_create(
+                registration_number=outside["vehicle_number"],
+                defaults={"vehicle_type": outside.get("vehicle_type", ""), "capacity_kg": outside.get("capacity_kg") or 0,
+                         "ownership": "outside", "vendor": vendor, "status": "allocated"})
+        if not vehicle:
+            raise ValidationError("Provide a vehicle, or outside_vehicle details with a vendor, to confirm an allocation.")
+
+        order.vehicle = vehicle
+        if driver_id:
+            order.driver = Driver.objects.get(pk=driver_id)
+        if vendor_id:
+            order.vendor = Vendor.objects.get(pk=vendor_id)
+        elif vehicle.vendor_id:
+            order.vendor = vehicle.vendor
+        order.status = "assigned"
+        order.save()
+        trip = order.ensure_trip()
+        set_vehicle_status(vehicle, "allocated", trip=trip, reason=f"Confirmed for order {order.number}")
+
+        today = timezone.localdate()
+        expired = ComplianceDocument.objects.filter(vehicle=vehicle, expiry_date__isnull=False, expiry_date__lt=today)
+        warnings = [f"{doc.get_document_type_display()} on {vehicle.registration_number} expired {doc.expiry_date}."
+                   for doc in expired]
+
+        hire, confirmation_sent = None, False
+        if vehicle.ownership in ("outside", "attached") and order.vendor_id:
+            hire = VehicleHire.objects.create(
+                order=order, trip=trip, vendor_id=order.vendor_id, hire_type=hire_terms.get("hire_type", "spot"),
+                outside_vehicle_number=vehicle.registration_number if vehicle.ownership == "outside" else "",
+                outside_vehicle_type=vehicle.vehicle_type, outside_capacity_kg=vehicle.capacity_kg,
+                driver_name=hire_terms.get("driver_name", ""), driver_phone=hire_terms.get("driver_phone", ""),
+                driver_licence=hire_terms.get("driver_licence", ""), gps_available=bool(hire_terms.get("gps_available")),
+                agreed_rate=hire_terms.get("agreed_rate") or 0, rate_basis=hire_terms.get("rate_basis", "trip"),
+                loading_charge=hire_terms.get("loading_charge") or 0, unloading_charge=hire_terms.get("unloading_charge") or 0,
+                detention_rate_per_day=hire_terms.get("detention_rate_per_day") or 0,
+                toll_responsibility=hire_terms.get("toll_responsibility", "vendor"),
+                other_charges=hire_terms.get("other_charges") or 0, advance_amount=hire_terms.get("advance_amount") or 0,
+                payment_terms_days=hire_terms.get("payment_terms_days") or order.vendor.payment_terms_days,
+                status="confirmed")
+            if hire.vendor.email:
+                subject, body = confirmation_email(hire)
+                outbound_messaging.send_email(to=hire.vendor.email, subject=subject, body=body,
+                                              template_key="vendor_confirmation", reference_type="hire",
+                                              reference_id=hire.pk, created_by=request.user.get_username())
+                confirmation_sent = True
+            else:
+                warnings.append(f"{hire.vendor.name} has no email on file - the confirmation was not sent.")
+
+        order.log("assigned", "ORDER_VEHICLE_CONFIRMED",
+                  f"{vehicle.registration_number} confirmed" + (f" via {order.vendor.name}" if order.vendor_id else ""))
+        return Response({"order": self.get_serializer(order).data,
+                         "hire": VehicleHireSerializer(hire).data if hire else None,
+                         "warnings": warnings, "vendor_confirmation_sent": confirmation_sent})
+
+
+class VehicleHireViewSet(FilterableViewSet):
+    """The commercial terms of an outside-sourced trip, and its settlement."""
+    queryset = VehicleHire.objects.select_related("order", "vendor", "trip").all()
+    serializer_class = VehicleHireSerializer
+    required_permission = "operations.view"; required_write_permission = "operations.manage"
+    filter_fields = ["order", "vendor", "trip", "status", "hire_type"]
+    search_fields = ["outside_vehicle_number", "driver_name", "vendor__name"]
+
+    @action(detail=True, methods=["post"])
+    def confirm(self, request, pk=None):
+        hire = self.get_object()
+        if hire.status != "draft":
+            raise ValidationError(f"A hire that is {hire.status} cannot be confirmed again.")
+        hire.status = "confirmed"
+        hire.save(update_fields=["status", "updated_at"])
+        return Response(self.get_serializer(hire).data)
+
+    @action(detail=True, methods=["get"])
+    def payable(self, request, pk=None):
+        hire = self.get_object()
+        detention_days = request.query_params.get("detention_days")
+        return Response(vendor_payable(hire, detention_days=Decimal(detention_days) if detention_days else None))
+
+    @action(detail=True, methods=["post"], url_path="raise-bill")
+    @transaction.atomic
+    def raise_bill(self, request, pk=None):
+        hire = self.get_object()
+        try:
+            bill, created = raise_vendor_bill(hire, detention_days=request.data.get("detention_days"),
+                                             created_by=request.user.get_username())
+        except HireBillingError as error:
+            raise ValidationError(str(error))
+        ledger, ledger_error = None, ""
+        if request.data.get("post_to_ledger", True):
+            from accounting.services import post_vendor_bill
+            try:
+                entry = post_vendor_bill(bill, created_by=request.user.get_username())
+                ledger = {"number": entry.number, "id": entry.pk}
+            except PostingError as error:
+                ledger_error = str(error)
+        return Response({"bill_number": bill.number, "bill_id": bill.pk, "created": created,
+                         "journal_entry": ledger, "ledger_error": ledger_error,
+                         "hire": self.get_serializer(hire).data},
+                        status=http_status.HTTP_201_CREATED if created else http_status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="send-confirmation")
+    def send_confirmation(self, request, pk=None):
+        """Email the transport owner what they need to put a truck on the road,
+        recorded and resendable through the outbound-messages log."""
+        hire = self.get_object()
+        if not hire.vendor.email:
+            raise ValidationError(f"{hire.vendor.name} has no email address on file.")
+        subject, body = confirmation_email(hire)
+        message = outbound_messaging.send_email(to=hire.vendor.email, subject=subject, body=body,
+                                                template_key="vendor_confirmation", reference_type="hire",
+                                                reference_id=hire.pk, created_by=request.user.get_username())
+        return Response({"message_id": message.pk, "status": message.status, "to": message.to_address,
+                         "error": message.error})
 
 
 class WaypointViewSet(FilterableViewSet):
