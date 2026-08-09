@@ -1,25 +1,24 @@
 """Where generated PDFs live.
 
-The brief wants individual voucher PDFs on S3 for digital delivery, plus one
-combined PDF for print. This EC2 box has no S3 credentials configured today, so
-`store_file` writes to `MEDIA_ROOT` (which survives deploys - see
-`docs/DEPLOYMENT.md`) and returns a locally-served URL. The moment
-`VOUCHER_PORTAL_S3_BUCKET` (and standard AWS credentials) are set in the
-environment, this switches to uploading to that bucket with no code change -
-callers only ever see a URL back, never a path.
+Individual and combined voucher PDFs are stored in the `phlozmedia` bucket in
+ap-south-1. Credentials are not static: boto3 obtains short-lived credentials
+from the IAM role attached to the EC2 instance.
 """
 import mimetypes
 import os
-import uuid
+from urllib.parse import quote
 
 from django.conf import settings
 
-_S3_BUCKET = os.getenv("VOUCHER_PORTAL_S3_BUCKET", "")
+_S3_BUCKET = "phlozmedia"
+_S3_REGION = "ap-south-1"
 
 
 def _s3_client():
     import boto3
-    return boto3.client("s3", region_name=os.getenv("AWS_REGION", "ap-south-1"))
+    # No static credentials here: boto3 obtains short-lived credentials from
+    # the IAM instance role attached to EC2.
+    return boto3.client("s3", region_name=_S3_REGION)
 
 
 def store_file(key, content: bytes, content_type="application/pdf") -> str:
@@ -27,9 +26,16 @@ def store_file(key, content: bytes, content_type="application/pdf") -> str:
     'voucher-portal/batches/42/combined.pdf') and return a URL to fetch it."""
     if _S3_BUCKET:
         client = _s3_client()
-        client.put_object(Bucket=_S3_BUCKET, Key=key, Body=content, ContentType=content_type)
-        region = os.getenv("AWS_REGION", "ap-south-1")
-        return f"https://{_S3_BUCKET}.s3.{region}.amazonaws.com/{key}"
+        kwargs = {
+            "Bucket": _S3_BUCKET, "Key": key, "Body": content, "ContentType": content_type,
+            "ContentDisposition": f'inline; filename="{os.path.basename(key)}"',
+        }
+        # PDFs contain recipient data and stay private by default. This opt-in
+        # exists only for buckets whose policy intentionally permits public ACLs.
+        if os.getenv("VOUCHER_PORTAL_S3_PUBLIC", "").lower() in ("1", "true", "yes"):
+            kwargs["ACL"] = "public-read"
+        client.put_object(**kwargs)
+        return f"https://{_S3_BUCKET}.s3.{_S3_REGION}.amazonaws.com/{quote(key, safe='/')}"
 
     full_path = os.path.join(settings.MEDIA_ROOT, key)
     os.makedirs(os.path.dirname(full_path), exist_ok=True)

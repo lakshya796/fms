@@ -84,6 +84,18 @@ class _PreviewBatch:
 class _PreviewVoucher:
     def __init__(self, number):
         self.number = number
+        self.recipient_name = "Sample Name"
+        self.recipient_phone = "+971 50 123 4567"
+        self.recipient_email = "name@example.com"
+
+
+def refresh_voucher_pdf(voucher):
+    """Render and store the final PDF after recipient data changes."""
+    pdf_bytes = build_voucher_pdf(voucher.batch, voucher)
+    url = storage.store_file(storage.voucher_pdf_key(voucher.batch_id, voucher.number), pdf_bytes)
+    voucher.pdf_url = url
+    voucher.save(update_fields=["pdf_url", "updated_at"])
+    return url
 
 
 def render_preview(data: dict) -> bytes:

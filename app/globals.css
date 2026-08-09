@@ -343,6 +343,9 @@ tr.clickable:hover td{background:#f8faf7}
 .geo-chip:hover{background:#fff}
 .geo-chip.selected{background:var(--voucher-purple);color:#fff;z-index:3}
 .geo-chip:active{cursor:grabbing}
+.geo-free-text{position:absolute;transform:translateY(-50%);padding:1px 3px;border:1px dashed transparent;
+  background:transparent;white-space:pre;cursor:grab;line-height:1}
+.geo-free-text:hover,.geo-free-text.selected{border-color:var(--voucher-purple);background:rgba(255,255,255,.72)}
 .geo-panel{border:1px solid var(--voucher-line);border-radius:10px;padding:14px}
 .geo-panel-title{font-size:9px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--voucher-muted);margin:0 0 10px}
 .geo-field-list{list-style:none;margin:0 0 16px;padding:0;display:flex;flex-direction:column;gap:2px;max-height:400px;overflow-y:auto}

@@ -948,9 +948,10 @@ function ReportsScreen({ departments, voucherTypes }: { departments: Department[
   </div>;
 }
 
-type GeometryField = { key: string; x: number; y: number; size?: number; w?: number; h?: number; line_height?: number; color?: string; font?: string; static?: string };
-type Geometry = { artwork?: any; card?: any; fields: GeometryField[] };
-type CatalogueEntry = { key: string; label: string; kind: string; has_static_text?: boolean };
+type GeometryField = { key: string; x: number; y: number; size?: number; w?: number; h?: number; line_height?: number; color?: string; font?: string };
+type TextLayer = { id: string; text: string; x: number; y: number; size: number; color: string; font: string };
+type Geometry = { version?: number; artwork?: any; fields: GeometryField[]; text_layers?: TextLayer[] };
+type CatalogueEntry = { key: string; label: string; kind: string; required?: boolean };
 
 /** Drag-to-position editor for a template's field layout (§5 "user-editable
  *  field positions"). Positions are points from the coupon's top-left corner,
@@ -976,7 +977,10 @@ function GeometryEditor({ template, onClose, onSaved }: { template: Template; on
       const cat = await fmsRequest<{ fields: CatalogueEntry[]; defaults: Geometry }>("voucher-portal/templates/field-catalogue/");
       setCatalogue(cat.fields);
       const full = await fmsRequest<Template & { field_geometry: Geometry }>(`voucher-portal/templates/${template.id}/`);
-      setGeometry(full.field_geometry?.fields ? full.field_geometry : cat.defaults);
+      // Old templates used discount-specific fixed fields. Opening one in the
+      // new editor upgrades it to the four-variable layer document locally;
+      // nothing is persisted until Confirm & save is clicked.
+      setGeometry(full.field_geometry?.version === 2 ? full.field_geometry : cat.defaults);
     })();
   }, [template.id]);
 
@@ -988,12 +992,31 @@ function GeometryEditor({ template, onClose, onSaved }: { template: Template; on
     setPreviewUrl("");
   };
 
+  const patchText = (id: string, patch: Partial<TextLayer>) => {
+    setGeometry(g => g && ({ ...g, text_layers: (g.text_layers || []).map(t => t.id === id ? { ...t, ...patch } : t) }));
+    setPreviewUrl("");
+  };
+
+  const addText = () => {
+    const id = `text-${Date.now()}`;
+    setGeometry(g => g && ({ ...g, version: 2, text_layers: [...(g.text_layers || []), {
+      id, text: "New text", x: 24, y: 30, size: 12, color: "#231B36", font: "Helvetica",
+    }] }));
+    setSelected(id);
+  };
+
+  const removeText = (id: string) => {
+    setGeometry(g => g && ({ ...g, text_layers: (g.text_layers || []).filter(t => t.id !== id) }));
+    setSelected(null); setPreviewUrl("");
+  };
+
   const onPointerMove = (event: React.PointerEvent) => {
     if (!dragging || !canvasRef.current) return;
     const rect = canvasRef.current.getBoundingClientRect();
     const x = Math.round(Math.max(0, Math.min(COUPON_W, (event.clientX - rect.left) / (rect.width / COUPON_W))) * 10) / 10;
     const y = Math.round(Math.max(0, Math.min(COUPON_H, (event.clientY - rect.top) / (rect.height / COUPON_H))) * 10) / 10;
-    patchField(dragging, { x, y });
+    if ((geometry?.text_layers || []).some(t => t.id === dragging)) patchText(dragging, { x, y });
+    else patchField(dragging, { x, y });
   };
 
   const save = async () => {
@@ -1032,22 +1055,23 @@ function GeometryEditor({ template, onClose, onSaved }: { template: Template; on
   if (!geometry) return <section className="voucher-card"><div className="data-state">Loading layout…</div></section>;
 
   const active = geometry.fields.find(f => f.key === selected) || null;
-  const card = geometry.card || {};
+  const activeText = (geometry.text_layers || []).find(t => t.id === selected) || null;
 
   return <section className="voucher-card">
     <div className="voucher-card-head">
       <h2>Layout — {template.name}</h2>
       <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
         <button type="button" className="link-button" onClick={resetToDefault} disabled={saving}>Reset to default</button>
-        <button type="button" className="link-button" onClick={renderPreview} disabled={previewing}>{previewing ? "Rendering…" : "Preview PDF"}</button>
+        <button type="button" className="link-button" onClick={addText}>Add text</button>
+        <button type="button" className="link-button" onClick={renderPreview} disabled={previewing}>{previewing ? "Rendering…" : "Verify PDF"}</button>
         <button type="button" className="secondary" style={{ width: "auto", padding: "0 14px", height: 34 }} onClick={onClose}>Close</button>
-        <button type="button" className="primary" style={{ width: "auto", padding: "0 16px", height: 34 }} disabled={saving} onClick={save}>{saving ? "Saving…" : "Save layout"}</button>
+        <button type="button" className="primary" style={{ width: "auto", padding: "0 16px", height: 34 }} disabled={saving} onClick={save}>{saving ? "Saving…" : "Confirm & save"}</button>
       </div>
     </div>
 
     <p style={{ fontSize: 11, color: "var(--voucher-muted)", marginBottom: 12 }}>
-      Drag a field to move it, or pick one and type exact coordinates. Positions are
-      in points from the coupon's top-left corner — the same units the printed PDF uses.
+      This canvas updates immediately. Barcode is mandatory. Name, phone and email are optional
+      voucher variables; add any other wording as styled text. Confirm only after verifying the PDF.
     </p>
     {error && <div className="form-error" style={{ marginBottom: 12 }}>{error}</div>}
 
@@ -1056,19 +1080,22 @@ function GeometryEditor({ template, onClose, onSaved }: { template: Template; on
         <div ref={canvasRef} className="geo-canvas"
              style={{ width: DISPLAY_W, height: COUPON_H * scale, backgroundImage: template.artwork ? `url(${template.artwork})` : undefined }}
              onPointerMove={onPointerMove} onPointerUp={() => setDragging(null)} onPointerLeave={() => setDragging(null)}>
-          {card.w && <div className="geo-card-box" style={{
-            left: (card.x || 0) * scale, top: (card.y || 0) * scale,
-            width: card.w * scale, height: (card.h || 0) * scale,
-          }} />}
           {geometry.fields.map(field => (
             <button key={field.key} type="button"
                     className={"geo-chip" + (selected === field.key ? " selected" : "")}
                     style={{ left: field.x * scale, top: field.y * scale }}
                     onPointerDown={event => { event.preventDefault(); setSelected(field.key); setDragging(field.key); }}
                     onClick={() => setSelected(field.key)}>
-              {labelFor(field.key)}
+              {field.key === "barcode" ? "▥ SAMPLE0001" : field.key === "recipient_name" ? "Sample Name" : field.key === "recipient_phone" ? "+971 50 123 4567" : "name@example.com"}
             </button>
           ))}
+          {(geometry.text_layers || []).map(layer => <button key={layer.id} type="button"
+            className={"geo-free-text" + (selected === layer.id ? " selected" : "")}
+            style={{ left: layer.x * scale, top: layer.y * scale, fontSize: layer.size * scale,
+                     color: layer.color, fontFamily: layer.font }}
+            onPointerDown={event => { event.preventDefault(); setSelected(layer.id); setDragging(layer.id); }}>
+            {layer.text}
+          </button>)}
           {!template.artwork && <span className="geo-canvas-note">No artwork uploaded — the default ADCOOP design prints behind these fields.</span>}
         </div>
         {previewUrl && <iframe src={previewUrl} title="Template preview"
@@ -1085,6 +1112,10 @@ function GeometryEditor({ template, onClose, onSaved }: { template: Template; on
               </button>
             </li>
           ))}
+          {(geometry.text_layers || []).map(layer => <li key={layer.id}><button type="button"
+            className={selected === layer.id ? "selected" : ""} onClick={() => setSelected(layer.id)}>
+            {layer.text || "Untitled text"}
+          </button></li>)}
         </ul>
 
         {active && <div className="geo-props">
@@ -1106,8 +1137,21 @@ function GeometryEditor({ template, onClose, onSaved }: { template: Template; on
             <label>Colour<input type="color" value={active.color || "#231B36"}
               onChange={e => patchField(active.key, { color: e.target.value })} /></label>
           </>}
-          {catalogue.find(c => c.key === active.key)?.has_static_text &&
-            <label>Text<input value={active.static ?? ""} onChange={e => patchField(active.key, { static: e.target.value })} /></label>}
+        </div>}
+        {activeText && <div className="geo-props">
+          <p className="geo-panel-title">Text</p>
+          <label>Content<textarea value={activeText.text} onChange={e => patchText(activeText.id, { text: e.target.value })} /></label>
+          <label>X (pt)<input type="number" step="0.1" min={0} max={COUPON_W} value={activeText.x}
+            onChange={e => patchText(activeText.id, { x: Number(e.target.value) })} /></label>
+          <label>Y (pt)<input type="number" step="0.1" min={0} max={COUPON_H} value={activeText.y}
+            onChange={e => patchText(activeText.id, { y: Number(e.target.value) })} /></label>
+          <label>Font size (pt)<input type="number" step="0.5" min={1} value={activeText.size}
+            onChange={e => patchText(activeText.id, { size: Number(e.target.value) })} /></label>
+          <label>Font<select value={activeText.font} onChange={e => patchText(activeText.id, { font: e.target.value })}>
+            <option>Helvetica</option><option>Helvetica-Bold</option><option>Times-Roman</option><option>Times-Bold</option><option>Courier</option>
+          </select></label>
+          <label>Colour<input type="color" value={activeText.color} onChange={e => patchText(activeText.id, { color: e.target.value })} /></label>
+          <button type="button" className="link-button danger" onClick={() => removeText(activeText.id)}>Remove text</button>
         </div>}
       </div>
     </div>

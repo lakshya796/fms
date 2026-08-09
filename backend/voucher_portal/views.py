@@ -32,7 +32,8 @@ from .serializers import (ApproveSerializer, BatchFormSerializer, CancelSerializ
 from . import storage
 from .services import reports, workflow
 from .services.access import get_access
-from .services.generation import create_draft_batch, payload_hash, render_preview, render_template_sample
+from .services.generation import (create_draft_batch, payload_hash, refresh_voucher_pdf,
+                                  render_preview, render_template_sample)
 
 
 class HasPortalAccess(BasePermission):
@@ -350,6 +351,7 @@ class PortalBatchViewSet(viewsets.ReadOnlyModelViewSet):
         for voucher, row in zip(available, rows):
             voucher.issue(name=row.get("name", ""), phone=row.get("phone", ""), email=row.get("email", ""),
                           reference=row.get("reference", ""), actor=request.user)
+            refresh_voucher_pdf(voucher)
             assigned.append(voucher)
         batch.refresh_issue_status()
 
@@ -401,6 +403,7 @@ class PortalVoucherViewSet(viewsets.ReadOnlyModelViewSet):
         for voucher in vouchers:
             voucher.issue(name=data.get("name", ""), phone=data.get("phone", ""), email=data.get("email", ""),
                           reference=data.get("reference", ""), actor=request.user)
+            refresh_voucher_pdf(voucher)
         for batch in {v.batch for v in vouchers}:
             batch.refresh_issue_status()
         return Response(PortalVoucherSerializer(vouchers, many=True).data)

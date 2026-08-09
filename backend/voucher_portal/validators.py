@@ -47,7 +47,7 @@ class GeometryError(Exception):
 
 
 _NUMERIC_FIELD_KEYS = ("x", "y", "w", "h", "size", "line_height")
-_BOX_KEYS = ("artwork", "card")
+_BOX_KEYS = ("artwork",)
 
 
 def _number(container, key, where):
@@ -112,4 +112,24 @@ def validate_field_geometry(geometry, *, coupon_width=None, coupon_height=None):
         for numeric_key in _NUMERIC_FIELD_KEYS:
             if numeric_key in entry:
                 check_bounds(entry, numeric_key, key)
+    if "barcode" not in seen:
+        raise GeometryError('The mandatory "barcode" field is missing.')
+
+    text_layers = geometry.get("text_layers", [])
+    if not isinstance(text_layers, list):
+        raise GeometryError('"text_layers" must be a list.')
+    layer_ids = set()
+    for index, layer in enumerate(text_layers):
+        where = f"text layer {index + 1}"
+        if not isinstance(layer, dict):
+            raise GeometryError(f"{where} must be an object.")
+        layer_id = str(layer.get("id", "")).strip()
+        if not layer_id or layer_id in layer_ids:
+            raise GeometryError(f"{where} needs a unique id.")
+        layer_ids.add(layer_id)
+        if not isinstance(layer.get("text"), str) or not layer["text"].strip():
+            raise GeometryError(f"{where} needs text.")
+        for numeric_key in _NUMERIC_FIELD_KEYS:
+            if numeric_key in layer:
+                check_bounds(layer, numeric_key, where)
     return geometry
