@@ -2,7 +2,7 @@
 
 Preview renders one sample coupon from the submitted form without touching the
 database, and returns a hash of the canonical form payload. `create_draft_batch`
-requires that hash back and rejects a stale one - the server-side half of "Â§6:
+requires that hash back and rejects a stale one - the server-side half of "§6:
 changing the form after preview invalidates it," not left to the browser to
 enforce alone.
 
