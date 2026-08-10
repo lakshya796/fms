@@ -1341,6 +1341,47 @@ class AdminTests(TestCase):
         self.assertFalse(self.template.is_default)
 
 
+class CorsTests(TestCase):
+    """The browser calls this API cross-origin from Amplify, so an origin the
+    server doesn't recognise fails as a CORS error on the UI with nothing in
+    the API logs to explain it."""
+
+    AMPLIFY = "^https://[a-z0-9-]+[.]d12iaal63qqmzf[.]amplifyapp[.]com$"
+
+    def setUp(self):
+        make_reference_data()
+        self.user = User.objects.create_user("cors_user", password="x", is_staff=True)
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def _origin(self, origin):
+        response = self.client.get("/api/v1/voucher-portal/templates/", HTTP_ORIGIN=origin)
+        self.assertEqual(response.status_code, 200)
+        return response.headers.get("access-control-allow-origin")
+
+    @override_settings(CORS_ALLOWED_ORIGINS=["https://track.phloz.app"], CORS_ALLOWED_ORIGIN_REGEXES=[])
+    def test_an_origin_that_is_not_configured_gets_no_cors_header(self):
+        """What the Amplify UI hit: the deployed origin list had only the
+        console in it."""
+        self.assertIsNone(self._origin("https://main.d12iaal63qqmzf.amplifyapp.com"))
+        self.assertEqual(self._origin("https://track.phloz.app"), "https://track.phloz.app")
+
+    @override_settings(CORS_ALLOWED_ORIGINS=[], CORS_ALLOWED_ORIGIN_REGEXES=[AMPLIFY])
+    def test_every_branch_of_the_amplify_app_is_allowed_by_pattern(self):
+        for origin in ["https://main.d12iaal63qqmzf.amplifyapp.com",
+                       "https://claude-voucher-x.d12iaal63qqmzf.amplifyapp.com"]:
+            with self.subTest(origin=origin):
+                self.assertEqual(self._origin(origin), origin)
+
+    @override_settings(CORS_ALLOWED_ORIGINS=[], CORS_ALLOWED_ORIGIN_REGEXES=[AMPLIFY])
+    def test_the_pattern_is_anchored_against_lookalike_domains(self):
+        for origin in ["https://main.d12iaal63qqmzf.amplifyapp.com.evil.example",
+                       "https://main.someoneelse.amplifyapp.com",
+                       "http://main.d12iaal63qqmzf.amplifyapp.com"]:
+            with self.subTest(origin=origin):
+                self.assertIsNone(self._origin(origin))
+
+
 class AdvancedReportsTests(TestCase):
     def setUp(self):
         self.dept, self.vtype, self.prefix, self.template = make_reference_data()

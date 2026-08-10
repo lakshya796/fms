@@ -444,6 +444,22 @@ One gotcha worth knowing if you extend the template endpoints: they accept
 artwork upload; `field_geometry` is a nested structure a form encoder can't
 represent, so dropping `JSONParser` makes every geometry save fail with a 415.
 
+## Which frontends may call the API
+
+The portal is a browser app on a different origin from the API, so
+`CORS_ALLOWED_ORIGINS` decides whether it can talk to it at all. An origin
+that isn't listed fails as a CORS error in the browser with a perfectly
+healthy API behind it and nothing in its log to explain the failure.
+
+Amplify complicates the list: every branch is served from its own subdomain of
+one app id (`main.<app>.amplifyapp.com`, `my-branch.<app>.amplifyapp.com`), so
+a fixed list stops working each time a new branch is deployed.
+`CORS_ALLOWED_ORIGIN_REGEXES` takes comma-separated patterns for that case.
+Anchor them at both ends and scope them to one app id — unanchored,
+`^https://[a-z0-9-]+[.]<app>[.]amplifyapp[.]com` also matches
+`https://x.<app>.amplifyapp.com.attacker.example`. `CorsTests` covers the
+allowed, the unlisted and the lookalike cases.
+
 ## Django admin
 
 `https://api-test.phloz.app/fms/admin/` — nginx routes `/fms/` to this app, so
@@ -522,7 +538,7 @@ department permissions").
 
 ## Tests
 
-`python manage.py test voucher_portal` — 127 tests: numbering (including a real
+`python manage.py test voucher_portal` — 130 tests: numbering (including a real
 concurrent-allocation test across 8 threads), discount validation, the
 preview-hash invalidation flow, the full draft → submit → approve → generate
 → issue → redeem workflow (both via `services/workflow.py` directly and

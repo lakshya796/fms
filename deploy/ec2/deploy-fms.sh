@@ -26,7 +26,7 @@ fi
 if [ ! -f "${APP_ROOT}/shared/fms.env" ]; then
     secret=$("${APP_ROOT}/venv/bin/python" -c 'import secrets; print(secrets.token_urlsafe(64))')
     umask 077
-    printf 'DJANGO_SECRET_KEY=%s\nDJANGO_DEBUG=false\nDJANGO_ALLOWED_HOSTS=api-test.phloz.app,127.0.0.1,localhost\nCORS_ALLOWED_ORIGINS=https://track.phloz.app\nUSE_SQLITE=true\nMEDIA_ROOT=%s/shared/media\nDJANGO_SCRIPT_NAME=/fms\n' "$secret" "${APP_ROOT}" > "${APP_ROOT}/shared/fms.env"
+    printf 'DJANGO_SECRET_KEY=%s\nDJANGO_DEBUG=false\nDJANGO_ALLOWED_HOSTS=api-test.phloz.app,127.0.0.1,localhost\nCORS_ALLOWED_ORIGINS=https://track.phloz.app,https://main.d12iaal63qqmzf.amplifyapp.com\nUSE_SQLITE=true\nMEDIA_ROOT=%s/shared/media\nDJANGO_SCRIPT_NAME=/fms\n' "$secret" "${APP_ROOT}" > "${APP_ROOT}/shared/fms.env"
 fi
 
 # Uploads (template artwork) must outlive the release they were uploaded into.
@@ -44,6 +44,17 @@ grep -q '^MEDIA_ROOT=' "${APP_ROOT}/shared/fms.env" \
 # login form posts into the void.
 grep -q '^DJANGO_SCRIPT_NAME=' "${APP_ROOT}/shared/fms.env" \
     || echo 'DJANGO_SCRIPT_NAME=/fms' >> "${APP_ROOT}/shared/fms.env"
+
+# Amplify hosts each branch on its own subdomain of one app id, so a fixed
+# CORS list stops working the moment a new branch is deployed. This adds a
+# pattern covering that app's branches - anchored at both ends, and scoped to
+# this app id, so it can't match a lookalike domain. The existing
+# CORS_ALLOWED_ORIGINS list is left exactly as the operator set it.
+if ! grep -q '^CORS_ALLOWED_ORIGIN_REGEXES=' "${APP_ROOT}/shared/fms.env"; then
+    echo "CORS_ALLOWED_ORIGIN_REGEXES='^https://[a-z0-9-]+[.]d12iaal63qqmzf[.]amplifyapp[.]com\$'" \
+        >> "${APP_ROOT}/shared/fms.env"
+    echo "Added CORS_ALLOWED_ORIGIN_REGEXES for the Amplify app's branch domains."
+fi
 
 set -a
 . "${APP_ROOT}/shared/fms.env"

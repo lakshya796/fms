@@ -52,6 +52,12 @@ STATIC_URL=f"{FORCE_SCRIPT_NAME or ''}/static/"; STATIC_ROOT=BASE_DIR/"staticfil
 MEDIA_URL="/media/"
 MEDIA_ROOT=Path(os.getenv("MEDIA_ROOT", BASE_DIR/"media"))
 CORS_ALLOWED_ORIGINS=[x.strip() for x in os.environ["CORS_ALLOWED_ORIGINS"].split(",") if x.strip()]
+# Amplify gives every branch its own subdomain (main.<app>.amplifyapp.com,
+# feature-x.<app>.amplifyapp.com), so a fixed origin list breaks on each new
+# branch deploy. Patterns are comma-separated and must be anchored at both
+# ends and scoped to one Amplify app id - an unanchored pattern would also
+# match https://anything.<app>.amplifyapp.com.evil.example.
+CORS_ALLOWED_ORIGIN_REGEXES=[x.strip() for x in os.getenv("CORS_ALLOWED_ORIGIN_REGEXES","").split(",") if x.strip()]
 CSRF_TRUSTED_ORIGINS=CORS_ALLOWED_ORIGINS
 SECURE_PROXY_SSL_HEADER=("HTTP_X_FORWARDED_PROTO","https")
 SESSION_COOKIE_SECURE=True; CSRF_COOKIE_SECURE=True

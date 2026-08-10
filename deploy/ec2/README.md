@@ -36,6 +36,23 @@ The public API base URL is:
 https://api-test.phloz.app/fms/api/v1/
 ```
 
+## Which frontends may call the API
+
+`CORS_ALLOWED_ORIGINS` in `shared/fms.env` is the list of browser origins
+allowed to call this API; anything else fails in the browser as a CORS error,
+with nothing in the API log to explain it. `CORS_ALLOWED_ORIGIN_REGEXES` takes
+patterns, which is what Amplify needs — every branch gets its own subdomain of
+the same app id, so a fixed list stops working on each new branch deploy. The
+deploy script adds the pattern for this project's Amplify app if it isn't
+already there, and never edits the explicit list.
+
+To add an origin to a running box:
+
+```bash
+sudo sed -i 's|^CORS_ALLOWED_ORIGINS=.*|&,https://new-origin.example|' /opt/phloz/fms/shared/fms.env
+sudo systemctl restart phloz-fms
+```
+
 The Django admin is at `https://api-test.phloz.app/fms/admin/`, and needs a
 login with `is_staff` set. Because nginx strips the `/fms` prefix before
 proxying, `DJANGO_SCRIPT_NAME=/fms` must be in `shared/fms.env` — the deploy
