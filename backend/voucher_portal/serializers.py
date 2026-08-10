@@ -180,7 +180,7 @@ class BatchFormSerializer(serializers.Serializer):
     currency = serializers.CharField(max_length=8, required=False, default="AED")
 
     # Not collected from the user - the brief allows a stored-but-unprinted start
-    # date (Â§3.3), and the form doesn't ask for one. Defaults to today in validate().
+    # date (§3.3), and the form doesn't ask for one. Defaults to today in validate().
     valid_from = serializers.DateField(required=False)
     valid_to = serializers.DateField()
 
