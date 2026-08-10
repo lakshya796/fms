@@ -444,6 +444,55 @@ One gotcha worth knowing if you extend the template endpoints: they accept
 artwork upload; `field_geometry` is a nested structure a form encoder can't
 represent, so dropping `JSONParser` makes every geometry save fail with a 415.
 
+## Django admin
+
+`https://api-test.phloz.app/fms/admin/` — nginx routes `/fms/` to this app, so
+the admin sits under the same prefix as the API.
+
+**Getting in requires `is_staff`.** That is a different thing from portal
+access: a Voucher Portal login (a `PortalUserAccess` row) does not let you into
+the admin, and Django staff status is not something the portal grants. To make
+an existing FMS user a Django admin, an existing superuser flips
+`is_staff`/`is_superuser` on them under *Authentication and Authorisation →
+Users*, or from the box:
+
+```bash
+cd /opt/phloz/fms/current && set -a && . /opt/phloz/fms/shared/fms.env && set +a
+/opt/phloz/fms/venv/bin/python manage.py createsuperuser          # a new one
+/opt/phloz/fms/venv/bin/python manage.py shell -c "
+from django.contrib.auth.models import User
+u = User.objects.get(username='someone'); u.is_staff = u.is_superuser = True; u.save()"
+```
+
+Note the knock-on: `services/access.py` gives any Django staff user or
+superuser **implicit portal Administrator rights**, so making someone a Django
+admin also hands them every department's vouchers. That is deliberate — it is
+what keeps the bootstrap login working before any grant exists — but it means
+`is_staff` is not a small thing to hand out.
+
+`DJANGO_SCRIPT_NAME=/fms` has to be set in the environment (the deploy script
+writes it, and back-fills it on installs that predate it). nginx strips the
+prefix before proxying, so without it Django generates every link, form action
+and stylesheet URL against the domain root — a *different* application on that
+host. The symptom is an unstyled admin whose login form posts into the void.
+`STATIC_URL` follows the same prefix, and WhiteNoise strips it back off when
+matching, so no nginx change is needed.
+
+**What the admin is for**, given the portal has its own screens: seeding and
+correcting reference data (departments, types, prefixes), granting portal
+access, repairing a card layout by hand, and reading the audit trail. Two
+things it deliberately won't do:
+
+- **Batches and vouchers can't be created here.** They are only correct when
+  `services/generation.py` builds them — numbers allocated under a row lock,
+  prefix and template snapshotted onto the row. A row typed in by hand would
+  fail at print time instead of at save time.
+- **`StatusChange` is read-only.** An audit trail you can edit isn't one.
+
+Editing a template's `field_geometry` in the admin is validated by
+`VoucherTemplate.clean()` — the same rules the designer is held to, since the
+admin doesn't pass through the API serializer.
+
 ## What's still not included
 
 SAP/external-system integration (explicitly out of scope for this pass),
@@ -473,7 +522,7 @@ department permissions").
 
 ## Tests
 
-`python manage.py test voucher_portal` — 119 tests: numbering (including a real
+`python manage.py test voucher_portal` — 127 tests: numbering (including a real
 concurrent-allocation test across 8 threads), discount validation, the
 preview-hash invalidation flow, the full draft → submit → approve → generate
 → issue → redeem workflow (both via `services/workflow.py` directly and
@@ -485,7 +534,10 @@ user-added elements saving and rendering, out-of-bounds/unknown-type/unknown-
 variable/unknown-font/bad-colour/duplicate-id rejection, the mandatory barcode
 being un-deletable and un-hideable, catalogue/renderer agreement, unsaved-
 geometry preview, reset-to-empty, card resizing, who may design a card versus
-who may change which design everyone else gets, and non-admin lockout), card
+who may change which design everyone else gets, and non-admin lockout), the
+Django admin (every changelist and change form opening, the audit trail being
+read-only, batches and vouchers not being hand-creatable, and a broken layout
+being refused at the model), card
 rendering (every catalogue variable resolving for a real voucher, per-voucher
 barcode uniqueness, hidden and `hide_if_empty` elements, prefix/suffix, and
 version 1/2 layouts still printing), team-access management,

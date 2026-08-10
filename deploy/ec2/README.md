@@ -36,4 +36,11 @@ The public API base URL is:
 https://api-test.phloz.app/fms/api/v1/
 ```
 
+The Django admin is at `https://api-test.phloz.app/fms/admin/`, and needs a
+login with `is_staff` set. Because nginx strips the `/fms` prefix before
+proxying, `DJANGO_SCRIPT_NAME=/fms` must be in `shared/fms.env` — the deploy
+script writes it, and adds it to installs that predate it. Without it Django
+generates its links, form actions and stylesheet URLs against the domain root,
+which is a different application: the admin loads unstyled and can't log in.
+
 Secrets and the production database are intentionally not stored in GitHub.

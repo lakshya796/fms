@@ -40,7 +40,12 @@ EMAIL_HOST_USER=os.getenv("EMAIL_HOST_USER","")
 EMAIL_HOST_PASSWORD=os.getenv("EMAIL_HOST_PASSWORD","")
 EMAIL_USE_TLS=os.getenv("EMAIL_USE_TLS","true").lower()=="true"
 DEFAULT_FROM_EMAIL=os.getenv("DEFAULT_FROM_EMAIL","no-reply@phloz.example")
-STATIC_URL="/static/"; STATIC_ROOT=BASE_DIR/"staticfiles"; DEFAULT_AUTO_FIELD="django.db.models.BigAutoField"
+# Mounted under a path prefix by the reverse proxy (nginx sends /fms/ to this
+# app). Django has to know, or every URL it generates - the admin's own links,
+# its form actions, its static files - points at the domain root, which is a
+# different application. Unset locally, where the app is served at /.
+FORCE_SCRIPT_NAME=os.getenv("DJANGO_SCRIPT_NAME") or None
+STATIC_URL=f"{FORCE_SCRIPT_NAME or ''}/static/"; STATIC_ROOT=BASE_DIR/"staticfiles"; DEFAULT_AUTO_FIELD="django.db.models.BigAutoField"
 # Local fallback for voucher-portal artwork and PDFs, used only while
 # VOUCHER_PORTAL_S3_BUCKET is unset (see voucher_portal/storage.py). MEDIA_ROOT
 # points at the release-independent `shared/` directory so uploads survive a deploy.
