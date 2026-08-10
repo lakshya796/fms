@@ -256,4 +256,3 @@ def _run_generation(batch_id):
         # The thread is about to die and nothing will ever reuse it, so left
         # open it is a Postgres session leaked per generated batch.
         connections.close_all()
-
