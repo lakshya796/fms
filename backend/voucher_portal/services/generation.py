@@ -83,6 +83,18 @@ def _template_snapshot(template, *, artwork_path=None):
     snapshot["coupon_height"] = template.coupon_height
     snapshot["artwork_path"] = artwork_path if artwork_path is not None else (
         template.artwork.path if template.artwork else None)
+    if artwork_path is not None:
+        # A per-batch upload is an explicit artwork override. Older/blank
+        # templates may have no artwork frame, and a designer may have hidden
+        # the shared template image; neither should suppress the image the
+        # requester just uploaded for this batch.
+        artwork = dict(snapshot.get("artwork") or {})
+        artwork.setdefault("x", 0)
+        artwork.setdefault("y", 0)
+        artwork.setdefault("w", template.coupon_width)
+        artwork.setdefault("h", template.coupon_height)
+        artwork["hidden"] = False
+        snapshot["artwork"] = artwork
     return snapshot
 
 
