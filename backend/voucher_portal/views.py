@@ -588,4 +588,3 @@ class ReportsViewSet(viewsets.ViewSet):
         response = HttpResponse(buffer.getvalue(), content_type="text/csv")
         response["Content-Disposition"] = 'attachment; filename="voucher-report.csv"'
         return response
-
