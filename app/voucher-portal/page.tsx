@@ -165,7 +165,7 @@ export default function VoucherPortal() {
           <label>Username<input value={username} onChange={e => setUsername(e.target.value)} required autoFocus /></label>
           <label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} required /></label>
           {loginError && <div className="login-error">{loginError}</div>}
-          <button className="primary" disabled={loggingIn}>{loggingIn ? "Signing inâ€¦" : "Sign in"}</button>
+          <button className="primary" disabled={loggingIn}>{loggingIn ? "Signing in…" : "Sign in"}</button>
         </form>
       </section>
     </main>;
@@ -437,7 +437,7 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
     loadNotifications();
   };
 
-  if (!access) return <main className="voucher-page"><div className="data-state">Loadingâ€¦</div></main>;
+  if (!access) return <main className="voucher-page"><div className="data-state">Loading…</div></main>;
 
   const nav = <header className="voucher-topbar">
     <div>
@@ -511,17 +511,17 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
 
       <section className="voucher-card">
         <div className="voucher-card-head">
-          <h2>{activeBatch.name} Â· {activeBatch.display_value} Â· {activeBatch.prefix_snapshot}</h2>
+          <h2>{activeBatch.name} · {activeBatch.display_value} · {activeBatch.prefix_snapshot}</h2>
           <span className={"status " + statusClass(activeBatch.status)}>{statusLabel(activeBatch.status)}</span>
         </div>
         <p style={{ fontSize: 12, color: "var(--voucher-muted)" }}>
-          {activeBatch.department_name} Â· {activeBatch.voucher_type_name} Â· {activeBatch.quantity} vouchers Â·
-          Valid until {activeBatch.valid_to} Â· {activeBatch.issued_count} issued
+          {activeBatch.department_name} · {activeBatch.voucher_type_name} · {activeBatch.quantity} vouchers ·
+          Valid until {activeBatch.valid_to} · {activeBatch.issued_count} issued
         </p>
         {activeBatch.created_by_username && <p style={{ fontSize: 11, color: "var(--voucher-muted)" }}>Requested by {activeBatch.created_by_username}</p>}
-        {activeBatch.approved_by_username && <p style={{ fontSize: 11, color: "var(--voucher-muted)" }}>Approved by {activeBatch.approved_by_username}{activeBatch.approved_at ? ` Â· ${new Date(activeBatch.approved_at).toLocaleString()}` : ""}</p>}
+        {activeBatch.approved_by_username && <p style={{ fontSize: 11, color: "var(--voucher-muted)" }}>Approved by {activeBatch.approved_by_username}{activeBatch.approved_at ? ` · ${new Date(activeBatch.approved_at).toLocaleString()}` : ""}</p>}
         {activeBatch.rejection_reason && <div className="form-error">Rejected: {activeBatch.rejection_reason}</div>}
-        {activeBatch.status === "generating" && <div className="data-state">Assembling PDFs in the background â€” this refreshes automatically.</div>}
+        {activeBatch.status === "generating" && <div className="data-state">Assembling PDFs in the background — this refreshes automatically.</div>}
         {activeBatch.status === "failed" && <div className="data-state error">Generation failed: {activeBatch.generation_error}</div>}
         {/* Downloaded through the authenticated API, not linked to a media path:
             a plain <a href> sends no auth token and the stored URL is host-relative,
@@ -572,7 +572,7 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
             <input type="file" accept=".csv" disabled={csvBusy}
               onChange={e => e.target.files?.[0] && uploadCsv(e.target.files[0])} style={{ display: "block", marginTop: 6 }} />
           </label>
-          {csvBusy && <div className="data-state">Uploadingâ€¦</div>}
+          {csvBusy && <div className="data-state">Uploading…</div>}
           {csvResult && <div className={csvResult.assigned ? "voucher-success" : "form-error"}>
             {csvResult.assigned ? `Assigned ${csvResult.assigned} voucher(s). ${csvResult.remaining_available} remain available.` : "Upload failed."}
             {csvResult.rejected.length > 0 && <div>{csvResult.rejected.length} row(s) rejected.</div>}
@@ -594,7 +594,7 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
               <tbody>
                 {vouchers.map(v => <tr key={v.id}>
                   <td><strong>{v.number}</strong></td>
-                  <td>{v.recipient_name || v.recipient_phone || v.recipient_email || "â€”"}</td>
+                  <td>{v.recipient_name || v.recipient_phone || v.recipient_email || "—"}</td>
                   <td><span className={"status " + statusClass(v.display_status)}>{statusLabel(v.display_status)}</span></td>
                   <td className="voucher-actions">
                     {issuingId === v.id ? <div className="voucher-issue-inline">
@@ -629,17 +629,17 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
         <label>Quantity<input required type="number" min={1} max={10000} value={form.quantity} onChange={e => updateForm({ quantity: e.target.value })} /></label>
 
         <label>Department<select required value={form.department} onChange={e => updateForm({ department: e.target.value, voucher_type: "", prefix: "" })}>
-          <option value="">Selectâ€¦</option>
+          <option value="">Select…</option>
           {visibleDepartments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
         </select></label>
         <label>Voucher type<select required value={form.voucher_type} onChange={e => updateForm({ voucher_type: e.target.value })}>
-          <option value="">Selectâ€¦</option>
+          <option value="">Select…</option>
           {departmentTypes.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
         </select></label>
 
         <label>Prefix<select required value={form.prefix} onChange={e => updateForm({ prefix: e.target.value })}>
-          <option value="">Selectâ€¦</option>
-          {departmentPrefixes.map(p => <option key={p.id} value={p.id}>{p.prefix} â€” {p.label}</option>)}
+          <option value="">Select…</option>
+          {departmentPrefixes.map(p => <option key={p.id} value={p.id}>{p.prefix} — {p.label}</option>)}
         </select></label>
         <label>Currency<input value={form.currency} onChange={e => updateForm({ currency: e.target.value.toUpperCase() })} maxLength={8} /></label>
 
@@ -652,9 +652,9 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
           <option value="percentage">Percentage</option>
         </select></label>
         {form.discount_type === "percentage" ? <>
-          <label>Percentage (0â€“100)<input required type="number" min={0.01} max={100} step={0.01} value={form.percentage_value}
+          <label>Percentage (0–100)<input required type="number" min={0.01} max={100} step={0.01} value={form.percentage_value}
             onChange={e => updateForm({ percentage_value: e.target.value })} /></label>
-          <label className="voucher-form-wide">Maximum discount <small>(optional â€” "up to {form.currency} X")</small>
+          <label className="voucher-form-wide">Maximum discount <small>(optional — "up to {form.currency} X")</small>
             <input type="number" min={0} step={0.01} value={form.max_discount_value} onChange={e => updateForm({ max_discount_value: e.target.value })} />
           </label>
         </> : <label>Fixed value<input required type="number" min={0.01} step={0.01} value={form.fixed_value}
@@ -669,12 +669,12 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
           <textarea rows={3} value={form.terms} onChange={e => updateForm({ terms: e.target.value })} />
         </label>
 
-        <label className="voucher-form-wide">Voucher image <small>(optional â€” overrides the selected design artwork for this batch)</small>
+        <label className="voucher-form-wide">Voucher image <small>(optional — overrides the selected design artwork for this batch)</small>
           <input type="file" accept="image/png,image/jpeg" onChange={e => {
             setBatchArtwork(e.target.files?.[0] || null);
             setPreviewHash(""); setPreviewUrl(""); setPreviewError("");
           }} />
-          {batchArtwork && <small>{batchArtwork.name} Â· used in both the preview and generated PDFs.</small>}
+          {batchArtwork && <small>{batchArtwork.name} · used in both the preview and generated PDFs.</small>}
         </label>
 
         <div className="voucher-form-wide voucher-picker">
@@ -703,7 +703,7 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
               </button>
             ))}
             {templates.length === 0 && <div className="data-state">
-              No card designs yet â€” â€œNew designâ€ creates one.
+              No card designs yet — “New design” creates one.
             </div>}
           </div>
           {selectedTemplate && <div className="voucher-picker-coverage">
@@ -713,7 +713,7 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
             {missingFields.length > 0 && <p className="warn">
                   Not on this card: <strong>{missingFields.map(entry => entry.label).join(", ")}</strong>.
                   {" "}You've entered {missingFields.length === 1 ? "it" : "them"}, but the design has no field to
-                  print {missingFields.length === 1 ? "it" : "them"} in â€” add {missingFields.length === 1 ? "one" : "them"} with
+                  print {missingFields.length === 1 ? "it" : "them"} in — add {missingFields.length === 1 ? "one" : "them"} with
                   {" "}<button type="button" className="link-button"
                      onClick={() => setDesignIntent({ mode: "edit", template: selectedTemplate })}>Edit this design</button>.
               </p>}
@@ -726,25 +726,25 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
 
         {previewError && <div className="form-error voucher-form-wide">{previewError}</div>}
         <button type="button" className="secondary voucher-form-wide" disabled={previewing} onClick={runPreview}>
-          {previewing ? "Renderingâ€¦" : "Preview"}
+          {previewing ? "Rendering…" : "Preview"}
         </button>
       </form>
 
       {previewUrl && <div style={{ marginTop: 16 }}>
         <iframe src={previewUrl} title="Voucher preview" style={{ width: "100%", height: 420, border: "1px solid var(--voucher-line)", borderRadius: 10 }} />
         <p style={{ fontSize: 11, color: "var(--voucher-muted)", margin: "10px 0" }}>
-          Review the design above. Changing any field above invalidates this preview. Saving creates a draft â€” it still needs to be submitted for approval.
+          Review the design above. Changing any field above invalidates this preview. Saving creates a draft — it still needs to be submitted for approval.
         </p>
         {createError && <div className="form-error">{createError}</div>}
         <button className="primary" disabled={creating} onClick={saveDraft} style={{ width: "100%", height: 42 }}>
-          {creating ? "Savingâ€¦" : `Save as draft (${form.quantity} voucher${Number(form.quantity) === 1 ? "" : "s"})`}
+          {creating ? "Saving…" : `Save as draft (${form.quantity} voucher${Number(form.quantity) === 1 ? "" : "s"})`}
         </button>
       </div>}
     </section>}
 
     <section className="voucher-card">
       <div className="voucher-card-head"><h2>Batches</h2></div>
-      {loadingBatches && <div className="data-state">Loadingâ€¦</div>}
+      {loadingBatches && <div className="data-state">Loading…</div>}
       {!loadingBatches && batches.length === 0 && <div className="data-state">No batches yet.</div>}
       {!loadingBatches && batches.length > 0 && <div className="table-wrap">
         <table>
@@ -769,7 +769,7 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
 
 // Three measures shown across both charts. Colours are the first three slots of
 // the validated categorical palette (checked all-pairs against this page's white
-// card surface: worst CVD Î”E 9.2, worst normal-vision Î”E 24.0). Aqua sits under
+// card surface: worst CVD ΔE 9.2, worst normal-vision ΔE 24.0). Aqua sits under
 // 3:1 on white, so both charts ship direct labels and a table view - the relief
 // the contrast warning requires. Identity follows the measure, never its rank,
 // so filtering never repaints a series.
@@ -784,7 +784,7 @@ const CHART_MUTED = "#6B6480";
 const CHART_GRID = "#E6E1F0";
 const CHART_AXIS = "#CFC7DF";
 
-/** Clean axis steps only (1 / 2 / 5 / 10 Ã— a power of ten). A 2.5 step would
+/** Clean axis steps only (1 / 2 / 5 / 10 × a power of ten). A 2.5 step would
  *  round to a label that doesn't sit where the gridline is - "3" drawn at 2.5. */
 function niceTicks(max: number, count = 4) {
   if (max <= 0) return [0, 1];
@@ -990,7 +990,7 @@ function ReportsScreen({ departments, voucherTypes }: { departments: Department[
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters]);
 
-  if (loading || !summary) return <div className="data-state">Loadingâ€¦</div>;
+  if (loading || !summary) return <div className="data-state">Loading…</div>;
 
   const departmentSeries = byDepartment.map(row => ({
     name: row.batch__department__name, created: row.total, issued: row.issued, redeemed: row.redeemed,
@@ -1686,7 +1686,7 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
 
   if (error && !doc) return <section className="voucher-card"><div className="form-error">{error}</div>
     <button type="button" className="secondary" style={{ width: 120, marginTop: 12 }} onClick={onClose}>Back</button></section>;
-  if (!doc || !catalogue) return <section className="voucher-card"><div className="data-state">Opening the designerâ€¦</div></section>;
+  if (!doc || !catalogue) return <section className="voucher-card"><div className="data-state">Opening the designer…</div></section>;
 
   const sized = active && (active.type === "box" || active.type === "line" || active.type === "barcode");
   const typographic = active && (active.type === "text" || active.type === "field");
@@ -1696,8 +1696,8 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
       <div>
         <h2>{template.name}</h2>
         <p className="designer-sub">
-          {dirty ? "Unsaved changes" : "All changes saved"} Â· {elements.length} element{elements.length === 1 ? "" : "s"} Â·
-          {" "}{Math.round(card.w)} Ã— {Math.round(card.h)} pt
+          {dirty ? "Unsaved changes" : "All changes saved"} · {elements.length} element{elements.length === 1 ? "" : "s"} ·
+          {" "}{Math.round(card.w)} × {Math.round(card.h)} pt
         </p>
       </div>
       <div className="designer-actions">
@@ -1710,7 +1710,7 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
         </label>
         <button type="button" className="secondary designer-btn" onClick={close}>Close</button>
         <button type="button" className="primary designer-btn" disabled={saving || !dirty} onClick={save}>
-          {saving ? "Savingâ€¦" : dirty ? "Save design" : "Saved"}
+          {saving ? "Saving…" : dirty ? "Save design" : "Saved"}
         </button>
       </div>
     </div>
@@ -1727,7 +1727,7 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
                     onClick={() => addElement(entry.type)}>+ {entry.label}</button>
           ))}
           <div className="designer-menu-wrap">
-            <button type="button" className="chip" onClick={() => setAddingField(open => !open)}>+ Form field â–¾</button>
+            <button type="button" className="chip" onClick={() => setAddingField(open => !open)}>+ Form field ▾</button>
             {addingField && <div className="designer-menu">
               <p>Insert a placeholder filled from the batch form when previewed and printed</p>
               {catalogue.variables.map(variable => (
@@ -1739,7 +1739,7 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
           </div>
           {active && <>
             <span className="designer-toolbar-label">Align</span>
-            {([["left", "â‡¤"], ["hcenter", "â†”"], ["right", "â‡¥"], ["top", "â‡¡"], ["vcenter", "â†•"], ["bottom", "â‡£"]] as const)
+            {([["left", "⇤"], ["hcenter", "↔"], ["right", "⇥"], ["top", "⇡"], ["vcenter", "↕"], ["bottom", "⇣"]] as const)
               .map(([edge, glyph]) => (
                 <button key={edge} type="button" className="chip" title={`Align ${edge}`} onClick={() => alignTo(edge)}>{glyph}</button>
               ))}
@@ -1784,8 +1784,8 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
             </CardPreview>
           </div>
           <p className="designer-hint">
-            Drag to move Â· drag a corner to resize Â· arrow keys nudge (Shift = 10pt) Â· Ctrl+D duplicates Â·
-            Delete removes Â· hold Alt for finer positioning
+            Drag to move · drag a corner to resize · arrow keys nudge (Shift = 10pt) · Ctrl+D duplicates ·
+            Delete removes · hold Alt for finer positioning
           </p>
         </div>
 
@@ -1793,12 +1793,12 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
           <div className="designer-proof-head">
             <label className="checkbox-row">
               <input type="checkbox" checked={showProof} onChange={e => setShowProof(e.target.checked)} />
-              Live PDF proof {proofing && <em>Â· renderingâ€¦</em>}
+              Live PDF proof {proofing && <em>· rendering…</em>}
             </label>
             <span>Exactly what prints, with sample values.</span>
           </div>
           {showProof && proofUrl && <iframe src={proofUrl} title="PDF proof" className="designer-proof-frame" />}
-          {showProof && !proofUrl && <div className="data-state">Rendering the first proofâ€¦</div>}
+          {showProof && !proofUrl && <div className="data-state">Rendering the first proof…</div>}
         </div>
       </div>
 
@@ -1814,12 +1814,12 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
                 </button>
                 <button type="button" className="designer-layer-icon" title={element.hidden ? "Show" : "Hide"}
                         onClick={() => setProp(element.id, { hidden: !element.hidden }, "")}>
-                  {element.hidden ? "â—Œ" : "â—"}
+                  {element.hidden ? "◌" : "●"}
                 </button>
                 <button type="button" className="designer-layer-icon" title="Bring forward"
-                        onClick={() => reorder(element.id, 1)}>â†‘</button>
+                        onClick={() => reorder(element.id, 1)}>↑</button>
                 <button type="button" className="designer-layer-icon" title="Send backward"
-                        onClick={() => reorder(element.id, -1)}>â†“</button>
+                        onClick={() => reorder(element.id, -1)}>↓</button>
               </li>
             ))}
           </ul>
@@ -1833,7 +1833,7 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
         </div>
 
         {active && <div className="designer-section geo-props">
-          <p className="geo-panel-title">{TYPE_LABELS[active.type]} â€” {defaultName(active, catalogue.variables)}</p>
+          <p className="geo-panel-title">{TYPE_LABELS[active.type]} — {defaultName(active, catalogue.variables)}</p>
 
           {active.type === "text" && <label>Text
             <textarea rows={3} value={active.text || ""}
@@ -1852,7 +1852,7 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
               <label>After<input value={active.suffix || ""}
                 onChange={e => setProp(active.id, { suffix: e.target.value }, `suffix:${active.id}`)} /></label>
             </div>
-            <p className="designer-note">Prints â€œ{elementText(active, values) || "â€”"}â€ on the sample.</p>
+            <p className="designer-note">Prints “{elementText(active, values) || "—"}” on the sample.</p>
           </>}
 
           <div className="designer-pair">
@@ -1863,7 +1863,7 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
           </div>
 
           {(sized || typographic) && <div className="designer-pair">
-            <label>Width (pt){typographic && <small> â€” 0 = fit text</small>}
+            <label>Width (pt){typographic && <small> — 0 = fit text</small>}
               <input type="number" step="0.5" min={0} max={card.w} value={active.w ?? 0}
                      onChange={e => setProp(active.id, { w: Number(e.target.value) }, `w:${active.id}`)} /></label>
             {sized && <label>Height (pt)<input type="number" step="0.5" min={0} max={card.h} value={active.h ?? 0}
@@ -1985,7 +1985,7 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
             <input type="file" accept="image/png,image/jpeg" disabled={busy === "artwork"}
                    onChange={e => e.target.files?.[0] && uploadArtwork(e.target.files[0])} />
           </label>}
-          {busy === "artwork" && <div className="data-state">Uploadingâ€¦</div>}
+          {busy === "artwork" && <div className="data-state">Uploading…</div>}
           {canAdmin && <button type="button" className="link-button danger" disabled={saving} onClick={async () => {
             if (!window.confirm("Empty this card back to just the barcode? This saves immediately.")) return;
             setSaving(true);
@@ -2135,18 +2135,18 @@ function TemplatesScreen({ canAdmin, intent, onIntentDone }: {
           ))}
         </select>
       </label>}
-      <label className="designer-field">Background artwork <small>(optional â€” design on a plain background if you prefer)</small>
+      <label className="designer-field">Background artwork <small>(optional — design on a plain background if you prefer)</small>
         <input type="file" accept="image/png,image/jpeg" onChange={e => setFile(e.target.files?.[0] || null)} />
       </label>
       {createError && <div className="form-error">{createError}</div>}
       <button type="button" className="primary" disabled={creating} onClick={createTemplate}>
-        {creating ? "Creatingâ€¦" : "Create and start designing"}
+        {creating ? "Creating…" : "Create and start designing"}
       </button>
     </div>}
 
     {loadError && <div className="form-error" style={{ marginBottom: 14 }}>{loadError}</div>}
     {!loading && !loadError && !catalogue && <div className="designer-warning">{API_TOO_OLD}</div>}
-    {loading && <div className="data-state">Loadingâ€¦</div>}
+    {loading && <div className="data-state">Loading…</div>}
     {!loading && <div className="voucher-template-grid">
       {templates.map(t => {
         const stored = layouts[t.id];
@@ -2170,7 +2170,7 @@ function TemplatesScreen({ canAdmin, intent, onIntentDone }: {
           </div>
         </div>;
       })}
-      {templates.length === 0 && <div className="data-state">No card designs yet â€” create one to get started.</div>}
+      {templates.length === 0 && <div className="data-state">No card designs yet — create one to get started.</div>}
     </div>}
   </section>;
 }
@@ -2256,7 +2256,7 @@ function SetupScreen({ onChanged }: { onChanged: () => Promise<void> | void }) {
     </button>
   </>;
 
-  if (loading) return <section className="voucher-card"><div className="data-state">Loadingâ€¦</div></section>;
+  if (loading) return <section className="voucher-card"><div className="data-state">Loading…</div></section>;
 
   return <>
     {error && <section className="voucher-card"><div className="form-error">{error}</div></section>}
@@ -2276,7 +2276,7 @@ function SetupScreen({ onChanged }: { onChanged: () => Promise<void> | void }) {
         <label>Name<input value={deptForm.name} placeholder="Human Resources"
                           onChange={e => setDeptForm({ ...deptForm, name: e.target.value })} /></label>
         <button type="button" className="primary" disabled={saving === "department" || !deptForm.code.trim() || !deptForm.name.trim()}
-                onClick={addDepartment}>{saving === "department" ? "Addingâ€¦" : "Add"}</button>
+                onClick={addDepartment}>{saving === "department" ? "Adding…" : "Add"}</button>
       </div>}
       <div className="table-wrap">
         <table>
@@ -2300,7 +2300,7 @@ function SetupScreen({ onChanged }: { onChanged: () => Promise<void> | void }) {
           {adding === "type" ? "Cancel" : "Add voucher type"}
         </button>
       </div>
-      {departments.length === 0 && <div className="data-state">Add a department first â€” a type belongs to one.</div>}
+      {departments.length === 0 && <div className="data-state">Add a department first — a type belongs to one.</div>}
       {adding === "type" && <div className="setup-form">
         <label>Code<input value={typeForm.code} maxLength={20} placeholder="EMP"
                           onChange={e => setTypeForm({ ...typeForm, code: e.target.value })} /></label>
@@ -2308,12 +2308,12 @@ function SetupScreen({ onChanged }: { onChanged: () => Promise<void> | void }) {
                           onChange={e => setTypeForm({ ...typeForm, name: e.target.value })} /></label>
         <label>Department
           <select value={typeForm.department} onChange={e => setTypeForm({ ...typeForm, department: e.target.value })}>
-            <option value="">Selectâ€¦</option>
+            <option value="">Select…</option>
             {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select></label>
         <button type="button" className="primary"
                 disabled={saving === "type" || !typeForm.code.trim() || !typeForm.name.trim() || !typeForm.department}
-                onClick={addType}>{saving === "type" ? "Addingâ€¦" : "Add"}</button>
+                onClick={addType}>{saving === "type" ? "Adding…" : "Add"}</button>
       </div>}
       <div className="table-wrap">
         <table>
@@ -2321,7 +2321,7 @@ function SetupScreen({ onChanged }: { onChanged: () => Promise<void> | void }) {
           <tbody>
             {types.map(t => <tr key={t.id}>
               <td><strong>{t.name}</strong></td><td>{t.code}</td>
-              <td>{t.department_name || departments.find(d => d.id === t.department)?.name || "â€”"}</td>
+              <td>{t.department_name || departments.find(d => d.id === t.department)?.name || "—"}</td>
               <td>{statusCell(t as any, "voucher-portal/voucher-types/")}</td>
             </tr>)}
             {types.length === 0 && <tr><td colSpan={4}><div className="data-state">None yet.</div></td></tr>}
@@ -2338,7 +2338,7 @@ function SetupScreen({ onChanged }: { onChanged: () => Promise<void> | void }) {
           {adding === "prefix" ? "Cancel" : "Add prefix"}
         </button>
       </div>
-      {types.length === 0 && <div className="data-state">Add a voucher type first â€” a prefix numbers one type.</div>}
+      {types.length === 0 && <div className="data-state">Add a voucher type first — a prefix numbers one type.</div>}
       {adding === "prefix" && <div className="setup-form">
         <label>Prefix<input value={prefixForm.prefix} maxLength={20} placeholder="EMP"
                             onChange={e => setPrefixForm({ ...prefixForm, prefix: e.target.value })} /></label>
@@ -2347,25 +2347,25 @@ function SetupScreen({ onChanged }: { onChanged: () => Promise<void> | void }) {
         <label>Department
           <select value={prefixForm.department}
                   onChange={e => setPrefixForm({ ...prefixForm, department: e.target.value, voucher_type: "" })}>
-            <option value="">Selectâ€¦</option>
+            <option value="">Select…</option>
             {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select></label>
         <label>Voucher type
           <select value={prefixForm.voucher_type}
                   onChange={e => setPrefixForm({ ...prefixForm, voucher_type: e.target.value })}>
-            <option value="">Selectâ€¦</option>
+            <option value="">Select…</option>
             {typesForDepartment.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
           </select></label>
-        <label>Digits <small>(EMP + 4 digits â†’ EMP0001)</small>
+        <label>Digits <small>(EMP + 4 digits → EMP0001)</small>
           <input type="number" min={2} max={10} value={prefixForm.sequence_length}
                  onChange={e => setPrefixForm({ ...prefixForm, sequence_length: e.target.value })} /></label>
         <button type="button" className="primary"
                 disabled={saving === "prefix" || !prefixForm.prefix.trim() || !prefixForm.label.trim()
                           || !prefixForm.department || !prefixForm.voucher_type}
-                onClick={addPrefix}>{saving === "prefix" ? "Addingâ€¦" : "Add"}</button>
+                onClick={addPrefix}>{saving === "prefix" ? "Adding…" : "Add"}</button>
       </div>}
       <p className="designer-note" style={{ marginBottom: 10 }}>
-        Each prefix owns one running sequence. â€œNextâ€ is the number the following voucher will take â€” it only ever
+        Each prefix owns one running sequence. “Next” is the number the following voucher will take — it only ever
         moves forward, which is what stops two batches from printing the same code.
       </p>
       <div className="table-wrap">
@@ -2374,8 +2374,8 @@ function SetupScreen({ onChanged }: { onChanged: () => Promise<void> | void }) {
           <tbody>
             {prefixes.map(p => <tr key={p.id}>
               <td><strong>{p.prefix}</strong></td><td>{p.label}</td>
-              <td>{p.department_name || departments.find(d => d.id === p.department)?.name || "â€”"}</td>
-              <td>{p.voucher_type_name || types.find(t => t.id === p.voucher_type)?.name || "â€”"}</td>
+              <td>{p.department_name || departments.find(d => d.id === p.department)?.name || "—"}</td>
+              <td>{p.voucher_type_name || types.find(t => t.id === p.voucher_type)?.name || "—"}</td>
               <td>{p.sequence_length}</td>
               <td>{String(p.next_sequence).padStart(p.sequence_length, "0")}</td>
               <td>{statusCell(p as any, "voucher-portal/prefixes/")}</td>
@@ -2443,7 +2443,7 @@ function AccessScreen({ departments }: { departments: Department[] }) {
       <button type="button" className="primary" disabled={saving || !form.username.trim()} onClick={grantAccess}>Grant access</button>
     </div>
 
-    {loading && <div className="data-state">Loadingâ€¦</div>}
+    {loading && <div className="data-state">Loading…</div>}
     {!loading && <div className="table-wrap">
       <table>
         <thead><tr><th>User</th><th>Role</th><th>Departments</th><th>Status</th><th></th></tr></thead>
