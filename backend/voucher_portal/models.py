@@ -388,4 +388,3 @@ class StatusChange(Timestamped):
     def __str__(self):
         target = self.batch_id and f"batch {self.batch_id}" or f"voucher {self.voucher_id}"
         return f"{target}: {self.from_status} -> {self.to_status}"
-
