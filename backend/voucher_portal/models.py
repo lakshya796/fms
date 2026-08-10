@@ -252,6 +252,10 @@ class PortalBatch(Timestamped):
 
     template = models.ForeignKey(VoucherTemplate, on_delete=models.PROTECT, related_name="batches")
     template_snapshot = models.JSONField(default=dict, help_text="Copy of the template's geometry and artwork URL at creation")
+    artwork = models.ImageField(
+        upload_to="voucher-portal/batches/", blank=True, null=True,
+        help_text="Optional batch-specific artwork that overrides the selected template artwork",
+    )
 
     status = models.CharField(max_length=20, choices=BATCH_STATUSES, default="draft")
     combined_pdf_url = models.URLField(blank=True, help_text="Print-ready, all vouchers in one PDF")
@@ -384,3 +388,4 @@ class StatusChange(Timestamped):
     def __str__(self):
         target = self.batch_id and f"batch {self.batch_id}" or f"voucher {self.voucher_id}"
         return f"{target}: {self.from_status} -> {self.to_status}"
+
