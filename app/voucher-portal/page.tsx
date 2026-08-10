@@ -191,6 +191,7 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
   const [sampleValues, setSampleValues] = useState<Record<string, string>>({});
   const [batches, setBatches] = useState<Batch[]>([]);
   const [loadingBatches, setLoadingBatches] = useState(false);
+  const [batchDownloadError, setBatchDownloadError] = useState("");
 
   const [notifications, setNotifications] = useState<Notice[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
@@ -534,6 +535,11 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
             `voucher-portal/batches/${activeBatch.id}/download/`,
             `${activeBatch.prefix_snapshot || "batch"}-${activeBatch.id}-vouchers.pdf`) || "")}>
           Download print-ready PDF (all vouchers)</button>}
+        {access.actions.includes("download") && <button type="button" className="secondary voucher-download-link"
+          onClick={async () => setWorkflowError(await downloadBlob(
+            `voucher-portal/batches/${activeBatch.id}/export-csv/`,
+            `${activeBatch.prefix_snapshot || "batch"}-${activeBatch.id}-vouchers.csv`) || "")}>
+          Export voucher details (CSV)</button>}
 
         <div className="voucher-workflow-actions">
           {activeBatch.status === "draft" && access.actions.includes("create") &&
@@ -747,11 +753,12 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
 
     <section className="voucher-card">
       <div className="voucher-card-head"><h2>Batches</h2></div>
+      {batchDownloadError && <div className="form-error" style={{ marginBottom: 10 }}>{batchDownloadError}</div>}
       {loadingBatches && <div className="data-state">Loading…</div>}
       {!loadingBatches && batches.length === 0 && <div className="data-state">No batches yet.</div>}
       {!loadingBatches && batches.length > 0 && <div className="table-wrap">
         <table>
-          <thead><tr><th>Name</th><th>Department</th><th>Type</th><th>Value</th><th>Qty</th><th>Status</th><th>Issued</th><th></th></tr></thead>
+          <thead><tr><th>Name</th><th>Department</th><th>Type</th><th>Value</th><th>Qty</th><th>Status</th><th>Issued</th><th>Actions</th></tr></thead>
           <tbody>
             {batches.map(b => <tr key={b.id} style={{ cursor: "pointer" }} onClick={() => openBatch(b)}>
               <td><strong>{b.name}</strong><small>{b.prefix_snapshot}</small></td>
@@ -761,7 +768,24 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
               <td>{b.generated_count || b.quantity}</td>
               <td><span className={"status " + statusClass(b.status)}>{statusLabel(b.status)}</span></td>
               <td>{b.issued_count}</td>
-              <td><button type="button" className="link-button" onClick={e => { e.stopPropagation(); openBatch(b); }}>Open</button></td>
+              <td className="voucher-actions">
+                <button type="button" className="link-button" onClick={e => { e.stopPropagation(); openBatch(b); }}>Open</button>
+                {b.combined_pdf_url && access.actions.includes("download") && <button type="button" className="link-button"
+                  onClick={async e => {
+                    e.stopPropagation();
+                    setBatchDownloadError(await downloadBlob(
+                      `voucher-portal/batches/${b.id}/download/`,
+                      `${b.prefix_snapshot || "batch"}-${b.id}-vouchers.pdf`) || "");
+                  }}>Download vouchers</button>}
+                {access.actions.includes("download") && <button type="button" className="link-button"
+                  onClick={async e => {
+                    e.stopPropagation();
+                    setBatchDownloadError(await downloadBlob(
+                      `voucher-portal/batches/${b.id}/export-csv/`,
+                      `${b.prefix_snapshot || "batch"}-${b.id}-vouchers.csv`) || "");
+                  }}>Export CSV</button>}
+                {!b.combined_pdf_url && <small>PDF not ready</small>}
+              </td>
             </tr>)}
           </tbody>
         </table>

@@ -388,6 +388,43 @@ class PortalBatchViewSet(viewsets.ReadOnlyModelViewSet):
         return FileResponse(stream, content_type="application/pdf", as_attachment=True,
                             filename=f"{batch.prefix_snapshot or 'batch'}-{batch.id}-vouchers.pdf")
 
+    @action(detail=True, methods=["get"], url_path="export-csv")
+    def export_csv(self, request, pk=None):
+        """Export every voucher in one batch as an Excel-friendly CSV."""
+        batch = self.get_object()
+        _require(request.portal_access, "download")
+        _require_department(request.portal_access, batch.department_id)
+
+        def excel_safe(value):
+            if value is None:
+                return ""
+            text = value.isoformat() if hasattr(value, "isoformat") else str(value)
+            return "'" + text if text.startswith(("=", "+", "-", "@")) else text
+
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow([
+            "batch_id", "batch_name", "department", "voucher_type", "batch_status",
+            "voucher_id", "voucher_number", "voucher_status", "discount", "currency",
+            "valid_from", "valid_to", "recipient_name", "recipient_phone", "recipient_email",
+            "recipient_reference", "issued_by", "issued_at", "redeemed_at", "cancelled_at",
+            "voucher_created_at", "voucher_updated_at",
+        ])
+        vouchers = batch.vouchers.select_related("issued_by").order_by("number")
+        for voucher in vouchers:
+            writer.writerow([excel_safe(value) for value in [
+                batch.id, batch.name, batch.department.name, batch.voucher_type.name, batch.status,
+                voucher.id, voucher.number, voucher.display_status, batch.display_value, batch.currency,
+                batch.valid_from, batch.valid_to, voucher.recipient_name, voucher.recipient_phone,
+                voucher.recipient_email, voucher.recipient_reference,
+                voucher.issued_by.username if voucher.issued_by else "", voucher.issued_at,
+                voucher.redeemed_at, voucher.cancelled_at, voucher.created_at, voucher.updated_at,
+            ]])
+        response = HttpResponse("\ufeff" + buffer.getvalue(), content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = (
+            f'attachment; filename="{batch.prefix_snapshot or "batch"}-{batch.id}-vouchers.csv"')
+        return response
+
     @action(detail=True, methods=["post"], parser_classes=[MultiPartParser])
     def issue_bulk(self, request, pk=None):
         """CSV upload: name,phone,email,reference - one row per recipient.
