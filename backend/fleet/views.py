@@ -180,8 +180,14 @@ class TripViewSet(viewsets.ModelViewSet):
         the form (e.g. after a correction) never leaves a stale duplicate line behind.
         """
         trip = self.get_object()
+
+        def expense_breakdown():
+            rows = trip.expenses.values("category").annotate(total=Sum("amount"))
+            return {row["category"]: float(row["total"]) for row in rows}
+
         if request.method == "GET":
-            return Response({"trip": self.get_serializer(trip).data, "summary": trip.settlement_summary()})
+            return Response({"trip": self.get_serializer(trip).data, "summary": trip.settlement_summary(),
+                             "expenses": expense_breakdown()})
 
         form = TripSettlementInputSerializer(data=request.data)
         form.is_valid(raise_exception=True)
@@ -212,7 +218,8 @@ class TripViewSet(viewsets.ModelViewSet):
                 TripExpense.objects.filter(trip=trip, category=category).delete()
 
         trip.refresh_from_db()
-        return Response({"trip": self.get_serializer(trip).data, "summary": trip.settlement_summary()})
+        return Response({"trip": self.get_serializer(trip).data, "summary": trip.settlement_summary(),
+                         "expenses": expense_breakdown()})
 class InvoiceViewSet(viewsets.ModelViewSet):
     permission_classes = [HasModulePermission]
     required_permission = "accounting.view"; required_write_permission = "accounting.manage"

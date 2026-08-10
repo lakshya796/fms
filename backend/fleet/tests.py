@@ -904,6 +904,8 @@ class TripSettlementTests(BaseFleetOpsTest):
         self.assertEqual(summary["per_km_rev"], 80.67)            # 96800 / 1200 passed km
         self.assertEqual(summary["trip_profit"], 63310.0)         # 96800 - 33490
         self.assertEqual(TripExpense.objects.filter(trip=trip).count(), 7)
+        self.assertEqual(response.data["expenses"]["diesel"], 26400.0)
+        self.assertEqual(response.data["expenses"]["salary"], 2400.0)
 
         trip.refresh_from_db()
         self.assertEqual(trip.load_type, "frozen")
