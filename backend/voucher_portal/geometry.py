@@ -364,4 +364,3 @@ def starter_layouts(coupon_width=DEFAULT_COUPON_WIDTH, coupon_height=DEFAULT_COU
          "description": "The measured ADCOOP discount coupon, as editable elements.",
          "geometry": adcoop},
     ]
-
