@@ -1638,6 +1638,21 @@ class DownloadTests(TestCase):
         self.assertIn(voucher.number, response["Content-Disposition"])
         self.assertTrue(b"".join(response.streaming_content).startswith(b"%PDF"))
 
+    def test_batch_csv_export_contains_every_voucher_detail(self):
+        voucher = self.batch.vouchers.first()
+        voucher.issue(name="Sample User", phone="+971500000000", email="sample@example.com",
+                      reference="REF-001", actor=self.requester)
+        response = self.client.get(f"/api/v1/voucher-portal/batches/{self.batch.id}/export-csv/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/csv", response["Content-Type"])
+        self.assertIn("attachment", response["Content-Disposition"])
+        body = response.content.decode("utf-8-sig")
+        self.assertEqual(body.count("\n"), self.batch.quantity + 1)
+        self.assertIn("voucher_number", body)
+        self.assertIn(voucher.number, body)
+        self.assertIn("Sample User", body)
+        self.assertIn("REF-001", body)
+
     def test_download_requires_authentication(self):
         anon = APIClient()
         self.assertEqual(anon.get(f"/api/v1/voucher-portal/batches/{self.batch.id}/download/").status_code, 401)
