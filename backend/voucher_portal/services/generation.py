@@ -157,7 +157,7 @@ def render_preview(data: dict) -> bytes:
                 pass
 
 
-def render_template_sample(template, geometry=None) -> bytes:
+def render_template_sample(template, geometry=None, artwork=None) -> bytes:
     """Render one card for a template on its own, with stand-in values.
 
     The designer needs to show what an edit actually prints before anyone
@@ -165,21 +165,41 @@ def render_template_sample(template, geometry=None) -> bytes:
     burn real voucher numbers. Passing `geometry` renders unsaved edits;
     omitting it renders what's stored. The stand-in values are exactly
     `SAMPLE_CONTEXT`, which the designer's own canvas also draws, so the two
-    previews can't disagree about what a field will contain."""
-    if geometry is not None:
-        original = template.field_geometry
-        template.field_geometry = geometry
-        try:
-            snapshot = _template_snapshot(template)
-        finally:
-            template.field_geometry = original
-    else:
-        snapshot = _template_snapshot(template)
+    previews can't disagree about what a field will contain.
 
-    # Trimmed to the card itself: a proof is for reading the design, and a
-    # coupon floating on an A4 sheet is a postage stamp in a PDF viewer.
-    sample = _SampleCard(snapshot)
-    return build_voucher_pdf(sample, None, context=dict(SAMPLE_CONTEXT), fit_page=True)
+    Optional `artwork` is a batch image used only for this proof. It is
+    written to a temporary file for ReportLab and never stored on the template.
+    """
+    temporary_path = None
+    try:
+        if artwork:
+            suffix = os.path.splitext(artwork.name or "")[1].lower() or ".img"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temporary:
+                for chunk in artwork.chunks():
+                    temporary.write(chunk)
+                temporary_path = temporary.name
+            artwork.seek(0)
+
+        if geometry is not None:
+            original = template.field_geometry
+            template.field_geometry = geometry
+            try:
+                snapshot = _template_snapshot(template, artwork_path=temporary_path)
+            finally:
+                template.field_geometry = original
+        else:
+            snapshot = _template_snapshot(template, artwork_path=temporary_path)
+
+        # Trimmed to the card itself: a proof is for reading the design, and a
+        # coupon floating on an A4 sheet is a postage stamp in a PDF viewer.
+        sample = _SampleCard(snapshot)
+        return build_voucher_pdf(sample, None, context=dict(SAMPLE_CONTEXT), fit_page=True)
+    finally:
+        if temporary_path:
+            try:
+                os.unlink(temporary_path)
+            except OSError:
+                pass
 
 
 @transaction.atomic

@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 import tempfile
 import threading
@@ -1084,6 +1085,21 @@ class GeometryValidationTests(TestCase):
         self.assertTrue(response.content.startswith(b"%PDF"))
         self.template.refresh_from_db()  # preview must not save the edit
         self.assertEqual(len(self.template.field_geometry["elements"]), 1)
+
+    def test_template_preview_accepts_batch_artwork_with_unsaved_geometry(self):
+        geometry = designed_geometry(
+            {"id": "panel", "type": "box", "x": 5, "y": 5, "w": 140, "h": 100,
+             "fill": "#FFFFFF", "opacity": 0.35},
+        )
+        response = self.client.post(
+            f"/api/v1/voucher-portal/templates/{self.template.id}/preview/",
+            {"field_geometry": json.dumps(geometry),
+             "artwork": _make_image_upload(1987, 725, color=(80, 40, 160))},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200, response.data if hasattr(response, "data") else "")
+        self.assertTrue(response.content.startswith(b"%PDF"))
+        self.assertFalse(self.template.artwork)
 
     def test_template_preview_rejects_invalid_unsaved_geometry(self):
         response = self.client.post(f"/api/v1/voucher-portal/templates/{self.template.id}/preview/",
