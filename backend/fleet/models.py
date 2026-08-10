@@ -137,12 +137,53 @@ class LorryReceipt(Timestamped):
     eway_bill_number=models.CharField(max_length=30,blank=True); freight_amount=models.DecimalField(max_digits=12,decimal_places=2,default=0); status=models.CharField(max_length=20,default="booked")
     def __str__(self): return self.number
 
+LOAD_TYPES = [("dry", "Dry"), ("chiller", "Chiller"), ("frozen", "Frozen"), ("empty", "Empty (no cargo)")]
+
+
 class Trip(Timestamped):
     number=models.CharField(max_length=30,unique=True); vehicle=models.ForeignKey(Vehicle,on_delete=models.PROTECT,related_name="trips")
     driver=models.ForeignKey(Driver,on_delete=models.PROTECT,related_name="trips"); lorry_receipts=models.ManyToManyField(LorryReceipt,related_name="trips")
     origin=models.CharField(max_length=120); destination=models.CharField(max_length=120); planned_departure=models.DateTimeField()
     actual_departure=models.DateTimeField(null=True,blank=True); arrival_at=models.DateTimeField(null=True,blank=True)
-    advance_amount=models.DecimalField(max_digits=12,decimal_places=2,default=0); estimated_cost=models.DecimalField(max_digits=12,decimal_places=2,default=0); status=models.CharField(max_length=20,default="planned")
+    advance_amount=models.DecimalField(max_digits=12,decimal_places=2,default=0,help_text="Diesel/cash given to the driver up front, settled against actual trip expenses")
+    estimated_cost=models.DecimalField(max_digits=12,decimal_places=2,default=0); status=models.CharField(max_length=20,default="planned")
+
+    # Trip settlement register - filled in once the trip is running or closed, mirroring
+    # the paper/Excel trip sheet a transport office already keeps: load type, load/unload
+    # dates, planned vs. billable distance, odometer readings, and the freight for a trip
+    # that has no linked Order to price it from.
+    load_type=models.CharField(max_length=10,choices=LOAD_TYPES,blank=True)
+    load_date=models.DateField(null=True,blank=True)
+    unload_date=models.DateField(null=True,blank=True)
+    google_km=models.PositiveIntegerField(default=0,help_text="Planned distance, e.g. from Google Maps")
+    passed_km=models.PositiveIntegerField(default=0,help_text="Distance accepted for costing and billing")
+    start_odometer_km=models.PositiveIntegerField(null=True,blank=True)
+    end_odometer_km=models.PositiveIntegerField(null=True,blank=True)
+    freight_amount=models.DecimalField(max_digits=12,decimal_places=2,default=0,
+                                       help_text="Used when this trip has no linked order to price it from")
+
+    @property
+    def running_km(self):
+        if self.start_odometer_km is None or self.end_odometer_km is None:
+            return None
+        return max(0, self.end_odometer_km - self.start_odometer_km)
+
+    def settlement_summary(self):
+        """The trip-sheet numbers an accountant fills in by hand today: total expense,
+        the diesel/cash advance settled against it, and cost/revenue per km."""
+        total_exp = money(self.expenses.aggregate(value=models.Sum("amount"))["value"] or 0)
+        order = self.orders.first()
+        freight = money(order.total_amount) if order else money(self.freight_amount)
+        distance = self.passed_km or self.running_km or 0
+        return {
+            "total_exp": float(total_exp), "diesel_given": float(money(self.advance_amount)),
+            "difference": float(money(total_exp - self.advance_amount)),
+            "freight": float(freight), "running_km": self.running_km, "passed_km": self.passed_km,
+            "per_km_exp": float(money(total_exp / distance)) if distance else 0.0,
+            "per_km_rev": float(money(freight / distance)) if distance else 0.0,
+            "trip_profit": float(money(freight - total_exp)),
+        }
+
     def __str__(self): return self.number
 
 class TrackingEvent(Timestamped):
@@ -207,9 +248,12 @@ ORDER_TYPES = [("ftl", "Full truck load"), ("ptl", "Part truck load"), ("parcel"
 ORDER_STATUSES = ["created", "assigned", "dispatched", "in_transit", "at_dropoff", "completed", "cancelled"]
 PAYMENT_MODES = [("to_pay", "To pay"), ("paid", "Paid"), ("tbb", "To be billed"), ("cod", "Cash on delivery")]
 FUEL_PAYMENT_MODES = [("fastag", "FASTag"), ("fuel_card", "Fuel card"), ("cash", "Cash"), ("upi", "UPI"), ("credit", "Station credit")]
-EXPENSE_CATEGORIES = [("diesel", "Diesel"), ("toll", "Toll / FASTag"), ("driver_allowance", "Driver bhatta"), ("loading", "Loading"),
-                      ("unloading", "Unloading"), ("rto_fine", "RTO fine"), ("police", "Police / checkpost"), ("parking", "Parking"),
-                      ("repair", "On-road repair"), ("permit", "Permit / border tax"), ("halting", "Halting charges"), ("other", "Other")]
+EXPENSE_CATEGORIES = [("diesel", "Diesel"), ("toll", "Toll / FASTag"), ("cash_toll", "Cash toll"), ("driver_allowance", "Driver bhatta"),
+                      ("loading", "Loading"), ("unloading", "Unloading"), ("rto_fine", "RTO fine"), ("police", "Police / checkpost"),
+                      ("parking", "Parking"), ("repair", "On-road repair / R&M"), ("permit", "Permit / state border tax"),
+                      ("halting", "Halting / waiting charges"), ("way_side", "Way side expense"), ("kata", "Weighbridge / kata"),
+                      ("adblue", "AdBlue"), ("salary", "Driver salary (trip share)"), ("other", "Other")]
+EXPENSE_CATEGORY_CODES = [code for code, _ in EXPENSE_CATEGORIES]
 ISSUE_TYPES = [("breakdown", "Breakdown"), ("accident", "Accident"), ("tyre", "Tyre"), ("documents", "Documents"), ("delay", "Delay"),
                ("route", "Route deviation"), ("safety", "Safety"), ("fuel_theft", "Fuel pilferage"), ("other", "Other")]
 DOCUMENT_TYPES = [("rc", "Registration certificate"), ("insurance", "Insurance"), ("fitness", "Fitness certificate"),
