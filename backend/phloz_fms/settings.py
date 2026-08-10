@@ -61,4 +61,8 @@ CORS_ALLOWED_ORIGIN_REGEXES=[x.strip() for x in os.getenv("CORS_ALLOWED_ORIGIN_R
 CSRF_TRUSTED_ORIGINS=CORS_ALLOWED_ORIGINS
 SECURE_PROXY_SSL_HEADER=("HTTP_X_FORWARDED_PROTO","https")
 SESSION_COOKIE_SECURE=True; CSRF_COOKIE_SECURE=True
+# Waits for voucher_portal's background PDF threads before dropping the test
+# database - Postgres refuses to drop one that still has sessions on it, so
+# without this a fully green run still exits non-zero under CI.
+TEST_RUNNER="phloz_fms.test_runner.BackgroundAwareRunner"
 REST_FRAMEWORK={"DEFAULT_AUTHENTICATION_CLASSES":["rest_framework.authentication.TokenAuthentication","rest_framework.authentication.SessionAuthentication"],"DEFAULT_PERMISSION_CLASSES":["rest_framework.permissions.IsAuthenticated"],"DEFAULT_PAGINATION_CLASS":"fleet.pagination.StandardPagination","PAGE_SIZE":50}

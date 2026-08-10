@@ -110,7 +110,7 @@ class NumberingConcurrencyTests(TransactionTestCase):
     duplicate numbers - without that SQLite-only limitation masking it."""
 
     def test_concurrent_allocation_has_no_duplicates(self):
-        from django.db import close_old_connections
+        from django.db import connections
         from django.db.utils import OperationalError
 
         dept = Department.objects.create(code="HR", name="HR")
@@ -136,7 +136,7 @@ class NumberingConcurrencyTests(TransactionTestCase):
                     errors.append(error)
                     return
                 finally:
-                    close_old_connections()
+                    connections.close_all()  # this worker thread is done with its connection
 
         threads = [threading.Thread(target=worker) for _ in range(8)]
         for t in threads:
