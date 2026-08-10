@@ -96,7 +96,7 @@ PALETTE = [
                      "align": "left", "line_height": 14, "w": 0},
     },
     {
-        "type": "field", "label": "Voucher field", "hint": "A value filled in per voucher when it prints.",
+        "type": "field", "label": "Form field", "hint": "A placeholder filled from the batch form when previewed and printed.",
         "defaults": {"source": "voucher_code", "prefix": "", "suffix": "", "size": 10, "font": "Helvetica",
                      "color": "#231B36", "align": "left", "line_height": 12, "w": 0, "max_lines": 5},
     },

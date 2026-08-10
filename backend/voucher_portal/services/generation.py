@@ -24,6 +24,8 @@ for when that needs to become a real queue.
 """
 import hashlib
 import json
+import os
+import tempfile
 import threading
 from decimal import Decimal
 
@@ -60,24 +62,34 @@ def payload_hash(data: dict) -> str:
     # approved on screen.
     template = data.get("template")
     canonical["template_design"] = getattr(template, "field_geometry", None)
+    artwork = data.get("artwork")
+    if artwork:
+        digest = hashlib.sha256()
+        for chunk in artwork.chunks():
+            digest.update(chunk)
+        artwork.seek(0)
+        canonical["artwork_sha256"] = digest.hexdigest()
+    else:
+        canonical["artwork_sha256"] = None
     blob = json.dumps(canonical, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
-def _template_snapshot(template):
+def _template_snapshot(template, *, artwork_path=None):
     snapshot = dict(template.field_geometry or {})
     snapshot["page_width"] = template.page_width
     snapshot["page_height"] = template.page_height
     snapshot["coupon_width"] = template.coupon_width
     snapshot["coupon_height"] = template.coupon_height
-    snapshot["artwork_path"] = template.artwork.path if template.artwork else None
+    snapshot["artwork_path"] = artwork_path if artwork_path is not None else (
+        template.artwork.path if template.artwork else None)
     return snapshot
 
 
 class _PreviewBatch:
     """An unsaved, PortalBatch-shaped object so pdf.py can render a sample of
     the create-batch form without a database row existing yet."""
-    def __init__(self, data, template):
+    def __init__(self, data, template, *, artwork_path=None):
         self.name = data.get("name") or ""
         self.department = data.get("department")
         self.voucher_type = data.get("voucher_type")
@@ -93,7 +105,7 @@ class _PreviewBatch:
         self.valid_to = data["valid_to"]
         self.restrictions = data.get("restrictions") or ""
         self.terms = data.get("terms") or ""
-        self.template_snapshot = _template_snapshot(template)
+        self.template_snapshot = _template_snapshot(template, artwork_path=artwork_path)
 
 
 class _PreviewVoucher:
@@ -124,9 +136,25 @@ def refresh_voucher_pdf(voucher):
 def render_preview(data: dict) -> bytes:
     prefix = data["prefix"]
     sample_number = f"{prefix.prefix}{prefix.next_sequence:0{prefix.sequence_length}d}"
-    batch = _PreviewBatch(data, data["template"])
-    voucher = _PreviewVoucher(sample_number)
-    return build_voucher_pdf(batch, voucher)
+    artwork = data.get("artwork")
+    temporary_path = None
+    try:
+        if artwork:
+            suffix = os.path.splitext(artwork.name or "")[1].lower() or ".img"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temporary:
+                for chunk in artwork.chunks():
+                    temporary.write(chunk)
+                temporary_path = temporary.name
+            artwork.seek(0)
+        batch = _PreviewBatch(data, data["template"], artwork_path=temporary_path)
+        voucher = _PreviewVoucher(sample_number)
+        return build_voucher_pdf(batch, voucher)
+    finally:
+        if temporary_path:
+            try:
+                os.unlink(temporary_path)
+            except OSError:
+                pass
 
 
 def render_template_sample(template, geometry=None) -> bytes:
@@ -170,9 +198,12 @@ def create_draft_batch(data: dict, created_by) -> PortalBatch:
         currency=data.get("currency") or "AED", valid_from=data["valid_from"], valid_to=data["valid_to"],
         restrictions=data.get("restrictions") or "", terms=data.get("terms") or "",
         prefix=prefix, prefix_snapshot=prefix.prefix, sequence_length_snapshot=prefix.sequence_length,
-        template=template, template_snapshot=_template_snapshot(template),
+        template=template, template_snapshot=_template_snapshot(template), artwork=data.get("artwork"),
         status="draft", created_by=created_by,
     )
+    if batch.artwork:
+        batch.template_snapshot = _template_snapshot(template, artwork_path=batch.artwork.path)
+        batch.save(update_fields=["template_snapshot", "updated_at"])
     StatusChange.objects.create(batch=batch, from_status="", to_status="draft", actor=created_by)
     return batch
 

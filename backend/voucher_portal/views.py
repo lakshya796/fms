@@ -257,6 +257,7 @@ class PortalBatchViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = PortalBatch.objects.select_related("department", "voucher_type", "created_by", "approved_by").all()
     serializer_class = PortalBatchSerializer
     permission_classes = [HasPortalAccess]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
         queryset = super().get_queryset()

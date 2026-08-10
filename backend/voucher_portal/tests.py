@@ -734,11 +734,11 @@ class ReportsApiTests(TestCase):
         self.assertEqual(body.count("\n"), 6)  # header + 5 vouchers (3 HR + 2 MKT)
 
 
-def _make_image_upload(width, height, name="art.png"):
+def _make_image_upload(width, height, name="art.png", color=(200, 50, 50)):
     import io
     from PIL import Image
     buffer = io.BytesIO()
-    Image.new("RGB", (width, height), color=(200, 50, 50)).save(buffer, format="PNG")
+    Image.new("RGB", (width, height), color=color).save(buffer, format="PNG")
     return SimpleUploadedFile(name, buffer.getvalue(), content_type="image/png")
 
 
@@ -838,6 +838,49 @@ class ArtworkUploadTests(TestCase):
         response = client.post("/api/v1/voucher-portal/templates/",
                                {"name": "Requester artwork", "artwork": upload}, format="multipart")
         self.assertEqual(response.status_code, 201, response.data)
+
+    def test_batch_artwork_is_previewed_saved_and_snapshotted(self):
+        dept, vtype, prefix, template = make_reference_data()
+        payload = {
+            "name": "Batch artwork", "department": dept.id, "voucher_type": vtype.id,
+            "quantity": 2, "discount_type": "fixed", "fixed_value": "75", "currency": "AED",
+            "valid_to": dates()[1].isoformat(), "terms": "Form values print here",
+            "prefix": prefix.id, "template": template.id,
+        }
+        preview = self.client.post(
+            "/api/v1/voucher-portal/batches/preview/",
+            {**payload, "artwork": _make_image_upload(1987, 725)}, format="multipart",
+        )
+        self.assertEqual(preview.status_code, 200, preview.data if hasattr(preview, "data") else "")
+        self.assertTrue(preview.content.startswith(b"%PDF"))
+
+        created = self.client.post(
+            "/api/v1/voucher-portal/batches/",
+            {**payload, "artwork": _make_image_upload(1987, 725),
+             "preview_hash": preview["X-Preview-Hash"]}, format="multipart",
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        batch = PortalBatch.objects.get(pk=created.data["id"])
+        self.assertTrue(batch.artwork.name.startswith("voucher-portal/batches/"))
+        self.assertEqual(batch.template_snapshot["artwork_path"], batch.artwork.path)
+
+    def test_changing_batch_artwork_invalidates_the_preview_hash(self):
+        dept, vtype, prefix, template = make_reference_data()
+        payload = {
+            "name": "Changed artwork", "department": dept.id, "voucher_type": vtype.id,
+            "quantity": 1, "discount_type": "fixed", "fixed_value": "25", "currency": "AED",
+            "valid_to": dates()[1].isoformat(), "prefix": prefix.id, "template": template.id,
+        }
+        preview = self.client.post(
+            "/api/v1/voucher-portal/batches/preview/",
+            {**payload, "artwork": _make_image_upload(1987, 725, color=(200, 50, 50))}, format="multipart",
+        )
+        created = self.client.post(
+            "/api/v1/voucher-portal/batches/",
+            {**payload, "artwork": _make_image_upload(1987, 725, color=(50, 50, 200)),
+             "preview_hash": preview["X-Preview-Hash"]}, format="multipart",
+        )
+        self.assertEqual(created.status_code, 400)
 
 
 class PortalUserAccessApiTests(TestCase):
@@ -1368,6 +1411,8 @@ class BatchFieldCoverageTests(TestCase):
         "prefix": "prefix",
         # `template` is the card being printed on, not a value printed on it.
         "template": None,
+        # Artwork changes the visual rather than providing a printable text variable.
+        "artwork": None,
     }
 
     def test_every_create_form_field_has_a_placeholder(self):

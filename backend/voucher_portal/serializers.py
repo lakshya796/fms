@@ -189,6 +189,7 @@ class BatchFormSerializer(serializers.Serializer):
 
     prefix = serializers.PrimaryKeyRelatedField(queryset=VoucherPrefix.objects.filter(is_active=True))
     template = serializers.PrimaryKeyRelatedField(queryset=VoucherTemplate.objects.filter(is_active=True), required=False)
+    artwork = serializers.ImageField(required=False, allow_null=True, write_only=True)
 
     def validate(self, attrs):
         attrs.setdefault("valid_from", timezone.localdate())
@@ -210,6 +211,15 @@ class BatchFormSerializer(serializers.Serializer):
         if not template:
             raise serializers.ValidationError({"template": "No default template is configured."})
         attrs["template"] = template
+        artwork = attrs.get("artwork")
+        if artwork:
+            try:
+                validate_artwork(
+                    artwork,
+                    target_ratio=template.coupon_width / template.coupon_height if template.coupon_height else None,
+                )
+            except ArtworkError as error:
+                raise serializers.ValidationError({"artwork": str(error)})
         return attrs
 
 

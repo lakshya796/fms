@@ -198,6 +198,7 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
   const [previewUrl, setPreviewUrl] = useState("");
   const [previewing, setPreviewing] = useState(false);
   const [previewError, setPreviewError] = useState("");
+  const [batchArtwork, setBatchArtwork] = useState<File | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
 
@@ -291,6 +292,7 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
     // Keeps the picked card design: it's a choice about the batch, not a value
     // typed into it, and re-picking it on every new batch is busywork.
     setForm({ ...EMPTY_FORM, template: form.template });
+    setBatchArtwork(null);
     setPreviewHash(""); setPreviewUrl(""); setPreviewError(""); setCreateError("");
   };
 
@@ -338,10 +340,20 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
     template: form.template || undefined,
   });
 
+  const buildFormData = (includePreviewHash = false) => {
+    const body = new FormData();
+    Object.entries(buildPayload()).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) body.append(key, String(value));
+    });
+    if (batchArtwork) body.append("artwork", batchArtwork);
+    if (includePreviewHash) body.append("preview_hash", previewHash);
+    return body;
+  };
+
   const runPreview = async () => {
     setPreviewing(true); setPreviewError(""); setPreviewUrl("");
     try {
-      const response = await fmsRequestRaw("voucher-portal/batches/preview/", { method: "POST", body: JSON.stringify(buildPayload()) });
+      const response = await fmsRequestRaw("voucher-portal/batches/preview/", { method: "POST", body: buildFormData() });
       const hash = response.headers.get("X-Preview-Hash") || "";
       const blob = await response.blob();
       setPreviewUrl(URL.createObjectURL(blob));
@@ -354,7 +366,7 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
   const saveDraft = async () => {
     setCreating(true); setCreateError("");
     try {
-      await fmsRequest("voucher-portal/batches/", { method: "POST", body: JSON.stringify({ ...buildPayload(), preview_hash: previewHash }) });
+      await fmsRequest("voucher-portal/batches/", { method: "POST", body: buildFormData(true) });
       setShowCreate(false); resetCreateForm(); loadBatches();
     } catch (error: any) {
       setCreateError(parseApiError(error));
@@ -657,6 +669,14 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
           <textarea rows={3} value={form.terms} onChange={e => updateForm({ terms: e.target.value })} />
         </label>
 
+        <label className="voucher-form-wide">Voucher image <small>(optional — overrides the selected design artwork for this batch)</small>
+          <input type="file" accept="image/png,image/jpeg" onChange={e => {
+            setBatchArtwork(e.target.files?.[0] || null);
+            setPreviewHash(""); setPreviewUrl(""); setPreviewError("");
+          }} />
+          {batchArtwork && <small>{batchArtwork.name} · used in both the preview and generated PDFs.</small>}
+        </label>
+
         <div className="voucher-form-wide voucher-picker">
           <div className="voucher-picker-head">
             <span>Card design</span>
@@ -698,6 +718,10 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
                      onClick={() => setDesignIntent({ mode: "edit", template: selectedTemplate })}>Edit this design</button>.
               </p>}
           </div>}
+          <p className="voucher-picker-help">
+            Need another value on the voucher? Choose <strong>Edit this design</strong>, then use <strong>+ Form field</strong>
+            to place any batch-form placeholder on the card.
+          </p>
         </div>
 
         {previewError && <div className="form-error voucher-form-wide">{previewError}</div>}
@@ -1703,9 +1727,9 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
                     onClick={() => addElement(entry.type)}>+ {entry.label}</button>
           ))}
           <div className="designer-menu-wrap">
-            <button type="button" className="chip" onClick={() => setAddingField(open => !open)}>+ Voucher field ▾</button>
+            <button type="button" className="chip" onClick={() => setAddingField(open => !open)}>+ Form field ▾</button>
             {addingField && <div className="designer-menu">
-              <p>Fills in per voucher when it prints</p>
+              <p>Insert a placeholder filled from the batch form when previewed and printed</p>
               {catalogue.variables.map(variable => (
                 <button key={variable.key} type="button" onClick={() => addElement("field", variable.key)}>
                   <strong>{variable.label}</strong><small>{variable.sample.split("\n")[0]}</small>
