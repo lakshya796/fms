@@ -407,7 +407,874 @@ class PortalApiPermissionTests(TestCase):
         self.hr, self.hr_type, self.hr_prefix, self.template = make_reference_data()
         self.mkt = Department.objects.create(code="MKT", name="Marketing")
         self.mkt_type = VoucherType.objects.create(code="MKTV", name="Marketing Voucher", department=self.mkt)
-        self.mkt_prefix = VoucherPrefix.objects.create(prefix="MKT", label="Marketing", departm…12099 tokens truncated…
+        self.mkt_prefix = VoucherPrefix.objects.create(prefix="MKT", label="Marketing", department=self.mkt,
+                                                       voucher_type=self.mkt_type, sequence_length=4)
+
+    def _payload(self, dept, vtype, prefix, **overrides):
+        valid_from, valid_to = dates()
+        data = {
+            "name": "Test batch", "department": dept.id, "voucher_type": vtype.id, "quantity": 3,
+            "discount_type": "fixed", "fixed_value": "50", "currency": "AED", "valid_to": valid_to.isoformat(),
+            "terms": "No cash value", "prefix": prefix.id,
+        }
+        data.update(overrides)
+        return data
+
+    def test_no_access_grant_is_forbidden(self):
+        user = User.objects.create_user("nobody", password="x")
+        client = APIClient()
+        client.force_authenticate(user)
+        response = client.get("/api/v1/voucher-portal/batches/")
+        self.assertEqual(response.status_code, 403)
+
+    def test_django_staff_gets_implicit_admin_access(self):
+        user = User.objects.create_user("staffer", password="x", is_staff=True)
+        client = APIClient()
+        client.force_authenticate(user)
+        response = client.get("/api/v1/voucher-portal/batches/")
+        self.assertEqual(response.status_code, 200)
+
+    def test_requester_scoped_to_own_department_cannot_create_in_another(self):
+        user = User.objects.create_user("hr_requester", password="x")
+        grant(user, "requester", [self.hr])
+        client = APIClient()
+        client.force_authenticate(user)
+
+        payload = self._payload(self.mkt, self.mkt_type, self.mkt_prefix)
+        preview = client.post("/api/v1/voucher-portal/batches/preview/", payload, format="json")
+        self.assertEqual(preview.status_code, 403)
+
+    def test_requester_can_create_in_own_department(self):
+        user = User.objects.create_user("hr_requester2", password="x")
+        grant(user, "requester", [self.hr])
+        client = APIClient()
+        client.force_authenticate(user)
+
+        payload = self._payload(self.hr, self.hr_type, self.hr_prefix)
+        preview = client.post("/api/v1/voucher-portal/batches/preview/", payload, format="json")
+        self.assertEqual(preview.status_code, 200)
+
+    def test_report_viewer_cannot_create(self):
+        user = User.objects.create_user("viewer", password="x")
+        grant(user, "report_viewer")
+        client = APIClient()
+        client.force_authenticate(user)
+        payload = self._payload(self.hr, self.hr_type, self.hr_prefix)
+        response = client.post("/api/v1/voucher-portal/batches/preview/", payload, format="json")
+        self.assertEqual(response.status_code, 403)
+
+    def test_department_scoped_list_hides_other_departments(self):
+        requester = User.objects.create_user("hr_requester3", password="x")
+        grant(requester, "requester", [self.hr])
+        create_draft_batch({
+            "name": "HR batch", "department": self.hr, "voucher_type": self.hr_type, "quantity": 1,
+            "discount_type": "fixed", "fixed_value": Decimal("10"), "currency": "AED",
+            "valid_from": dates()[0], "valid_to": dates()[1], "prefix": self.hr_prefix, "template": self.template,
+        }, requester)
+        create_draft_batch({
+            "name": "MKT batch", "department": self.mkt, "voucher_type": self.mkt_type, "quantity": 1,
+            "discount_type": "fixed", "fixed_value": Decimal("10"), "currency": "AED",
+            "valid_from": dates()[0], "valid_to": dates()[1], "prefix": self.mkt_prefix, "template": self.template,
+        }, requester)
+
+        client = APIClient()
+        client.force_authenticate(requester)
+        response = client.get("/api/v1/voucher-portal/batches/")
+        names = {row["name"] for row in response.data["results"]}
+        self.assertEqual(names, {"HR batch"})
+
+    def test_self_approval_blocked_for_non_administrator(self):
+        user = User.objects.create_user("dual_role", password="x")
+        grant(user, "approver", [self.hr])
+        # Give this same user requester powers too, by making a second grant impossible
+        # (OneToOne) - instead, create the batch as staff, then have the approver try
+        # to approve their own submission by acting as the batch's created_by.
+        batch = create_draft_batch({
+            "name": "Self-approval test", "department": self.hr, "voucher_type": self.hr_type, "quantity": 1,
+            "discount_type": "fixed", "fixed_value": Decimal("10"), "currency": "AED",
+            "valid_from": dates()[0], "valid_to": dates()[1], "prefix": self.hr_prefix, "template": self.template,
+        }, user)
+        workflow.submit(batch, user)
+
+        client = APIClient()
+        client.force_authenticate(user)
+        response = client.post(f"/api/v1/voucher-portal/batches/{batch.id}/approve/", {}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("own request", response.data[0] if isinstance(response.data, list) else str(response.data))
+
+    def test_administrator_can_approve_own_request(self):
+        admin_user = User.objects.create_user("admin_user", password="x", is_staff=True)
+        batch = create_draft_batch({
+            "name": "Admin self-approval", "department": self.hr, "voucher_type": self.hr_type, "quantity": 1,
+            "discount_type": "fixed", "fixed_value": Decimal("10"), "currency": "AED",
+            "valid_from": dates()[0], "valid_to": dates()[1], "prefix": self.hr_prefix, "template": self.template,
+        }, admin_user)
+        workflow.submit(batch, admin_user)
+
+        client = APIClient()
+        client.force_authenticate(admin_user)
+        response = client.post(f"/api/v1/voucher-portal/batches/{batch.id}/approve/", {}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+
+
+class PortalApiWorkflowTests(TestCase):
+    """The end-to-end HTTP flow: draft -> submit -> approve -> generate ->
+    issue, exercised through the API rather than calling services directly."""
+
+    def setUp(self):
+        self.dept, self.vtype, self.prefix, self.template = make_reference_data()
+        self.requester = User.objects.create_user("requester", password="x", is_staff=True)
+        self.approver = User.objects.create_user("approver", password="x", is_staff=True)
+        self.client = APIClient()
+        self.client.force_authenticate(self.requester)
+
+    def _payload(self, **overrides):
+        valid_from, valid_to = dates()
+        data = {
+            "name": "Diwali gift vouchers", "department": self.dept.id, "voucher_type": self.vtype.id,
+            "quantity": 3, "discount_type": "percentage", "percentage_value": "20", "max_discount_value": "50",
+            "currency": "AED", "valid_to": valid_to.isoformat(), "terms": "No cash value", "prefix": self.prefix.id,
+        }
+        data.update(overrides)
+        return data
+
+    def test_valid_from_defaults_to_today_when_omitted(self):
+        payload = self._payload()
+        preview = self.client.post("/api/v1/voucher-portal/batches/preview/", payload, format="json")
+        self.assertEqual(preview.status_code, 200)
+        response = self.client.post("/api/v1/voucher-portal/batches/",
+                                    {**payload, "preview_hash": preview["X-Preview-Hash"]}, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        batch = PortalBatch.objects.get(pk=response.data["id"])
+        self.assertEqual(batch.valid_from, timezone.localdate())
+
+    def test_endpoints_require_authentication(self):
+        anon = APIClient()
+        response = anon.get("/api/v1/voucher-portal/batches/")
+        self.assertEqual(response.status_code, 401)
+
+    def test_preview_endpoint_returns_pdf_and_hash_header(self):
+        response = self.client.post("/api/v1/voucher-portal/batches/preview/", self._payload(), format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertIn("X-Preview-Hash", response)
+
+    def test_create_without_preview_hash_rejected(self):
+        response = self.client.post("/api/v1/voucher-portal/batches/", self._payload(), format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_create_with_stale_hash_rejected(self):
+        preview = self.client.post("/api/v1/voucher-portal/batches/preview/", self._payload(), format="json")
+        stale_hash = preview["X-Preview-Hash"]
+        response = self.client.post("/api/v1/voucher-portal/batches/",
+                                    {**self._payload(quantity=9), "preview_hash": stale_hash}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_create_lands_in_draft_not_generated(self):
+        payload = self._payload()
+        preview = self.client.post("/api/v1/voucher-portal/batches/preview/", payload, format="json")
+        response = self.client.post("/api/v1/voucher-portal/batches/",
+                                    {**payload, "preview_hash": preview["X-Preview-Hash"]}, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["status"], "draft")
+        self.assertEqual(response.data["quantity"], 3)
+
+    def _create_draft(self, **overrides):
+        payload = self._payload(**overrides)
+        preview = self.client.post("/api/v1/voucher-portal/batches/preview/", payload, format="json")
+        response = self.client.post("/api/v1/voucher-portal/batches/",
+                                    {**payload, "preview_hash": preview["X-Preview-Hash"]}, format="json")
+        return response.data["id"]
+
+    @mock.patch.object(storage, "_S3_BUCKET", "")
+    def test_full_http_workflow_to_issuing(self):
+        batch_id = self._create_draft(quantity=5, discount_type="fixed", fixed_value="100",
+                                      percentage_value=None, max_discount_value=None)
+
+        submit = self.client.post(f"/api/v1/voucher-portal/batches/{batch_id}/submit/")
+        self.assertEqual(submit.status_code, 200, submit.data)
+        self.assertEqual(submit.data["status"], "pending_approval")
+
+        approver_client = APIClient()
+        approver_client.force_authenticate(self.approver)
+        approve = approver_client.post(f"/api/v1/voucher-portal/batches/{batch_id}/approve/", {}, format="json")
+        self.assertEqual(approve.status_code, 200, approve.data)
+        self.assertEqual(approve.data["status"], "approved")
+
+        generate = self.client.post(f"/api/v1/voucher-portal/batches/{batch_id}/generate/")
+        self.assertEqual(generate.status_code, 200, generate.data)
+        self.assertEqual(generate.data["status"], "generating")
+
+        batch = PortalBatch.objects.get(pk=batch_id)
+        self.assertEqual(batch.vouchers.count(), 5)
+        voucher_ids = list(batch.vouchers.values_list("id", flat=True))
+
+        manual = self.client.post("/api/v1/voucher-portal/vouchers/issue/",
+                                  {"voucher_ids": [voucher_ids[0]], "phone": "+971500000000"}, format="json")
+        self.assertEqual(manual.status_code, 200)
+        self.assertEqual(PortalVoucher.objects.get(pk=voucher_ids[0]).status, "issued")
+
+        csv_content = "name,phone,email,reference\nAli,+9715,,\nSara,+9716,,\n"
+        upload = SimpleUploadedFile("recipients.csv", csv_content.encode(), content_type="text/csv")
+        bulk = self.client.post(f"/api/v1/voucher-portal/batches/{batch_id}/issue_bulk/", {"file": upload}, format="multipart")
+        self.assertEqual(bulk.status_code, 200, bulk.data)
+        self.assertEqual(bulk.data["assigned"], 2)
+        self.assertEqual(bulk.data["remaining_available"], 2)
+
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, "partially_issued")
+
+    def test_generate_before_approval_rejected(self):
+        batch_id = self._create_draft()
+        self.client.post(f"/api/v1/voucher-portal/batches/{batch_id}/submit/")
+        response = self.client.post(f"/api/v1/voucher-portal/batches/{batch_id}/generate/")
+        self.assertEqual(response.status_code, 400)
+
+    def test_reject_without_reason_rejected_by_api(self):
+        batch_id = self._create_draft()
+        self.client.post(f"/api/v1/voucher-portal/batches/{batch_id}/submit/")
+        approver_client = APIClient()
+        approver_client.force_authenticate(self.approver)
+        response = approver_client.post(f"/api/v1/voucher-portal/batches/{batch_id}/reject/", {}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_bulk_csv_rejects_more_recipients_than_available_vouchers(self):
+        batch_id = self._create_draft(quantity=1, discount_type="fixed", fixed_value="100",
+                                      percentage_value=None, max_discount_value=None)
+        self.client.post(f"/api/v1/voucher-portal/batches/{batch_id}/submit/")
+        approver_client = APIClient()
+        approver_client.force_authenticate(self.approver)
+        approver_client.post(f"/api/v1/voucher-portal/batches/{batch_id}/approve/", {}, format="json")
+        self.client.post(f"/api/v1/voucher-portal/batches/{batch_id}/generate/")
+
+        csv_content = "name,phone,email,reference\nAli,+9715,,\nSara,+9716,,\n"
+        upload = SimpleUploadedFile("recipients.csv", csv_content.encode(), content_type="text/csv")
+        response = self.client.post(f"/api/v1/voucher-portal/batches/{batch_id}/issue_bulk/", {"file": upload}, format="multipart")
+        self.assertEqual(response.status_code, 400)
+
+
+class NotificationApiTests(TestCase):
+    def setUp(self):
+        self.dept, self.vtype, self.prefix, self.template = make_reference_data()
+        self.requester = User.objects.create_user("requester", password="x")
+        self.approver = User.objects.create_user("approver", password="x")
+        grant(self.requester, "requester", [self.dept])
+        grant(self.approver, "approver", [self.dept])
+
+    def test_notification_appears_and_can_be_marked_read(self):
+        batch = approved_batch(self.dept, self.vtype, self.prefix, self.template, self.requester, self.approver)
+        client = APIClient()
+        client.force_authenticate(self.requester)
+        response = client.get("/api/v1/voucher-portal/notifications/")
+        self.assertEqual(response.data["count"], 1)
+        note_id = response.data["results"][0]["id"]
+        self.assertIsNone(response.data["results"][0]["read_at"])
+
+        mark = client.post(f"/api/v1/voucher-portal/notifications/{note_id}/read/")
+        self.assertEqual(mark.status_code, 200)
+        self.assertIsNotNone(mark.data["read_at"])
+
+    def test_notifications_are_scoped_to_the_user(self):
+        approved_batch(self.dept, self.vtype, self.prefix, self.template, self.requester, self.approver)
+        other = User.objects.create_user("stranger", password="x")
+        grant(other, "requester", [self.dept])
+        client = APIClient()
+        client.force_authenticate(other)
+        response = client.get("/api/v1/voucher-portal/notifications/")
+        self.assertEqual(response.data["count"], 0)
+
+
+class ReportsApiTests(TestCase):
+    def setUp(self):
+        self.dept, self.vtype, self.prefix, self.template = make_reference_data()
+        self.mkt = Department.objects.create(code="MKT", name="Marketing")
+        self.mkt_type = VoucherType.objects.create(code="MKTV", name="Marketing Voucher", department=self.mkt)
+        self.mkt_prefix = VoucherPrefix.objects.create(prefix="MKT", label="Marketing", department=self.mkt,
+                                                       voucher_type=self.mkt_type, sequence_length=4)
+        self.requester = User.objects.create_user("requester", password="x", is_staff=True)
+        self.approver = User.objects.create_user("approver", password="x", is_staff=True)
+
+        hr_batch = approved_batch(self.dept, self.vtype, self.prefix, self.template, self.requester, self.approver, quantity=3)
+        generate_vouchers(hr_batch)
+        list(hr_batch.vouchers.all())[0].issue(actor=self.requester)
+
+        mkt_batch = approved_batch(self.mkt, self.mkt_type, self.mkt_prefix, self.template, self.requester, self.approver, quantity=2)
+        generate_vouchers(mkt_batch)
+
+    def test_administrator_summary_covers_all_departments(self):
+        client = APIClient()
+        client.force_authenticate(self.requester)
+        response = client.get("/api/v1/voucher-portal/reports/summary/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["total"], 5)
+        self.assertEqual(response.data["issued"], 1)
+
+    def test_report_viewer_scoped_to_one_department(self):
+        viewer = User.objects.create_user("viewer", password="x")
+        grant(viewer, "report_viewer", [self.dept])
+        client = APIClient()
+        client.force_authenticate(viewer)
+        response = client.get("/api/v1/voucher-portal/reports/summary/")
+        self.assertEqual(response.data["total"], 3)  # HR only, not Marketing's 2
+
+    def test_by_department_breakdown(self):
+        client = APIClient()
+        client.force_authenticate(self.requester)
+        response = client.get("/api/v1/voucher-portal/reports/by-department/")
+        totals = {row["batch__department__name"]: row["total"] for row in response.data}
+        self.assertEqual(totals, {"HR": 3, "Marketing": 2})
+
+    def test_csv_export(self):
+        client = APIClient()
+        client.force_authenticate(self.requester)
+        response = client.get("/api/v1/voucher-portal/reports/export/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "text/csv")
+        body = response.content.decode()
+        self.assertEqual(body.count("\n"), 6)  # header + 5 vouchers (3 HR + 2 MKT)
+
+
+def _make_image_upload(width, height, name="art.png", color=(200, 50, 50)):
+    import io
+    from PIL import Image
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), color=color).save(buffer, format="PNG")
+    return SimpleUploadedFile(name, buffer.getvalue(), content_type="image/png")
+
+
+@override_settings(MEDIA_ROOT=tempfile.mkdtemp(prefix="voucher-artwork-tests-"))
+class ArtworkUploadTests(TestCase):
+    """Covers uploading a card's background artwork - the designer's "new card"
+    form and its Replace artwork control both POST/PATCH straight to the
+    templates/ endpoint - see validators.py for the size/ratio rules, derived
+    from the card's own proportions - and serving those files back through the
+    API."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("tester", password="x", is_staff=True)
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_correctly_proportioned_artwork_is_accepted(self):
+        upload = _make_image_upload(1987, 725)  # the template's own native size
+        response = self.client.post("/api/v1/voucher-portal/templates/",
+                                    {"name": "Custom artwork", "artwork": upload}, format="multipart")
+        self.assertEqual(response.status_code, 201, response.data)
+        template = VoucherTemplate.objects.get(pk=response.data["id"])
+        # A new template is an empty card carrying only the mandatory barcode -
+        # no ADCOOP coupon fields to delete before designing anything.
+        self.assertEqual(template.field_geometry, BLANK_GEOMETRY)
+        self.assertEqual([e["type"] for e in template.field_geometry["elements"]], ["barcode"])
+
+    def test_uploaded_template_is_active_without_saying_so(self):
+        """Regression: DRF's BooleanField treats an omitted key in a multipart
+        upload like an unchecked HTML checkbox (False), overriding the model's
+        own default=True, unless the serializer field says default=True itself.
+        A template you can't select right after uploading it is a broken upload."""
+        upload = _make_image_upload(1987, 725)
+        response = self.client.post("/api/v1/voucher-portal/templates/",
+                                    {"name": "Custom artwork", "artwork": upload}, format="multipart")
+        template = VoucherTemplate.objects.get(pk=response.data["id"])
+        self.assertTrue(template.is_active)
+        # And usable as a batch's template right away, the way the create form uses it.
+        self.assertIn(template, VoucherTemplate.objects.filter(is_active=True))
+
+    def test_wrong_aspect_ratio_is_rejected(self):
+        upload = _make_image_upload(2000, 2000)  # square, nowhere near 2.74:1
+        response = self.client.post("/api/v1/voucher-portal/templates/",
+                                    {"name": "Bad artwork", "artwork": upload}, format="multipart")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("artwork", response.data)
+
+    def test_too_narrow_artwork_is_rejected(self):
+        upload = _make_image_upload(800, 292)  # correct ratio, below the 1500px floor
+        response = self.client.post("/api/v1/voucher-portal/templates/",
+                                    {"name": "Too small", "artwork": upload}, format="multipart")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("artwork", response.data)
+
+    def test_artwork_is_served_through_the_api_not_a_media_url(self):
+        """The `artwork` field's own media URL is a 404 in production: Django
+        registers those routes through `static()`, which does nothing when
+        DEBUG is false, and nginx only proxies the API's prefix. `artwork_path`
+        is the route that actually works."""
+        upload = _make_image_upload(1987, 725)
+        created = self.client.post("/api/v1/voucher-portal/templates/",
+                                   {"name": "With artwork", "artwork": upload}, format="multipart")
+        self.assertEqual(created.status_code, 201, created.data)
+        path = created.data["artwork_path"]
+        self.assertEqual(path, f"voucher-portal/templates/{created.data['id']}/artwork/")
+
+        response = self.client.get(f"/api/v1/{path}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/png")
+        self.assertTrue(b"".join(response.streaming_content).startswith(b"\x89PNG"))
+
+    def test_a_template_without_artwork_has_no_artwork_path(self):
+        template = VoucherTemplate.objects.create(name="Plain")
+        response = self.client.get(f"/api/v1/voucher-portal/templates/{template.id}/")
+        self.assertIsNone(response.data["artwork_path"])
+        self.assertEqual(self.client.get(f"/api/v1/voucher-portal/templates/{template.id}/artwork/").status_code, 400)
+
+    def test_artwork_missing_from_disk_reports_clearly(self):
+        """Files uploaded before MEDIA_ROOT moved out of the release directory
+        are gone after a deploy - say so instead of raising a 500."""
+        upload = _make_image_upload(1987, 725)
+        created = self.client.post("/api/v1/voucher-portal/templates/",
+                                   {"name": "Orphaned", "artwork": upload}, format="multipart")
+        template = VoucherTemplate.objects.get(pk=created.data["id"])
+        os.remove(template.artwork.path)
+        response = self.client.get(f"/api/v1/voucher-portal/templates/{template.id}/artwork/")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("missing", str(response.data))
+
+    def test_non_admin_requester_can_still_upload_artwork_for_their_own_batch(self):
+        requester = User.objects.create_user("plain_requester", password="x")
+        dept = Department.objects.create(code="HR2", name="HR Two")
+        grant(requester, "requester", [dept])
+        client = APIClient()
+        client.force_authenticate(requester)
+        upload = _make_image_upload(1987, 725)
+        response = client.post("/api/v1/voucher-portal/templates/",
+                               {"name": "Requester artwork", "artwork": upload}, format="multipart")
+        self.assertEqual(response.status_code, 201, response.data)
+
+    def test_batch_artwork_is_previewed_saved_and_snapshotted(self):
+        dept, vtype, prefix, template = make_reference_data()
+        payload = {
+            "name": "Batch artwork", "department": dept.id, "voucher_type": vtype.id,
+            "quantity": 2, "discount_type": "fixed", "fixed_value": "75", "currency": "AED",
+            "valid_to": dates()[1].isoformat(), "terms": "Form values print here",
+            "prefix": prefix.id, "template": template.id,
+        }
+        preview = self.client.post(
+            "/api/v1/voucher-portal/batches/preview/",
+            {**payload, "artwork": _make_image_upload(1987, 725)}, format="multipart",
+        )
+        self.assertEqual(preview.status_code, 200, preview.data if hasattr(preview, "data") else "")
+        self.assertTrue(preview.content.startswith(b"%PDF"))
+
+        created = self.client.post(
+            "/api/v1/voucher-portal/batches/",
+            {**payload, "artwork": _make_image_upload(1987, 725),
+             "preview_hash": preview["X-Preview-Hash"]}, format="multipart",
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        batch = PortalBatch.objects.get(pk=created.data["id"])
+        self.assertTrue(batch.artwork.name.startswith("voucher-portal/batches/"))
+        self.assertEqual(batch.template_snapshot["artwork_path"], batch.artwork.path)
+
+    def test_changing_batch_artwork_invalidates_the_preview_hash(self):
+        dept, vtype, prefix, template = make_reference_data()
+        payload = {
+            "name": "Changed artwork", "department": dept.id, "voucher_type": vtype.id,
+            "quantity": 1, "discount_type": "fixed", "fixed_value": "25", "currency": "AED",
+            "valid_to": dates()[1].isoformat(), "prefix": prefix.id, "template": template.id,
+        }
+        preview = self.client.post(
+            "/api/v1/voucher-portal/batches/preview/",
+            {**payload, "artwork": _make_image_upload(1987, 725, color=(200, 50, 50))}, format="multipart",
+        )
+        created = self.client.post(
+            "/api/v1/voucher-portal/batches/",
+            {**payload, "artwork": _make_image_upload(1987, 725, color=(50, 50, 200)),
+             "preview_hash": preview["X-Preview-Hash"]}, format="multipart",
+        )
+        self.assertEqual(created.status_code, 400)
+
+
+class PortalUserAccessApiTests(TestCase):
+    def setUp(self):
+        self.dept = Department.objects.create(code="HR", name="HR")
+        self.admin = User.objects.create_user("admin_user", password="x", is_staff=True)
+        self.target = User.objects.create_user("new_requester", password="x")
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin)
+
+    def test_admin_can_grant_access(self):
+        response = self.client.post("/api/v1/voucher-portal/access/",
+                                    {"user": "new_requester", "role": "requester", "department_ids": [self.dept.id]},
+                                    format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        access = PortalUserAccess.objects.get(user=self.target)
+        self.assertEqual(access.role, "requester")
+        self.assertEqual(list(access.departments.all()), [self.dept])
+
+    def test_me_endpoint_reflects_own_role_and_scope(self):
+        requester = User.objects.create_user("plain2", password="x")
+        grant(requester, "requester", [self.dept])
+        client = APIClient()
+        client.force_authenticate(requester)
+        response = client.get("/api/v1/voucher-portal/access/me/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["role"], "requester")
+        self.assertEqual(response.data["department_ids"], [self.dept.id])
+        self.assertIn("create", response.data["actions"])
+
+    def test_non_admin_cannot_grant_access(self):
+        requester = User.objects.create_user("plain", password="x")
+        grant(requester, "requester", [self.dept])
+        client = APIClient()
+        client.force_authenticate(requester)
+        response = client.post("/api/v1/voucher-portal/access/",
+                               {"user": "new_requester", "role": "requester"}, format="json")
+        self.assertEqual(response.status_code, 403)
+
+
+def text_element(**overrides):
+    element = {"id": "headline", "type": "text", "name": "Headline", "text": "50% OFF",
+               "x": 20, "y": 20, "size": 18, "font": "Helvetica-Bold", "color": "#231B36",
+               "align": "left", "line_height": 20}
+    element.update(overrides)
+    return element
+
+
+def designed_geometry(*elements):
+    """A blank card (barcode only) plus whatever the test is designing."""
+    geometry = blank_geometry()
+    geometry["elements"].extend(elements)
+    return geometry
+
+
+class GeometryValidationTests(TestCase):
+    """The designer is the only thing that can put anything on a printed
+    voucher, so a bad layout has to be rejected before it's saved, not
+    discovered on a print run."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("geo_admin", password="x", is_staff=True)
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+        self.template = VoucherTemplate.objects.create(name="Editable", is_default=True)
+
+    def _patch(self, geometry):
+        return self.client.patch(f"/api/v1/voucher-portal/templates/{self.template.id}/",
+                                 {"field_geometry": geometry}, format="json")
+
+    def test_a_new_template_starts_empty_except_for_the_barcode(self):
+        self.assertEqual([e["type"] for e in self.template.field_geometry["elements"]], ["barcode"])
+
+    def test_user_added_elements_are_saved(self):
+        geometry = designed_geometry(
+            text_element(),
+            {"id": "valid", "type": "field", "name": "Valid until", "source": "valid_to",
+             "prefix": "Valid until ", "x": 20, "y": 60, "size": 9, "font": "Helvetica", "color": "#4A4160"},
+            {"id": "panel", "type": "box", "name": "Panel", "x": 5, "y": 5, "w": 140, "h": 100,
+             "fill": "#FFFFFF", "opacity": 0.9},
+            {"id": "rule", "type": "line", "name": "Divider", "x": 20, "y": 50, "w": 100, "h": 1,
+             "color": "#DCD7E8"},
+        )
+        response = self._patch(geometry)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.template.refresh_from_db()
+        self.assertEqual([e["id"] for e in self.template.field_geometry["elements"]],
+                         ["barcode", "headline", "valid", "panel", "rule"])
+
+    def test_valid_move_is_accepted(self):
+        geometry = designed_geometry(text_element(x=40, y=25))
+        self.assertEqual(self._patch(geometry).status_code, 200)
+        self.template.refresh_from_db()
+        self.assertEqual(self.template.field_geometry["elements"][1]["x"], 40)
+
+    def test_element_outside_the_card_is_rejected(self):
+        response = self._patch(designed_geometry(text_element(y=900)))  # card is only 178pt tall
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("field_geometry", response.data)
+
+    def test_negative_position_is_rejected(self):
+        self.assertEqual(self._patch(designed_geometry(text_element(x=-5))).status_code, 400)
+
+    def test_unknown_element_type_is_rejected(self):
+        response = self._patch(designed_geometry(text_element(type="hologram")))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("hologram", str(response.data))
+
+    def test_unknown_voucher_field_is_rejected(self):
+        response = self._patch(designed_geometry(
+            {"id": "f", "type": "field", "source": "customer_loyalty_tier", "x": 10, "y": 10, "size": 8}))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("customer_loyalty_tier", str(response.data))
+
+    def test_unknown_font_is_rejected(self):
+        """reportlab raises on an unknown face inside the background generation
+        thread - long after the layout looked fine on screen."""
+        response = self._patch(designed_geometry(text_element(font="Comic Sans")))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Comic Sans", str(response.data))
+
+    def test_malformed_colour_is_rejected(self):
+        self.assertEqual(self._patch(designed_geometry(text_element(color="dark purple"))).status_code, 400)
+
+    def test_non_numeric_position_is_rejected(self):
+        self.assertEqual(self._patch(designed_geometry(text_element(x="left-ish"))).status_code, 400)
+
+    def test_duplicate_element_id_is_rejected(self):
+        response = self._patch(designed_geometry(text_element(), text_element()))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("headline", str(response.data))
+
+    def test_empty_text_element_is_rejected(self):
+        self.assertEqual(self._patch(designed_geometry(text_element(text="   "))).status_code, 400)
+
+    def test_barcode_is_mandatory(self):
+        geometry = blank_geometry()
+        geometry["elements"] = [text_element()]
+        response = self._patch(geometry)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("barcode", str(response.data).lower())
+
+    def test_a_layout_with_nothing_in_it_is_rejected(self):
+        response = self._patch({})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("barcode", str(response.data).lower())
+
+    def test_barcode_cannot_be_hidden(self):
+        geometry = blank_geometry()
+        geometry["elements"][0]["hidden"] = True
+        response = self._patch(geometry)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("mandatory", str(response.data))
+
+    def test_unscannably_small_barcode_is_rejected(self):
+        geometry = blank_geometry()
+        geometry["elements"][0].update({"w": 12, "h": 3})
+        response = self._patch(geometry)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("scan", str(response.data))
+
+    def test_hide_if_empty_must_name_a_real_field(self):
+        self.assertEqual(self._patch(designed_geometry(text_element(hide_if_empty="nope"))).status_code, 400)
+        self.assertEqual(self._patch(designed_geometry(text_element(hide_if_empty="restrictions"))).status_code, 200)
+
+    def test_catalogue_offers_only_what_the_renderer_can_draw(self):
+        response = self.client.get("/api/v1/voucher-portal/templates/field-catalogue/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual({entry["type"] for entry in response.data["palette"]},
+                         set(response.data["element_types"]))
+        self.assertEqual([e["type"] for e in response.data["blank"]["elements"]], ["barcode"])
+        self.assertTrue(all(entry["defaults"] for entry in response.data["palette"]))
+
+    def test_catalogue_still_answers_a_browser_from_before_the_designer(self):
+        """The page and this API deploy separately. A tab still running the old
+        editor reads `fields` and `defaults`; dropping them breaks that tab
+        mid-rollout for no reason."""
+        response = self.client.get("/api/v1/voucher-portal/templates/field-catalogue/")
+        self.assertIn("barcode", {field["key"] for field in response.data["fields"]})
+        self.assertEqual(response.data["defaults"]["version"], 2)
+
+    def test_catalogue_starters_are_valid_layouts(self):
+        response = self.client.get("/api/v1/voucher-portal/templates/field-catalogue/")
+        for starter in response.data["starters"]:
+            with self.subTest(starter=starter["key"]):
+                self.assertEqual(self._patch(starter["geometry"]).status_code, 200)
+
+    def test_template_preview_renders_without_a_batch(self):
+        response = self.client.get(f"/api/v1/voucher-portal/templates/{self.template.id}/preview/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertTrue(response.content.startswith(b"%PDF"))
+        # and nothing was persisted to get that preview
+        self.assertEqual(PortalBatch.objects.count(), 0)
+        self.assertEqual(PortalVoucher.objects.count(), 0)
+
+    def test_template_preview_renders_unsaved_geometry(self):
+        response = self.client.post(f"/api/v1/voucher-portal/templates/{self.template.id}/preview/",
+                                    {"field_geometry": designed_geometry(text_element(x=60))}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.content.startswith(b"%PDF"))
+        self.template.refresh_from_db()  # preview must not save the edit
+        self.assertEqual(len(self.template.field_geometry["elements"]), 1)
+
+    def test_template_preview_rejects_invalid_unsaved_geometry(self):
+        response = self.client.post(f"/api/v1/voucher-portal/templates/{self.template.id}/preview/",
+                                    {"field_geometry": designed_geometry(text_element(y=5000))}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_reset_geometry_empties_the_card(self):
+        self._patch(designed_geometry(text_element()))
+        response = self.client.post(f"/api/v1/voucher-portal/templates/{self.template.id}/reset-geometry/")
+        self.assertEqual(response.status_code, 200)
+        self.template.refresh_from_db()
+        self.assertEqual(self.template.field_geometry, BLANK_GEOMETRY)
+
+    def test_card_size_that_would_orphan_the_layout_is_rejected(self):
+        self._patch(designed_geometry(text_element(x=400, y=150)))
+        response = self.client.patch(f"/api/v1/voucher-portal/templates/{self.template.id}/",
+                                     {"coupon_width": 200, "coupon_height": 120}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("coupon_width", response.data)
+
+    def test_card_size_can_be_changed_with_a_layout_that_fits(self):
+        geometry = blank_geometry(242.6, 153.0)  # barcode already inside the smaller card
+        geometry["elements"].append(text_element(x=20, y=20))
+        self.assertEqual(self._patch(geometry).status_code, 200)
+        response = self.client.patch(f"/api/v1/voucher-portal/templates/{self.template.id}/",
+                                     {"coupon_width": 242.6, "coupon_height": 153.0}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_non_admin_cannot_reset_geometry(self):
+        requester = User.objects.create_user("geo_requester", password="x")
+        dept = Department.objects.create(code="GEO", name="Geo")
+        grant(requester, "requester", [dept])
+        client = APIClient()
+        client.force_authenticate(requester)
+        response = client.post(f"/api/v1/voucher-portal/templates/{self.template.id}/reset-geometry/")
+        self.assertEqual(response.status_code, 403)
+
+    def _as(self, role):
+        user = User.objects.create_user(f"designer_{role}", password="x")
+        dept = Department.objects.create(code=role[:4].upper(), name=role)
+        grant(user, role, [dept])
+        client = APIClient()
+        client.force_authenticate(user)
+        return client
+
+    def test_a_batch_creator_can_change_a_card_design(self):
+        """Designing is part of creating a batch - the create form offers
+        "edit this design" next to the template it picks - so a requester has
+        to be able to save one."""
+        client = self._as("requester")
+        response = client.patch(f"/api/v1/voucher-portal/templates/{self.template.id}/",
+                                {"field_geometry": designed_geometry(text_element())}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.template.refresh_from_db()
+        self.assertEqual(len(self.template.field_geometry["elements"]), 2)
+
+    def test_a_batch_creator_cannot_change_which_design_everyone_else_gets(self):
+        client = self._as("requester")
+        other = VoucherTemplate.objects.create(name="Someone else's")
+        self.assertEqual(client.patch(f"/api/v1/voucher-portal/templates/{other.id}/",
+                                      {"is_default": True}, format="json").status_code, 403)
+        self.assertEqual(client.patch(f"/api/v1/voucher-portal/templates/{other.id}/",
+                                      {"is_active": False}, format="json").status_code, 403)
+        other.refresh_from_db()
+        self.assertFalse(other.is_default)
+        self.assertTrue(other.is_active)
+
+    def test_a_reader_cannot_change_a_card_design(self):
+        client = self._as("report_viewer")
+        response = client.patch(f"/api/v1/voucher-portal/templates/{self.template.id}/",
+                                {"field_geometry": designed_geometry(text_element())}, format="json")
+        self.assertEqual(response.status_code, 403)
+
+
+class CardRenderingTests(TestCase):
+    """What the designer saves is what `pdf.py` has to print, including for
+    templates and batch snapshots authored before the designer existed."""
+
+    def setUp(self):
+        self.dept, self.vtype, self.prefix, self.template = make_reference_data()
+        self.requester = User.objects.create_user("render_requester", password="x", is_staff=True)
+        self.approver = User.objects.create_user("render_approver", password="x", is_staff=True)
+
+    def _generated_batch(self, **overrides):
+        batch = approved_batch(self.dept, self.vtype, self.prefix, self.template,
+                               self.requester, self.approver, **overrides)
+        generate_vouchers(batch)
+        batch.refresh_from_db()
+        return batch
+
+    def test_every_offered_variable_resolves_for_a_real_voucher(self):
+        """The designer only offers variables the catalogue lists, so anything
+        listed has to come back with a value (or a blank) rather than a
+        KeyError at print time."""
+        batch = self._generated_batch(restrictions="Brands : Sample")
+        context = build_context(batch, batch.vouchers.first())
+        for variable in VARIABLES:
+            self.assertIn(variable["key"], context)
+        self.assertEqual(context["voucher_code"], batch.vouchers.first().number)
+        self.assertEqual(context["department"], "HR")
+        self.assertEqual(context["restrictions"], "Brands : Sample")
+
+    def test_designed_card_renders(self):
+        self.template.field_geometry = designed_geometry(
+            text_element(),
+            {"id": "cap", "type": "field", "source": "discount_cap", "x": 20, "y": 60,
+             "size": 8, "font": "Helvetica", "color": "#4A4160"},
+            {"id": "terms", "type": "field", "source": "terms", "x": 20, "y": 90, "w": 150,
+             "size": 6, "font": "Helvetica", "color": "#6B6480", "line_height": 8, "max_lines": 4},
+            {"id": "panel", "type": "box", "x": 5, "y": 5, "w": 140, "h": 100, "fill": "#FFFFFF", "opacity": 0.8},
+            {"id": "rule", "type": "line", "x": 20, "y": 55, "w": 100, "h": 0.75, "color": "#DCD7E8"},
+        )
+        self.template.save()
+        batch = self._generated_batch()
+        self.assertTrue(build_voucher_pdf(batch, batch.vouchers.first()).startswith(b"%PDF"))
+        self.assertTrue(build_batch_pdf(batch, list(batch.vouchers.all())).startswith(b"%PDF"))
+
+    def test_barcode_carries_each_voucher_s_own_unique_number(self):
+        batch = self._generated_batch(quantity=5)
+        numbers = [v.number for v in batch.vouchers.all()]
+        self.assertEqual(len(set(numbers)), 5)
+        for voucher in batch.vouchers.all():
+            self.assertEqual(build_context(batch, voucher)["voucher_code"], voucher.number)
+        # and every rendered card is a distinct document, not five copies of one
+        pdfs = {build_voucher_pdf(batch, voucher) for voucher in batch.vouchers.all()}
+        self.assertEqual(len(pdfs), 5)
+
+    def _drawn_text(self, batch, geometry):
+        """Every string the renderer actually put on the card."""
+        batch.template_snapshot = {**batch.template_snapshot, **geometry}
+        with mock.patch("voucher_portal.pdf._draw_text") as draw:
+            build_voucher_pdf(batch, batch.vouchers.first())
+        return [call.args[2] for call in draw.call_args_list]
+
+    def test_hidden_element_is_not_drawn(self):
+        batch = self._generated_batch()
+        self.assertIn("PRINT ME", self._drawn_text(batch, designed_geometry(text_element(text="PRINT ME"))))
+        self.assertNotIn("PRINT ME",
+                         self._drawn_text(batch, designed_geometry(text_element(text="PRINT ME", hidden=True))))
+
+    def test_hide_if_empty_drops_a_label_with_nothing_to_label(self):
+        label = {"id": "restrictions_label", "type": "text", "text": "Coupon Restrictions :",
+                 "x": 5, "y": 106, "size": 5, "font": "Helvetica", "color": "#6B6480",
+                 "hide_if_empty": "restrictions"}
+        batch = self._generated_batch(restrictions="")
+        self.assertNotIn("Coupon Restrictions :", self._drawn_text(batch, designed_geometry(label)))
+        batch.restrictions = "Brands : Sample"
+        self.assertIn("Coupon Restrictions :", self._drawn_text(batch, designed_geometry(label)))
+
+    def test_a_field_prints_its_prefix_and_suffix_around_the_value(self):
+        batch = self._generated_batch()
+        drawn = self._drawn_text(batch, designed_geometry(
+            {"id": "code", "type": "field", "source": "voucher_code", "prefix": "No. ", "suffix": " *",
+             "x": 20, "y": 20, "size": 8, "font": "Courier", "color": "#231B36"}))
+        self.assertIn(f"No. {batch.vouchers.first().number} *", drawn)
+
+    def test_an_empty_stored_layout_still_prints_a_barcode(self):
+        """Rows stored as `{}` before the model had a real default must not
+        produce a card with nothing to scan."""
+        converted = to_elements({})
+        self.assertEqual([element["type"] for element in converted["elements"]], ["barcode"])
+
+    def test_a_legacy_layout_still_prints(self):
+        """Batches generated before the designer existed carry a version 2
+        snapshot on the row itself; those have to keep printing."""
+        batch = self._generated_batch()
+        batch.template_snapshot = {**batch.template_snapshot, **copy.deepcopy(LEGACY_ADCOOP_GEOMETRY)}
+        self.assertTrue(build_voucher_pdf(batch, batch.vouchers.first()).startswith(b"%PDF"))
+
+    def test_legacy_conversion_keeps_positions_and_paint_order(self):
+        converted = to_elements(LEGACY_ADCOOP_GEOMETRY)
+        self.assertEqual(converted["version"], 3)
+        by_id = {element["id"]: element for element in converted["elements"]}
+        legacy = {field["key"]: field for field in LEGACY_ADCOOP_GEOMETRY["fields"]}
+        for key, field in legacy.items():
+            self.assertEqual((by_id[key]["x"], by_id[key]["y"]), (field["x"], field["y"]))
+        # the panel stays underneath and the barcode on top, as version 2 drew them
+        order = [element["id"] for element in converted["elements"]]
+        self.assertEqual(order[0], "content_panel")
+        self.assertLess(order.index("barcode_plate"), order.index("barcode"))
+        # fields that were switched off come back as hidden, not deleted
+        self.assertTrue(by_id["recipient_name"]["hidden"])
+        # and static wording becomes ordinary editable text
+        self.assertEqual(by_id["valid_label"]["text"], "Discount Valid Until :")
+        self.assertEqual(by_id["valid_date"]["source"], "valid_to")
+
+    def test_serializer_exposes_the_converted_layout(self):
+        self.template.field_geometry = copy.deepcopy(LEGACY_ADCOOP_GEOMETRY)
+        self.template.save()
+        client = APIClient()
+        client.force_authenticate(self.requester)
         response = client.get(f"/api/v1/voucher-portal/templates/{self.template.id}/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["field_geometry"]["version"], 2)  # untouched on disk
@@ -768,4 +1635,3 @@ class DownloadTests(TestCase):
         response = self.client.get(f"/api/v1/voucher-portal/batches/{self.batch.id}/download/")
         self.assertEqual(response.status_code, 400)
         self.assertIn("missing", str(response.data).lower())
-
