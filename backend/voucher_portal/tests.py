@@ -100,7 +100,7 @@ class NumberingTests(TestCase):
 
 class NumberingConcurrencyTests(TransactionTestCase):
     """Fires allocate() from several threads at once against one prefix and
-    checks every returned code is unique - the row lock is what Â§4 requires.
+    checks every returned code is unique - the row lock is what §4 requires.
 
     SQLite (dev/test only - see settings.py) serialises writes at the table
     level rather than the row level Postgres uses in production, so a burst of
