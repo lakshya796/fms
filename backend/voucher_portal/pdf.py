@@ -168,9 +168,12 @@ def _draw_box(c, element):
     border_width = float(element.get("border_width") or 0)
     radius = float(element.get("radius") or 0)
     c.saveState()
+    # ReportLab's setFillColor() also applies the colour object's alpha (1.0
+    # for our hex colours). Set the requested element alpha afterwards or the
+    # colour call silently turns every translucent panel opaque.
+    c.setFillColor(_color(element.get("fill"), "#FFFFFF"))
     if hasattr(c, "setFillAlpha"):
         c.setFillAlpha(float(element.get("opacity", 1)))
-    c.setFillColor(_color(element.get("fill"), "#FFFFFF"))
     if border_width > 0:
         c.setStrokeColor(_color(element.get("border_color"), "#DCD7E8"))
         c.setLineWidth(border_width)
