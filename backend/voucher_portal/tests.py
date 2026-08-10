@@ -20,11 +20,11 @@ from rest_framework.test import APIClient
 from . import storage
 from .geometry import (BLANK_GEOMETRY, LEGACY_ADCOOP_GEOMETRY, VARIABLE_KEYS, VARIABLES,
                        blank_geometry, to_elements)
-from .pdf import build_batch_pdf, build_context, build_voucher_pdf
+from .pdf import _draw_box, build_batch_pdf, build_context, build_voucher_pdf
 from .models import (Department, Notification, PortalBatch, PortalUserAccess, PortalVoucher, StatusChange, VoucherPrefix,
                      VoucherTemplate, VoucherType)
 from .services import workflow
-from .services.generation import create_draft_batch, generate_vouchers, payload_hash, render_preview
+from .services.generation import _template_snapshot, create_draft_batch, generate_vouchers, payload_hash, render_preview
 from .services.numbering import NumberingError, allocate
 
 
@@ -204,6 +204,14 @@ class PreviewAndGenerationTests(TestCase):
         self.assertTrue(pdf_bytes.startswith(b"%PDF"))
         self.assertEqual(PortalBatch.objects.count(), 0)
         self.assertEqual(PortalVoucher.objects.count(), 0)
+
+    def test_batch_artwork_override_enables_a_blank_template_artwork_layer(self):
+        self.template.field_geometry.pop("artwork", None)
+        snapshot = _template_snapshot(self.template, artwork_path="/tmp/batch.png")
+        self.assertEqual(snapshot["artwork_path"], "/tmp/batch.png")
+        self.assertEqual(snapshot["artwork"]["w"], self.template.coupon_width)
+        self.assertEqual(snapshot["artwork"]["h"], self.template.coupon_height)
+        self.assertFalse(snapshot["artwork"]["hidden"])
 
     def test_hash_changes_when_form_changes(self):
         base = payload_hash(self._form())
@@ -951,6 +959,14 @@ class GeometryValidationTests(TestCase):
     def _patch(self, geometry):
         return self.client.patch(f"/api/v1/voucher-portal/templates/{self.template.id}/",
                                  {"field_geometry": geometry}, format="json")
+
+    def test_box_colour_is_set_before_its_transparency(self):
+        """ReportLab applies a colour's default alpha when setFillColor runs."""
+        pdf_canvas = mock.Mock()
+        _draw_box(pdf_canvas, {"x": 0, "y": 0, "w": 100, "h": 50,
+                               "fill": "#FFFFFF", "opacity": 0.35})
+        calls = [call[0] for call in pdf_canvas.method_calls]
+        self.assertLess(calls.index("setFillColor"), calls.index("setFillAlpha"))
 
     def test_a_new_template_starts_empty_except_for_the_barcode(self):
         self.assertEqual([e["type"] for e in self.template.field_geometry["elements"]], ["barcode"])
