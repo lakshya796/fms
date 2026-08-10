@@ -82,6 +82,8 @@ class _PreviewBatch:
         self.department = data.get("department")
         self.voucher_type = data.get("voucher_type")
         self.description = data.get("description") or ""
+        self.quantity = data.get("quantity")
+        self.prefix_snapshot = getattr(data.get("prefix"), "prefix", "") or ""
         self.discount_type = data["discount_type"]
         self.percentage_value = data.get("percentage_value")
         self.max_discount_value = data.get("max_discount_value")

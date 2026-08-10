@@ -60,8 +60,9 @@ python manage.py seed_voucher_portal
 ```
 
 Departments (HR, Marketing), voucher types (Employee/Marketing/Gift Voucher),
-prefixes (EMP, MKT, ADCOOP, 4-digit sequences) — edit via `/admin/` once real
-data is available; nothing about them is hard-coded elsewhere.
+prefixes (EMP, MKT, ADCOOP, 4-digit sequences) — after that they are managed
+from the portal's own Setup screen (or `/admin/`); nothing about them is
+hard-coded elsewhere.
 
 ## Snapshotting
 
@@ -444,6 +445,49 @@ One gotcha worth knowing if you extend the template endpoints: they accept
 artwork upload; `field_geometry` is a nested structure a form encoder can't
 represent, so dropping `JSONParser` makes every geometry save fail with a 415.
 
+## Reference data from the UI (Setup screen)
+
+Departments, voucher types and numbering prefixes used to be addable only
+through the database or the Django admin, which made "we need a new voucher
+type" a developer's errand. The **Setup** screen (administrator-only, matching
+what the API already enforced through `AdminWriteMixin`) adds and
+activates/deactivates all three, in the order they depend on each other — a
+type belongs to a department, a prefix numbers one type. Each write refreshes
+the create-batch form's own copy, so a type added here is selectable there
+without a reload.
+
+Prefixes show `next_sequence` as the number the next voucher will take. It is
+deliberately not editable from this screen: winding it back re-issues codes
+that are already printed, and `PortalVoucher.number` is unique.
+
+## Every batch field has a placeholder
+
+Everything the create form collects can be placed on a card, so no value is
+collected from a requester with nowhere to print. The mapping is pinned by
+`BatchFieldCoverageTests`: add a field to `BatchFormSerializer` and the test
+fails until a placeholder exists for it.
+
+| Create form | Placeholder |
+| --- | --- |
+| Voucher name | `batch_name` |
+| Quantity | `quantity` |
+| Department / Voucher type | `department` / `voucher_type` |
+| Prefix | `prefix` |
+| Currency | `currency` |
+| Description | `description` |
+| Discount type / value | `discount_type`, `discount_value`, `discount_numeral`, `discount_unit` |
+| Maximum discount | `discount_cap` (formatted line), `max_discount_value` (bare amount) |
+| Valid from / until | `valid_from` / `valid_to` |
+| Restrictions / Terms | `restrictions` / `terms` |
+
+Placing one is the designer's *Voucher field* palette entry. The create form
+closes the loop from the other side: under the card picker it lists what the
+chosen design prints, and warns when a customer-facing value has been typed
+with nowhere to go ("Not on this card: Terms and conditions"), with a link
+straight into the designer. It stays quiet about operational values like
+quantity and prefix — they are placeable, but flagging them on every batch
+would be noise.
+
 ## Which frontends may call the API
 
 The portal is a browser app on a different origin from the API, so
@@ -538,7 +582,7 @@ department permissions").
 
 ## Tests
 
-`python manage.py test voucher_portal` — 130 tests: numbering (including a real
+`python manage.py test voucher_portal` — 132 tests: numbering (including a real
 concurrent-allocation test across 8 threads), discount validation, the
 preview-hash invalidation flow, the full draft → submit → approve → generate
 → issue → redeem workflow (both via `services/workflow.py` directly and

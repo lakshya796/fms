@@ -17,7 +17,8 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from . import storage
-from .geometry import BLANK_GEOMETRY, LEGACY_ADCOOP_GEOMETRY, VARIABLES, blank_geometry, to_elements
+from .geometry import (BLANK_GEOMETRY, LEGACY_ADCOOP_GEOMETRY, VARIABLE_KEYS, VARIABLES,
+                       blank_geometry, to_elements)
 from .pdf import build_batch_pdf, build_context, build_voucher_pdf
 from .models import (Department, Notification, PortalBatch, PortalUserAccess, PortalVoucher, StatusChange, VoucherPrefix,
                      VoucherTemplate, VoucherType)
@@ -1339,6 +1340,58 @@ class AdminTests(TestCase):
         other.refresh_from_db(); self.template.refresh_from_db()
         self.assertTrue(other.is_default)
         self.assertFalse(self.template.is_default)
+
+
+class BatchFieldCoverageTests(TestCase):
+    """Everything the create-batch form asks for has to be placeable on a card.
+
+    A field collected from the requester but with nowhere to print is a value
+    that silently never reaches the voucher, so this pins the mapping: add a
+    field to the form and you must add the placeholder to go with it."""
+
+    # create-form field -> the variable a designer picks to print it
+    FORM_FIELD_PLACEHOLDERS = {
+        "name": "batch_name",
+        "quantity": "quantity",
+        "department": "department",
+        "voucher_type": "voucher_type",
+        "description": "description",
+        "discount_type": "discount_type",
+        "percentage_value": "discount_numeral",
+        "fixed_value": "discount_numeral",
+        "max_discount_value": "max_discount_value",
+        "currency": "currency",
+        "valid_from": "valid_from",
+        "valid_to": "valid_to",
+        "restrictions": "restrictions",
+        "terms": "terms",
+        "prefix": "prefix",
+        # `template` is the card being printed on, not a value printed on it.
+        "template": None,
+    }
+
+    def test_every_create_form_field_has_a_placeholder(self):
+        from .serializers import BatchFormSerializer
+        self.assertEqual(set(BatchFormSerializer().fields), set(self.FORM_FIELD_PLACEHOLDERS),
+                         "the create form changed - map the new field to a placeholder (or to None)")
+        for field, variable in self.FORM_FIELD_PLACEHOLDERS.items():
+            if variable is not None:
+                with self.subTest(field=field):
+                    self.assertIn(variable, VARIABLE_KEYS)
+
+    def test_those_placeholders_carry_the_submitted_values(self):
+        dept, vtype, prefix, template = make_reference_data()
+        requester = User.objects.create_user("coverage_requester", password="x", is_staff=True)
+        approver = User.objects.create_user("coverage_approver", password="x", is_staff=True)
+        batch = approved_batch(dept, vtype, prefix, template, requester, approver,
+                               quantity=7, restrictions="Brands : Sample", terms="No cash value")
+        generate_vouchers(batch)
+        context = build_context(batch, batch.vouchers.first())
+        self.assertEqual(context["quantity"], "7")
+        self.assertEqual(context["prefix"], "EMP")
+        self.assertEqual(context["batch_name"], batch.name)
+        self.assertEqual(context["discount_type"], "Fixed amount")
+        self.assertEqual(context["terms"], "No cash value")
 
 
 class CorsTests(TestCase):
