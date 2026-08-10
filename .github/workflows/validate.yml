@@ -49,7 +49,9 @@ jobs:
         run: python manage.py makemigrations --check --dry-run
       - working-directory: backend
         run: python manage.py migrate --noinput
+      # Every app, not just fleet: voucher_portal alone is over a hundred tests,
+      # and none of them were running here.
       - working-directory: backend
-        run: python manage.py test fleet -v2
+        run: python manage.py test --noinput
       - working-directory: backend
         run: python manage.py check --deploy

@@ -580,6 +580,34 @@ department permissions").
   (`seed_voucher_portal`); edit via `/admin/` or the Team access screen once
   real department/type/prefix/user data is available.
 
+## CI/CD
+
+`.github/workflows/validate.yml` runs on every pull request and every push to
+main: the frontend build, then the backend against a real Postgres service —
+`makemigrations --check` (migrations must be committed), `migrate`, the **whole**
+test suite and `check --deploy`. It used to run `test fleet` only, so none of
+this app's tests were gating anything.
+
+`.github/workflows/deploy-backend.yml` then ships the API to EC2 when that run
+passes on main, using the repo's own `deploy/ec2/deploy-fms.sh` over SSH and
+health-checking the public URL afterwards. It skips itself with a notice until
+`EC2_HOST`, `EC2_USER` and `EC2_SSH_KEY` are set, so it is inert until someone
+configures it. The older `deploy.yml` drives the docker-compose stack and stays
+manual — a different target, not a second route to the same box.
+
+Two things had to be fixed before the suite could gate a deploy, both of which
+only appear on Postgres:
+
+- `_run_generation` called `close_old_connections()` when its thread ended.
+  With `CONN_MAX_AGE` set, "old" means past its age, and a just-opened
+  connection isn't — so every generated batch leaked a Postgres session that
+  nothing would ever reuse, because the thread owning it was gone. It now
+  calls `connections.close_all()`.
+- Those same threads outlive the test that started them, so `DROP DATABASE`
+  failed with "database is being accessed by other users" and a fully green
+  run still exited non-zero. `phloz_fms.test_runner.BackgroundAwareRunner`
+  waits for them before teardown.
+
 ## Tests
 
 `python manage.py test voucher_portal` — 132 tests: numbering (including a real

@@ -1,5 +1,10 @@
-# This workflow is manual only. It never runs on push, and it does nothing until the
-# repository secrets below exist, so adding the file changes no current behaviour.
+# This workflow drives the **docker-compose** stack, and is manual only.
+# The EC2 instance behind api-test.phloz.app runs the systemd + venv install at
+# /opt/phloz/fms instead, which deploys automatically on a green main - see
+# deploy-backend.yml. These are different targets, not two routes to one box.
+#
+# It never runs on push, and it does nothing until the repository secrets below
+# exist, so adding the file changes no current behaviour.
 #
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
 #   EC2_HOST     the instance address, e.g. 13.206.46.118

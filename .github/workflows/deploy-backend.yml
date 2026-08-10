@@ -1,0 +1,129 @@
+# Ships the FMS API to the EC2 instance as soon as main is green.
+#
+# It runs after "Validate FMS" finishes on main and only when that run passed,
+# so nothing reaches the instance without the full test suite behind it. The
+# job skips itself with a notice until the secrets below exist, so adding this
+# file changes nothing on its own.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   EC2_HOST     the instance address, e.g. api-test.phloz.app or its IP
+#   EC2_USER     the login user, e.g. ec2-user
+#   EC2_SSH_KEY  contents of a private key whose public half is in that user's
+#                ~/.ssh/authorized_keys on the instance
+#
+# Optional repository variables:
+#   FMS_HEALTH_URL      what to curl afterwards, default https://api-test.phloz.app/fms/api/v1/health/
+#   EC2_SSH_KNOWN_HOSTS the instance's host key. Set it and the deploy pins the
+#                       host; leave it unset and the first connection trusts
+#                       whatever answers (ssh-keyscan), which is weaker.
+#
+# This deploys the systemd + venv install at /opt/phloz/fms via the repo's own
+# deploy/ec2/deploy-fms.sh - the same script run by hand. The older
+# "Deploy FMS API" workflow drives the docker-compose stack instead and stays
+# manual; they are different deployment targets, not two ways to the same one.
+name: Deploy FMS API to EC2
+
+on:
+  workflow_run:
+    workflows: ["Validate FMS"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch to deploy
+        required: true
+        default: main
+
+concurrency:
+  group: deploy-fms-ec2
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # workflow_run fires whatever the outcome, so a failed validation must not
+    # deploy. A manual run deploys whatever branch was asked for.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check deployment secrets
+        id: secrets
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          SSH_USER: ${{ secrets.EC2_USER }}
+          KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$SSH_USER" ] || [ -z "$KEY" ]; then
+            echo "::notice::EC2_HOST, EC2_USER and EC2_SSH_KEY are not all set - skipping the deploy."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure SSH
+        if: steps.secrets.outputs.ready == 'true'
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          KEY: ${{ secrets.EC2_SSH_KEY }}
+          KNOWN_HOSTS: ${{ vars.EC2_SSH_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy.pem
+          chmod 600 ~/.ssh/deploy.pem
+          if [ -n "$KNOWN_HOSTS" ]; then
+            printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            echo "::warning::EC2_SSH_KNOWN_HOSTS is not set - trusting the host key on first sight."
+            ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy
+        if: steps.secrets.outputs.ready == 'true'
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          SSH_USER: ${{ secrets.EC2_USER }}
+          REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || 'main' }}
+          REPO: ${{ github.server_url }}/${{ github.repository }}.git
+        run: |
+          ssh -i ~/.ssh/deploy.pem -o BatchMode=yes "$SSH_USER@$HOST" \
+            bash -s -- "$REF" "$REPO" <<'REMOTE'
+          set -euo pipefail
+          REF="${1:-main}"
+          REPO="$2"
+
+          # The deploy script clones with git, which isn't on a bare Amazon
+          # Linux image.
+          if ! command -v git >/dev/null; then
+            sudo dnf install -y git >/dev/null || sudo yum install -y git >/dev/null
+          fi
+
+          rm -rf ~/fms-deploy
+          git clone --depth 1 --branch "$REF" "$REPO" ~/fms-deploy
+          echo "Deploying $(git -C ~/fms-deploy rev-parse --short HEAD) from $REF"
+
+          chmod +x ~/fms-deploy/deploy/ec2/deploy-fms.sh
+          FMS_BRANCH="$REF" FMS_REPOSITORY_URL="$REPO" ~/fms-deploy/deploy/ec2/deploy-fms.sh
+          REMOTE
+
+      - name: Health check
+        if: steps.secrets.outputs.ready == 'true'
+        env:
+          URL: ${{ vars.FMS_HEALTH_URL || 'https://api-test.phloz.app/fms/api/v1/health/' }}
+        run: |
+          # The service restarts inside the deploy script, so this is a check
+          # from outside - through nginx, the way a client reaches it.
+          for attempt in $(seq 1 20); do
+            if curl -fsS --max-time 10 "$URL" > /dev/null; then
+              echo "API healthy at $URL after $attempt attempt(s)"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "API did not answer at $URL"
+          exit 1
+
+      - name: Remove deployment key
+        if: always()
+        run: rm -f ~/.ssh/deploy.pem

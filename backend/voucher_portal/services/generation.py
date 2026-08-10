@@ -27,7 +27,7 @@ import json
 import threading
 from decimal import Decimal
 
-from django.db import close_old_connections, transaction
+from django.db import close_old_connections, connections, transaction
 
 from .. import storage
 from ..geometry import SAMPLE_CONTEXT
@@ -220,4 +220,8 @@ def _run_generation(batch_id):
         except Exception:
             pass  # the batch row itself is unreachable (e.g. transaction never committed) - nothing more to record
     finally:
-        close_old_connections()
+        # close_all(), not close_old_connections(): with CONN_MAX_AGE set,
+        # "old" means past its age, and this thread's connection is brand new.
+        # The thread is about to die and nothing will ever reuse it, so left
+        # open it is a Postgres session leaked per generated batch.
+        connections.close_all()
