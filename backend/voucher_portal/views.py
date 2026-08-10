@@ -517,7 +517,7 @@ class PortalVoucherViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class ReportsViewSet(viewsets.ViewSet):
-    """Department-level reporting (Â§12). Every action here scopes to the
+    """Department-level reporting (§12). Every action here scopes to the
     caller's visible departments before aggregating - a Report Viewer scoped
     to HR only never sees Marketing's numbers, even in a summary total."""
     permission_classes = [HasPortalAccess]
