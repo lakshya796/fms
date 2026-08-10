@@ -29,7 +29,10 @@ type Voucher = {
 };
 type Access = { role: string; actions: string[]; department_ids: number[] | null; is_django_staff: boolean };
 type Notice = { id: number; batch: number; batch_name: string; kind: string; message: string; read_at: string | null; created_at: string };
-type DesignIntent = { mode: "edit"; template: Template } | { mode: "new" } | null;
+type DesignIntent =
+  | { mode: "edit"; template: Template; previewArtwork?: File | null }
+  | { mode: "new"; previewArtwork?: File | null }
+  | null;
 type AccessGrant = { id: number; user: string; username: string; role: string; department_ids: number[]; department_names: string[]; is_active: boolean };
 
 const EMPTY_FORM = {
@@ -682,10 +685,10 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
             <span>Card design</span>
             <div className="voucher-picker-actions">
               {selectedTemplate && <button type="button" className="link-button"
-                onClick={() => setDesignIntent({ mode: "edit", template: selectedTemplate })}>
+                onClick={() => setDesignIntent({ mode: "edit", template: selectedTemplate, previewArtwork: batchArtwork })}>
                 Edit this design
               </button>}
-              <button type="button" className="link-button" onClick={() => setDesignIntent({ mode: "new" })}>
+              <button type="button" className="link-button" onClick={() => setDesignIntent({ mode: "new", previewArtwork: batchArtwork })}>
                 New design
               </button>
             </div>
@@ -715,7 +718,7 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
                   {" "}You've entered {missingFields.length === 1 ? "it" : "them"}, but the design has no field to
                   print {missingFields.length === 1 ? "it" : "them"} in — add {missingFields.length === 1 ? "one" : "them"} with
                   {" "}<button type="button" className="link-button"
-                     onClick={() => setDesignIntent({ mode: "edit", template: selectedTemplate })}>Edit this design</button>.
+                     onClick={() => setDesignIntent({ mode: "edit", template: selectedTemplate, previewArtwork: batchArtwork })}>Edit this design</button>.
               </p>}
           </div>}
           <p className="voucher-picker-help">
@@ -1295,6 +1298,20 @@ function useArtwork(path: string | null | undefined) {
   return url;
 }
 
+/** Creates a browser-only preview URL for batch artwork. The file is never
+ * uploaded by the template editor, so saving a shared design cannot replace
+ * its permanent artwork with a one-off batch image. */
+function useFileArtwork(file: File | null | undefined) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!file) { setUrl(null); return; }
+    const objectUrl = URL.createObjectURL(file);
+    setUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [file]);
+  return url;
+}
+
 /** The card itself: artwork, background and every element, drawn to scale.
  *  Shared by the designer canvas and the small previews on the library screen,
  *  so a thumbnail can never disagree with the editor about a layout. */
@@ -1316,15 +1333,18 @@ function CardPreview({ document: doc, artwork, width, height, scale, values, chi
   </div>;
 }
 
-function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
-  template: Template; canAdmin: boolean; onClose: () => void; onSaved: () => void;
+function TemplateDesigner({ template, canAdmin, previewArtwork, onClose, onSaved }: {
+  template: Template; canAdmin: boolean; previewArtwork?: File | null;
+  onClose: () => void; onSaved: () => void;
 }) {
   const [catalogue, setCatalogue] = useState<Catalogue | null>(null);
   const [doc, setDoc] = useState<CardDocument | null>(null);
   const [saved, setSaved] = useState("");
   const [card, setCard] = useState({ w: 479.52, h: 178 });
   const [artworkPath, setArtworkPath] = useState<string | null | undefined>(template.artwork_path);
-  const artwork = useArtwork(artworkPath);
+  const storedArtwork = useArtwork(artworkPath);
+  const batchArtworkPreview = useFileArtwork(previewArtwork);
+  const artwork = batchArtworkPreview || storedArtwork;
 
   const [selected, setSelected] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
@@ -1717,6 +1737,9 @@ function TemplateDesigner({ template, canAdmin, onClose, onSaved }: {
 
     {error && <div className="form-error" style={{ marginBottom: 10 }}>{error}</div>}
     {warning && <div className="designer-warning">{warning}</div>}
+    {batchArtworkPreview && <div className="designer-warning">
+      Previewing the current batch image. Saving this design changes only the layout; it does not replace the shared template artwork.
+    </div>}
 
     <div className="designer-layout">
       <div className="designer-stage">
@@ -2103,6 +2126,7 @@ function TemplatesScreen({ canAdmin, intent, onIntentDone }: {
 
   if (editing) {
     return <TemplateDesigner template={editing} canAdmin={canAdmin}
+                             previewArtwork={intent?.previewArtwork}
                              onClose={() => {
                                const designed = editing.id;
                                setEditing(null);
