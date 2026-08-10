@@ -278,4 +278,3 @@ class NotificationSerializer(serializers.ModelSerializer):
         model = Notification
         fields = ["id", "batch", "batch_name", "kind", "message", "read_at", "created_at"]
         read_only_fields = fields
-
