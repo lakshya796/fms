@@ -8,6 +8,7 @@ checks both go through `request.portal_access` - see services/access.py.
 """
 import csv
 import io
+import json
 
 from django.contrib.auth.models import User
 from django.db.models import Q
@@ -24,7 +25,7 @@ from .geometry import (ALIGNMENTS, COUPON_PRESETS, ELEMENT_TYPES, FONTS, LEGACY_
                        LEGACY_FIELD_CATALOGUE, PALETTE, VARIABLES, blank_geometry, starter_layouts)
 from .models import Department, Notification, PortalBatch, PortalUserAccess, PortalVoucher, VoucherPrefix, \
     VoucherTemplate, VoucherType
-from .validators import GeometryError, validate_field_geometry
+from .validators import ArtworkError, GeometryError, validate_artwork, validate_field_geometry
 from .serializers import (ApproveSerializer, BatchFormSerializer, CancelSerializer, DepartmentSerializer,
                           ManualIssueSerializer, NotificationSerializer, PortalBatchSerializer,
                           PortalUserAccessSerializer, PortalVoucherSerializer, RecipientRowSerializer,
@@ -156,12 +157,23 @@ class VoucherTemplateViewSet(AdminWriteMixin, viewsets.ModelViewSet):
         geometry = None
         if request.method == "POST" and request.data.get("field_geometry") is not None:
             geometry = request.data["field_geometry"]
+            if isinstance(geometry, str):
+                try:
+                    geometry = json.loads(geometry)
+                except (TypeError, ValueError):
+                    raise ValidationError({"field_geometry": "Layout must be valid JSON."})
             try:
                 validate_field_geometry(geometry, coupon_width=template.coupon_width,
                                         coupon_height=template.coupon_height)
             except GeometryError as error:
                 raise ValidationError({"field_geometry": str(error)})
-        pdf_bytes = render_template_sample(template, geometry)
+        artwork = request.FILES.get("artwork")
+        if artwork:
+            try:
+                validate_artwork(artwork, target_ratio=template.coupon_width / template.coupon_height)
+            except ArtworkError as error:
+                raise ValidationError({"artwork": str(error)})
+        pdf_bytes = render_template_sample(template, geometry, artwork=artwork)
         return HttpResponse(pdf_bytes, content_type="application/pdf")
 
     @action(detail=True, methods=["get"])
