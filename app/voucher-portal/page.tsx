@@ -535,6 +535,11 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
             `voucher-portal/batches/${activeBatch.id}/download/`,
             `${activeBatch.prefix_snapshot || "batch"}-${activeBatch.id}-vouchers.pdf`) || "")}>
           Download print-ready PDF (all vouchers)</button>}
+        {access.actions.includes("download") && <button type="button" className="secondary voucher-download-link"
+          onClick={async () => setWorkflowError(await downloadBlob(
+            `voucher-portal/batches/${activeBatch.id}/export-csv/`,
+            `${activeBatch.prefix_snapshot || "batch"}-${activeBatch.id}-vouchers.csv`) || "")}>
+          Export voucher details (CSV)</button>}
 
         <div className="voucher-workflow-actions">
           {activeBatch.status === "draft" && access.actions.includes("create") &&
@@ -772,6 +777,13 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
                       `voucher-portal/batches/${b.id}/download/`,
                       `${b.prefix_snapshot || "batch"}-${b.id}-vouchers.pdf`) || "");
                   }}>Download vouchers</button>}
+                {access.actions.includes("download") && <button type="button" className="link-button"
+                  onClick={async e => {
+                    e.stopPropagation();
+                    setBatchDownloadError(await downloadBlob(
+                      `voucher-portal/batches/${b.id}/export-csv/`,
+                      `${b.prefix_snapshot || "batch"}-${b.id}-vouchers.csv`) || "");
+                  }}>Export CSV</button>}
                 {!b.combined_pdf_url && <small>PDF not ready</small>}
               </td>
             </tr>)}
