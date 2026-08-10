@@ -11,8 +11,8 @@ from iam.permissions import HasModulePermission, requires
 from .models import (Customer, Driver, Vehicle, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement, SalesQuote,
                      MaintenanceWorkOrder, VEHICLE_STATUSES, set_vehicle_status)
 from .serializers import (CustomerSerializer, DriverSerializer, VehicleSerializer, VehicleStatusLogSerializer,
-                          LorryReceiptSerializer, TripSerializer, TrackingEventSerializer, InvoiceSerializer,
-                          SettlementSerializer, SalesQuoteSerializer, MaintenanceWorkOrderSerializer)
+                          LorryReceiptSerializer, TripSerializer, TripSettlementInputSerializer, TrackingEventSerializer,
+                          InvoiceSerializer, SettlementSerializer, SalesQuoteSerializer, MaintenanceWorkOrderSerializer)
 
 @requires("reports.view")
 @api_view(["GET"])
@@ -167,6 +167,59 @@ class TripViewSet(viewsets.ModelViewSet):
         trip.driver.status = "available"; trip.driver.save(update_fields=["status"])
         trip.lorry_receipts.update(status="delivered")
         return Response(self.get_serializer(trip).data)
+
+    @action(detail=True, methods=["get", "post"])
+    @transaction.atomic
+    def settlement(self, request, pk=None):
+        """The trip sheet a transport office fills in by hand: load type, dates,
+        distance, odometer, freight and every expense line item, in one submission.
+
+        GET returns the computed summary against whatever is on file. POST updates
+        the trip's own fields and upserts one TripExpense per category in the
+        `expenses` map - a category omitted or zeroed is cleared, so re-submitting
+        the form (e.g. after a correction) never leaves a stale duplicate line behind.
+        """
+        trip = self.get_object()
+
+        def expense_breakdown():
+            rows = trip.expenses.values("category").annotate(total=Sum("amount"))
+            return {row["category"]: float(row["total"]) for row in rows}
+
+        if request.method == "GET":
+            return Response({"trip": self.get_serializer(trip).data, "summary": trip.settlement_summary(),
+                             "expenses": expense_breakdown()})
+
+        form = TripSettlementInputSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        data = form.validated_data
+
+        trip_fields = ["load_type", "load_date", "unload_date", "google_km", "passed_km",
+                       "start_odometer_km", "end_odometer_km", "freight_amount"]
+        changed = []
+        for field in trip_fields:
+            if field in data:
+                setattr(trip, field, data[field])
+                changed.append(field)
+        if "diesel_given" in data:
+            trip.advance_amount = data["diesel_given"]
+            changed.append("advance_amount")
+        if changed:
+            trip.save(update_fields=changed + ["updated_at"])
+
+        if trip.end_odometer_km and trip.end_odometer_km > trip.vehicle.current_odometer_km:
+            Vehicle.objects.filter(pk=trip.vehicle_id).update(current_odometer_km=trip.end_odometer_km)
+
+        for category, amount in (data.get("expenses") or {}).items():
+            if amount:
+                TripExpense.objects.update_or_create(
+                    trip=trip, category=category,
+                    defaults={"amount": amount, "vehicle": trip.vehicle, "driver": trip.driver, "status": "approved"})
+            else:
+                TripExpense.objects.filter(trip=trip, category=category).delete()
+
+        trip.refresh_from_db()
+        return Response({"trip": self.get_serializer(trip).data, "summary": trip.settlement_summary(),
+                         "expenses": expense_breakdown()})
 class InvoiceViewSet(viewsets.ModelViewSet):
     permission_classes = [HasModulePermission]
     required_permission = "accounting.view"; required_write_permission = "accounting.manage"

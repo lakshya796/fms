@@ -11,7 +11,7 @@ from rest_framework.test import APIClient
 from accounting.models import JournalEntry
 from iam.models import OutboundMessage
 from .models import (ComplianceDocument, Customer, Driver, Fleet, FuelEntry, Invoice, Issue, MaintenanceSchedule, Order,
-                     Place, ProofOfDelivery, ServiceArea, ServiceRate, TripExpense, Vehicle, VehicleHire, Vendor,
+                     Place, ProofOfDelivery, ServiceArea, ServiceRate, Trip, TripExpense, Vehicle, VehicleHire, Vendor,
                      Waypoint, Zone, haversine_km)
 
 
@@ -870,6 +870,79 @@ class LegacyModuleCreationTests(BaseFleetOpsTest):
             "name": "Asian Paints Ltd", "gstin": "27AAACA3622K1ZV", "pan": "AAACA3622K"}, format="json")
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(response.data["gstin"], "27AAACA3622K1ZV")
+
+
+class TripSettlementTests(BaseFleetOpsTest):
+    """The trip-sheet numbers a transport office fills in by hand, checked against a
+    real trip from the operator's own settlement register: Surat to Delhi-Noida,
+    frozen load, freight 96,800, closing at a 5,510 shortfall against the diesel
+    advance."""
+
+    def create_trip(self):
+        response = self.client.post("/api/v1/trips/", {
+            "number": "TRP-SURAT-NOIDA", "vehicle": self.vehicle.id, "driver": self.driver.id,
+            "origin": "Surat", "destination": "Delhi-Noida", "planned_departure": "2026-07-05T08:00:00Z"}, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        return Trip.objects.get(pk=response.data["id"])
+
+    def test_settlement_post_computes_the_same_totals_as_the_paper_register(self):
+        trip = self.create_trip()
+        response = self.client.post(f"/api/v1/trips/{trip.id}/settlement/", {
+            "load_type": "frozen", "load_date": "2026-07-05", "unload_date": "2026-07-08",
+            "passed_km": 1200, "start_odometer_km": 268400, "end_odometer_km": 269604,
+            "freight_amount": "96800", "diesel_given": "39000",
+            "expenses": {"diesel": "26400", "halting": "2500", "loading": "300",
+                        "police": "1200", "parking": "300", "cash_toll": "390", "salary": "2400"},
+        }, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        summary = response.data["summary"]
+        self.assertEqual(summary["total_exp"], 33490.0)          # sum of every expense line
+        self.assertEqual(summary["diesel_given"], 39000.0)
+        self.assertEqual(summary["difference"], -5510.0)         # spent less than the advance
+        self.assertEqual(summary["running_km"], 1204)            # 216733 - 215529
+        self.assertEqual(summary["per_km_exp"], 27.91)            # 33490 / 1200 passed km
+        self.assertEqual(summary["per_km_rev"], 80.67)            # 96800 / 1200 passed km
+        self.assertEqual(summary["trip_profit"], 63310.0)         # 96800 - 33490
+        self.assertEqual(TripExpense.objects.filter(trip=trip).count(), 7)
+        self.assertEqual(response.data["expenses"]["diesel"], 26400.0)
+        self.assertEqual(response.data["expenses"]["salary"], 2400.0)
+
+        trip.refresh_from_db()
+        self.assertEqual(trip.load_type, "frozen")
+        self.assertEqual(str(trip.load_date), "2026-07-05")
+        self.assertEqual(trip.advance_amount, Decimal("39000.00"))
+        self.vehicle.refresh_from_db()
+        self.assertEqual(self.vehicle.current_odometer_km, 269604)   # rolled forward, like a fuel entry
+
+    def test_resubmitting_the_settlement_updates_lines_rather_than_duplicating(self):
+        trip = self.create_trip()
+        self.client.post(f"/api/v1/trips/{trip.id}/settlement/",
+                         {"expenses": {"diesel": "26400", "parking": "300"}}, format="json")
+        self.client.post(f"/api/v1/trips/{trip.id}/settlement/",
+                         {"expenses": {"diesel": "27000", "parking": "0"}}, format="json")
+        self.assertEqual(TripExpense.objects.filter(trip=trip).count(), 1)   # parking cleared, not left stale
+        self.assertEqual(TripExpense.objects.get(trip=trip, category="diesel").amount, Decimal("27000.00"))
+
+    def test_settlement_rejects_an_unknown_expense_category(self):
+        trip = self.create_trip()
+        response = self.client.post(f"/api/v1/trips/{trip.id}/settlement/",
+                                    {"expenses": {"not_a_real_category": "100"}}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_get_settlement_reflects_a_linked_orders_freight(self):
+        """A trip created from an order prices its settlement off that order,
+        not a manually typed freight figure."""
+        order_response = self.client.post("/api/v1/orders/", {
+            "customer": self.customer.id, "pickup": self.pickup.id, "dropoff": self.dropoff.id,
+            "service_rate": self.rate.id, "weight_kg": 12400}, format="json")
+        order = Order.objects.get(pk=order_response.data["id"])
+        self.client.post(f"/api/v1/orders/{order.id}/assign/",
+                         {"driver": self.driver.id, "vehicle": self.vehicle.id}, format="json")
+        order.refresh_from_db()
+        self.client.post(f"/api/v1/trips/{order.trip_id}/settlement/",
+                         {"passed_km": 100, "expenses": {"diesel": "2000"}}, format="json")
+        response = self.client.get(f"/api/v1/trips/{order.trip_id}/settlement/")
+        self.assertEqual(response.data["summary"]["freight"], float(order.total_amount))
 
     def test_vehicle_keeps_the_registration_the_operator_typed(self):
         response = self.client.post("/api/v1/vehicles/", {

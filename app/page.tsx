@@ -1031,6 +1031,99 @@ function FleetsView({ reloadKey, onAction, openAction }: { reloadKey: number; on
 
 const fleetOpsPages = ["Dispatch", "Drivers", "Maintenance", "Analytics"];
 
+// Mirrors backend fleet.models.EXPENSE_CATEGORIES - the cost lines a transport
+// office's own trip-settlement register breaks a trip's expense down into.
+const tripExpenseCategories: [string, string][] = [
+  ["diesel", "Diesel / running"], ["toll", "Toll (FASTag)"], ["cash_toll", "Cash toll"],
+  ["driver_allowance", "Driver bhatta"], ["loading", "Loading"], ["unloading", "Unloading"],
+  ["halting", "Halting / waiting"], ["police", "Police / checkpost"], ["permit", "Permit / state tax"],
+  ["way_side", "Way side expense"], ["kata", "Weighbridge / kata"], ["parking", "Parking"],
+  ["repair", "Repair / R&M"], ["adblue", "AdBlue"], ["salary", "Driver salary"],
+  ["rto_fine", "RTO fine"], ["other", "Other"],
+];
+
+// The trip sheet a transport office already fills in by hand: load type, load/unload
+// dates, planned vs. billable distance, odometer, freight, the diesel/cash advance,
+// and every expense line - captured here in one submission and settled automatically
+// (total expense, diesel difference, cost/revenue per km, trip profit).
+function TripSettlementPanel({ trip, onAction, onSaved }: { trip: any; onAction: Notify; onSaved: (trip: any) => void }) {
+  const [loading, setLoading] = useState(true);
+  const [summary, setSummary] = useState<any>(null);
+  const [expenses, setExpenses] = useState<Record<string, number>>({});
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    fmsRequest<any>(`trips/${trip.id}/settlement/`).then(payload => {
+      setSummary(payload.summary);
+      setExpenses(payload.expenses || {});
+    }).catch(() => undefined).finally(() => setLoading(false));
+  }, [trip.id]);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget as HTMLFormElement);
+    const num = (name: string) => { const raw = form.get(name); return raw ? Number(raw) : undefined; };
+    const str = (name: string) => { const raw = String(form.get(name) || ""); return raw || undefined; };
+    const expensePayload: Record<string, number> = {};
+    tripExpenseCategories.forEach(([code]) => {
+      const raw = form.get(`exp_${code}`);
+      if (raw !== null && String(raw) !== "") expensePayload[code] = Number(raw);
+    });
+    setBusy(true);
+    try {
+      const payload = await fmsRequest<any>(`trips/${trip.id}/settlement/`, { method: "POST", body: JSON.stringify({
+        load_type: str("load_type"), load_date: str("load_date"), unload_date: str("unload_date"),
+        google_km: num("google_km"), passed_km: num("passed_km"),
+        start_odometer_km: num("start_odometer_km"), end_odometer_km: num("end_odometer_km"),
+        freight_amount: num("freight_amount"), diesel_given: num("diesel_given"), expenses: expensePayload,
+      }) });
+      onAction("Trip settlement saved");
+      setSummary(payload.summary);
+      setExpenses(payload.expenses || {});
+      onSaved(payload.trip);
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 150) : "Could not save the trip settlement", "warn");
+    } finally { setBusy(false); }
+  };
+
+  if (loading) return <div className="record-section"><p className="eyebrow">TRIP SETTLEMENT</p><div className="data-state">Loading…</div></div>;
+
+  return <form className="record-section" onSubmit={submit}>
+    <p className="eyebrow">TRIP SETTLEMENT</p>
+    <div className="form-grid">
+      <label>Load type<select name="load_type" defaultValue={trip.load_type || ""}>
+        <option value="">Select…</option>
+        <option value="dry">Dry</option><option value="chiller">Chiller</option>
+        <option value="frozen">Frozen</option><option value="empty">Empty (no cargo)</option>
+      </select></label>
+      <label>Freight (₹)<input name="freight_amount" type="number" step="any" defaultValue={trip.freight_amount || ""} placeholder="From linked order if blank" /></label>
+      <label>Load date<input name="load_date" type="date" defaultValue={trip.load_date || ""} /></label>
+      <label>Unload date<input name="unload_date" type="date" defaultValue={trip.unload_date || ""} /></label>
+      <label>Google km (planned)<input name="google_km" type="number" defaultValue={trip.google_km || ""} /></label>
+      <label>Passed km (billable)<input name="passed_km" type="number" defaultValue={trip.passed_km || ""} /></label>
+      <label>Start odometer<input name="start_odometer_km" type="number" defaultValue={trip.start_odometer_km ?? ""} /></label>
+      <label>End odometer<input name="end_odometer_km" type="number" defaultValue={trip.end_odometer_km ?? ""} /></label>
+      <label>Diesel given / advance (₹)<input name="diesel_given" type="number" step="any" defaultValue={trip.advance_amount || ""} /></label>
+    </div>
+    <p className="eyebrow" style={{ marginTop: 16 }}>EXPENSES (₹)</p>
+    <div className="form-grid">
+      {tripExpenseCategories.map(([code, label]) => <label key={code}>{label}
+        <input name={`exp_${code}`} type="number" step="any" defaultValue={expenses[code] ?? ""} />
+      </label>)}
+    </div>
+    {summary && <div className="margin-strip" style={{ marginTop: 16 }}>
+      <div><span>Total expense</span><strong>{rupees(summary.total_exp)}</strong></div>
+      <div><span>Diesel given</span><strong>{rupees(summary.diesel_given)}</strong></div>
+      <div><span>Difference</span><strong className={summary.difference <= 0 ? "good" : "bad"}>{rupees(summary.difference)}</strong></div>
+      <div><span>Per km cost</span><strong>₹{summary.per_km_exp}</strong></div>
+      <div><span>Per km revenue</span><strong>₹{summary.per_km_rev}</strong></div>
+      <div><span>Trip profit</span><strong className={summary.trip_profit >= 0 ? "good" : "bad"}>{rupees(summary.trip_profit)}</strong></div>
+    </div>}
+    <button className="primary full-button" disabled={busy} style={{ marginTop: 16 }}>{busy ? "Saving…" : "Save trip settlement"}</button>
+  </form>;
+}
+
 function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string; onAction: Notify; reloadKey: number; openAction: (type: string) => void }) {
   const [records, setRecords] = useState<any[]>([]);
   const [dashboard, setDashboard] = useState<any>(null);
@@ -1085,19 +1178,22 @@ function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string;
     {tripDetail && <DetailDrawer eyebrow="TRIP SHEET" title={tripDetail.number} status={tripDetail.status} onClose={() => setTripDetail(null)}
       fields={[["Route", `${tripDetail.origin} → ${tripDetail.destination}`], ["Vehicle", tripDetail.vehicle_number],
                ["Driver", tripDetail.driver_name], ["Consignments", (tripDetail.lorry_receipts || []).length],
+               ["Load type", tripDetail.load_type || "—"], ["Running km", tripDetail.running_km ?? "—"],
                ["Planned departure", tripDetail.planned_departure ? new Date(tripDetail.planned_departure).toLocaleString("en-IN") : ""],
                ["Actual departure", tripDetail.actual_departure ? new Date(tripDetail.actual_departure).toLocaleString("en-IN") : ""],
                ["Arrived", tripDetail.arrival_at ? new Date(tripDetail.arrival_at).toLocaleString("en-IN") : ""],
-               ["Trip advance", rupees(tripDetail.advance_amount)], ["Estimated cost", rupees(tripDetail.estimated_cost)],
+               ["Diesel given", rupees(tripDetail.advance_amount)], ["Estimated cost", rupees(tripDetail.estimated_cost)],
                ["Created", stamp(tripDetail.created_at)], ["Last updated", stamp(tripDetail.updated_at)]]}
       sections={[{ label: "GPS EVENTS", rows: (tripDetail.tracking_events || []).slice(0, 8).map((event: any) => ({
         key: String(event.id), primary: event.description || event.event_type,
-        secondary: `${event.speed_kph} km/h`, meta: new Date(event.recorded_at).toLocaleString("en-IN") })) }]}
-      actions={<>
+        secondary: `${event.speed_kph} km/h`, meta: new Date(event.recorded_at).toLocaleString("en-IN") })) }]}>
+      <TripSettlementPanel trip={tripDetail} onAction={onAction} onSaved={updated => { setTripDetail(updated); load(); }} />
+      <div className="record-actions" style={{ marginTop: 18 }}>
         <button className="secondary" onClick={() => setTripDetail(null)}>Close</button>
         {tripDetail.status === "planned" && <button className="primary" onClick={() => tripAction(tripDetail, "dispatch")}>Dispatch trip</button>}
         {["dispatched", "in_transit"].includes(tripDetail.status) && <button className="primary" onClick={() => tripAction(tripDetail, "close")}>Close trip</button>}
-      </>} />}
+      </div>
+    </DetailDrawer>}
   </div>;
   if (name === "Drivers") return <div className="module-page"><div className="module-title"><div><p className="eyebrow">DRIVER OPERATIONS</p><h2>Drivers & availability</h2><p>Licences, shifts, current status and last known location.</p></div><button className="primary module-action" onClick={() => openAction("driver")}>＋ Add driver</button></div><section className="module-table-card"><div className="table-wrap"><table><thead><tr><th>Driver</th><th>Phone</th><th>Licence</th><th>Expiry</th><th>Status</th></tr></thead><tbody>{records.map(r=><tr key={r.id}><td><strong>{r.name}</strong></td><td>{r.phone}</td><td>{r.licence_number}</td><td>{r.licence_expiry || "—"}</td><td><span className={"status "+r.status}>{r.status}</span></td></tr>)}</tbody></table></div></section></div>;
   if (name === "Maintenance") return <div className="module-page"><div className="module-title"><div><p className="eyebrow">FLEET MAINTENANCE</p><h2>Work orders & schedules</h2><p>Preventive servicing, breakdowns and vehicle downtime.</p></div><button className="primary module-action" onClick={() => openAction("maintenance")}>＋ New work order</button></div><section className="module-table-card"><div className="table-wrap"><table><thead><tr><th>Work order</th><th>Vehicle</th><th>Work</th><th>Scheduled</th><th>Cost</th><th>Status</th></tr></thead><tbody>{records.map(r=><tr key={r.id}><td><strong>{r.number}</strong></td><td>{r.vehicle_number}</td><td>{r.title}</td><td>{r.scheduled_date}</td><td>₹{Number(r.estimated_cost).toLocaleString("en-IN")}</td><td><span className={"status "+r.status}>{r.status}</span></td></tr>)}</tbody></table></div></section></div>;
@@ -1215,10 +1311,11 @@ function useDragBoard(moves: Record<string, CardMove>, onRefuse: Notify, fallbac
 }
 
 // A read-only detail drawer, used when a board card is clicked.
-function DetailDrawer({ eyebrow, title, status, fields, sections, actions, onClose }: {
+function DetailDrawer({ eyebrow, title, status, fields, sections, children, actions, onClose }: {
   eyebrow: string; title: string; status?: string;
   fields: [string, any][];
   sections?: { label: string; rows: { key: string; primary: string; secondary?: string; meta?: string }[] }[];
+  children?: React.ReactNode;
   actions?: React.ReactNode; onClose: () => void;
 }) {
   return <div className="record-backdrop" onMouseDown={onClose}><aside className="record-drawer" onMouseDown={event => event.stopPropagation()}>
@@ -1235,6 +1332,7 @@ function DetailDrawer({ eyebrow, title, status, fields, sections, actions, onClo
         {row.meta && <time>{row.meta}</time>}
       </div>) : <div><i /><span><strong>Nothing yet</strong></span></div>}
     </div>)}
+    {children}
     {actions && <div className="record-actions">{actions}</div>}
   </aside></div>;
 }

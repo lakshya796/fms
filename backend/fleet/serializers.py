@@ -1,5 +1,6 @@
 from rest_framework import serializers
-from .models import Customer, Driver, Vehicle, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement, SalesQuote, MaintenanceWorkOrder, VehicleStatusLog
+from .models import (Customer, Driver, Vehicle, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement, SalesQuote,
+                     MaintenanceWorkOrder, VehicleStatusLog, LOAD_TYPES, EXPENSE_CATEGORY_CODES)
 
 class MaintenanceWorkOrderSerializer(serializers.ModelSerializer):
     vehicle_number = serializers.CharField(source="vehicle.registration_number", read_only=True)
@@ -31,10 +32,34 @@ class TripSerializer(serializers.ModelSerializer):
     vehicle_number = serializers.CharField(source="vehicle.registration_number", read_only=True)
     driver_name = serializers.CharField(source="driver.name", read_only=True)
     tracking_events = TrackingEventSerializer(many=True, read_only=True)
+    running_km = serializers.IntegerField(read_only=True)
     class Meta:
         model = Trip; fields = "__all__"
         # A trip sheet is often opened before consignments are attached to it.
         extra_kwargs = {"lorry_receipts": {"required": False, "allow_empty": True}}
+
+
+class TripSettlementInputSerializer(serializers.Serializer):
+    """One consolidated submission for everything a transport office's paper trip
+    sheet captures: load type, dates, distance, odometer, freight and every expense
+    line item, keyed by the same category codes as `TripExpense.category`.
+    """
+    load_type = serializers.ChoiceField(choices=LOAD_TYPES, required=False, allow_blank=True)
+    load_date = serializers.DateField(required=False, allow_null=True)
+    unload_date = serializers.DateField(required=False, allow_null=True)
+    google_km = serializers.IntegerField(required=False, min_value=0)
+    passed_km = serializers.IntegerField(required=False, min_value=0)
+    start_odometer_km = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    end_odometer_km = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    freight_amount = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    diesel_given = serializers.DecimalField(max_digits=12, decimal_places=2, required=False)
+    expenses = serializers.DictField(child=serializers.DecimalField(max_digits=12, decimal_places=2), required=False)
+
+    def validate_expenses(self, value):
+        unknown = sorted(set(value) - set(EXPENSE_CATEGORY_CODES))
+        if unknown:
+            raise serializers.ValidationError(f"Unknown expense categories: {', '.join(unknown)}")
+        return value
 class InvoiceSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     order_number = serializers.CharField(source="order.number", read_only=True, default="")
