@@ -180,7 +180,7 @@ class BatchFormSerializer(serializers.Serializer):
     currency = serializers.CharField(max_length=8, required=False, default="AED")
 
     # Not collected from the user - the brief allows a stored-but-unprinted start
-    # date (§3.3), and the form doesn't ask for one. Defaults to today in validate().
+    # date (Â§3.3), and the form doesn't ask for one. Defaults to today in validate().
     valid_from = serializers.DateField(required=False)
     valid_to = serializers.DateField()
 
@@ -189,6 +189,7 @@ class BatchFormSerializer(serializers.Serializer):
 
     prefix = serializers.PrimaryKeyRelatedField(queryset=VoucherPrefix.objects.filter(is_active=True))
     template = serializers.PrimaryKeyRelatedField(queryset=VoucherTemplate.objects.filter(is_active=True), required=False)
+    artwork = serializers.ImageField(required=False, allow_null=True, write_only=True)
 
     def validate(self, attrs):
         attrs.setdefault("valid_from", timezone.localdate())
@@ -210,6 +211,15 @@ class BatchFormSerializer(serializers.Serializer):
         if not template:
             raise serializers.ValidationError({"template": "No default template is configured."})
         attrs["template"] = template
+        artwork = attrs.get("artwork")
+        if artwork:
+            try:
+                validate_artwork(
+                    artwork,
+                    target_ratio=template.coupon_width / template.coupon_height if template.coupon_height else None,
+                )
+            except ArtworkError as error:
+                raise serializers.ValidationError({"artwork": str(error)})
         return attrs
 
 
@@ -268,3 +278,4 @@ class NotificationSerializer(serializers.ModelSerializer):
         model = Notification
         fields = ["id", "batch", "batch_name", "kind", "message", "read_at", "created_at"]
         read_only_fields = fields
+
