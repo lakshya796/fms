@@ -40,13 +40,24 @@ EMAIL_HOST_USER=os.getenv("EMAIL_HOST_USER","")
 EMAIL_HOST_PASSWORD=os.getenv("EMAIL_HOST_PASSWORD","")
 EMAIL_USE_TLS=os.getenv("EMAIL_USE_TLS","true").lower()=="true"
 DEFAULT_FROM_EMAIL=os.getenv("DEFAULT_FROM_EMAIL","no-reply@phloz.example")
-STATIC_URL="/static/"; STATIC_ROOT=BASE_DIR/"staticfiles"; DEFAULT_AUTO_FIELD="django.db.models.BigAutoField"
+# Mounted under a path prefix by the reverse proxy (nginx sends /fms/ to this
+# app). Django has to know, or every URL it generates - the admin's own links,
+# its form actions, its static files - points at the domain root, which is a
+# different application. Unset locally, where the app is served at /.
+FORCE_SCRIPT_NAME=os.getenv("DJANGO_SCRIPT_NAME") or None
+STATIC_URL=f"{FORCE_SCRIPT_NAME or ''}/static/"; STATIC_ROOT=BASE_DIR/"staticfiles"; DEFAULT_AUTO_FIELD="django.db.models.BigAutoField"
 # Local fallback for voucher-portal artwork and PDFs, used only while
 # VOUCHER_PORTAL_S3_BUCKET is unset (see voucher_portal/storage.py). MEDIA_ROOT
 # points at the release-independent `shared/` directory so uploads survive a deploy.
 MEDIA_URL="/media/"
 MEDIA_ROOT=Path(os.getenv("MEDIA_ROOT", BASE_DIR/"media"))
 CORS_ALLOWED_ORIGINS=[x.strip() for x in os.environ["CORS_ALLOWED_ORIGINS"].split(",") if x.strip()]
+# Amplify gives every branch its own subdomain (main.<app>.amplifyapp.com,
+# feature-x.<app>.amplifyapp.com), so a fixed origin list breaks on each new
+# branch deploy. Patterns are comma-separated and must be anchored at both
+# ends and scoped to one Amplify app id - an unanchored pattern would also
+# match https://anything.<app>.amplifyapp.com.evil.example.
+CORS_ALLOWED_ORIGIN_REGEXES=[x.strip() for x in os.getenv("CORS_ALLOWED_ORIGIN_REGEXES","").split(",") if x.strip()]
 CSRF_TRUSTED_ORIGINS=CORS_ALLOWED_ORIGINS
 SECURE_PROXY_SSL_HEADER=("HTTP_X_FORWARDED_PROTO","https")
 SESSION_COOKIE_SECURE=True; CSRF_COOKIE_SECURE=True

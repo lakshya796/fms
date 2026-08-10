@@ -38,6 +38,40 @@ const EMPTY_FORM = {
   valid_to: "", restrictions: "", terms: "", prefix: "", template: "",
 };
 
+/** Which placeholder prints each value the create-batch form collects.
+ *
+ *  Mirrored by `BatchFieldCoverageTests` on the server: a field collected from
+ *  the requester with nowhere to print is a value that silently never reaches
+ *  the voucher, so the form says which of the things you typed this card will
+ *  actually show. */
+const FORM_FIELD_PLACEHOLDERS: {
+  label: string; field: keyof typeof EMPTY_FORM; sources: string[];
+  /** Worth warning about when it's filled in and the card can't print it.
+   *  Operational values (quantity, prefix, department) are placeable but
+   *  rarely printed, so flagging them would be noise on every batch. */
+  notify?: boolean;
+}[] = [
+  { label: "Voucher name", field: "name", sources: ["batch_name"] },
+  { label: "Quantity", field: "quantity", sources: ["quantity"] },
+  { label: "Department", field: "department", sources: ["department"] },
+  { label: "Voucher type", field: "voucher_type", sources: ["voucher_type"] },
+  { label: "Prefix", field: "prefix", sources: ["prefix"] },
+  { label: "Currency", field: "currency", sources: ["currency", "discount_unit", "discount_value", "discount_cap"] },
+  { label: "Description", field: "description", sources: ["description"], notify: true },
+  { label: "Discount", field: "discount_type", sources: ["discount_value", "discount_numeral", "discount_type"], notify: true },
+  { label: "Maximum discount", field: "max_discount_value", sources: ["discount_cap", "max_discount_value"], notify: true },
+  { label: "Valid until", field: "valid_to", sources: ["valid_to"], notify: true },
+  { label: "Restrictions", field: "restrictions", sources: ["restrictions"], notify: true },
+  { label: "Terms and conditions", field: "terms", sources: ["terms"], notify: true },
+];
+
+/** The variables a design actually prints, from its visible field elements. */
+function printedSources(document: CardDocument | null): Set<string> {
+  return new Set((document?.elements || [])
+    .filter(element => element.type === "field" && !element.hidden && element.source)
+    .map(element => element.source as string));
+}
+
 const ROLE_LABELS: Record<string, string> = {
   administrator: "Administrator", requester: "Requester", approver: "Approver", report_viewer: "Report Viewer",
 };
@@ -142,7 +176,7 @@ export default function VoucherPortal() {
 
 function Portal({ onSignOut }: { onSignOut: () => void }) {
   const [access, setAccess] = useState<Access | null>(null);
-  const [screen, setScreen] = useState<"batches" | "reports" | "templates" | "access">("batches");
+  const [screen, setScreen] = useState<"batches" | "reports" | "templates" | "setup" | "access">("batches");
 
   const [departments, setDepartments] = useState<Department[]>([]);
   const [voucherTypes, setVoucherTypes] = useState<VoucherType[]>([]);
@@ -269,6 +303,19 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
   }, [templates, form.template]);
 
   const selectedTemplate = templates.find(t => String(t.id) === form.template) || null;
+  // Which of the values being typed the chosen card will actually show. Only
+  // fields with something in them are worth flagging - an empty Terms box
+  // isn't a problem, a filled one with nowhere to print is.
+  const printed = printedSources(cardDocument(selectedTemplate));
+  const filledFields = FORM_FIELD_PLACEHOLDERS.filter(entry => {
+    if (entry.field === "max_discount_value") return form.discount_type === "percentage" && !!form.max_discount_value;
+    if (entry.field === "discount_type") return !!(form.percentage_value || form.fixed_value);
+    return !!String(form[entry.field] || "").trim();
+  });
+  const missingFields = filledFields.filter(
+    entry => entry.notify && !entry.sources.some(source => printed.has(source)));
+  const printedFields = FORM_FIELD_PLACEHOLDERS.filter(
+    entry => entry.sources.some(source => printed.has(source)));
   const departmentPrefixes = prefixes.filter(p => !form.department || String(p.department) === form.department);
   const departmentTypes = voucherTypes.filter(t => !form.department || String(t.department) === form.department);
   const visibleDepartments = access?.department_ids
@@ -389,6 +436,7 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
       <button type="button" className={"link-button" + (screen === "batches" ? " active" : "")} onClick={() => { setScreen("batches"); setActiveBatch(null); }}>Batches</button>
       {access.actions.includes("report") && <button type="button" className={"link-button" + (screen === "reports" ? " active" : "")} onClick={() => setScreen("reports")}>Reports</button>}
       {(access.actions.includes("admin") || access.actions.includes("create")) && <button type="button" className={"link-button" + (screen === "templates" ? " active" : "")} onClick={() => { setDesignIntent(null); setScreen("templates"); }}>Templates</button>}
+      {access.actions.includes("admin") && <button type="button" className={"link-button" + (screen === "setup" ? " active" : "")} onClick={() => { setDesignIntent(null); setScreen("setup"); }}>Setup</button>}
       {access.actions.includes("admin") && <button type="button" className={"link-button" + (screen === "access" ? " active" : "")} onClick={() => setScreen("access")}>Team access</button>}
     </nav>
     <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center" }}>
@@ -432,6 +480,11 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
           if (designed && list.some(t => t.id === designed)) updateForm({ template: String(designed) });
           else { setPreviewHash(""); setPreviewUrl(""); }
         }} />
+    </main>;
+  }
+  if (screen === "setup") {
+    return <main className="voucher-page">{nav}
+      <SetupScreen onChanged={loadReferenceData} />
     </main>;
   }
   if (screen === "access") {
@@ -633,6 +686,18 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
               No card designs yet — “New design” creates one.
             </div>}
           </div>
+          {selectedTemplate && <div className="voucher-picker-coverage">
+            <p className="ok">
+              This card prints: <strong>{["Voucher number (barcode)", ...printedFields.map(entry => entry.label)].join(", ")}</strong>.
+            </p>
+            {missingFields.length > 0 && <p className="warn">
+                  Not on this card: <strong>{missingFields.map(entry => entry.label).join(", ")}</strong>.
+                  {" "}You've entered {missingFields.length === 1 ? "it" : "them"}, but the design has no field to
+                  print {missingFields.length === 1 ? "it" : "them"} in — add {missingFields.length === 1 ? "one" : "them"} with
+                  {" "}<button type="button" className="link-button"
+                     onClick={() => setDesignIntent({ mode: "edit", template: selectedTemplate })}>Edit this design</button>.
+              </p>}
+          </div>}
         </div>
 
         {previewError && <div className="form-error voucher-form-wide">{previewError}</div>}
@@ -2084,6 +2149,219 @@ function TemplatesScreen({ canAdmin, intent, onIntentDone }: {
       {templates.length === 0 && <div className="data-state">No card designs yet — create one to get started.</div>}
     </div>}
   </section>;
+}
+
+/** Departments, voucher types and numbering prefixes.
+ *
+ *  These are what every batch is built out of, and until now the only way to
+ *  add one was the database or the Django admin - which meant a new voucher
+ *  type was a developer's errand. The API has always supported the writes
+ *  (administrator-only); this is the screen for them. */
+function SetupScreen({ onChanged }: { onChanged: () => Promise<void> | void }) {
+  const [departments, setDepartments] = useState<Department[]>([]);
+  const [types, setTypes] = useState<(VoucherType & { department_name?: string; is_active?: boolean })[]>([]);
+  const [prefixes, setPrefixes] = useState<(Prefix & { department_name?: string; voucher_type_name?: string; is_active?: boolean })[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState("");
+  const [adding, setAdding] = useState<"department" | "type" | "prefix" | null>(null);
+
+  const [deptForm, setDeptForm] = useState({ code: "", name: "" });
+  const [typeForm, setTypeForm] = useState({ code: "", name: "", department: "" });
+  const [prefixForm, setPrefixForm] = useState({ prefix: "", label: "", department: "", voucher_type: "", sequence_length: "4" });
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [d, t, p] = await Promise.all([
+        fmsRequest<{ results: Department[] } | Department[]>("voucher-portal/departments/?page_size=200"),
+        fmsRequest<{ results: any[] } | any[]>("voucher-portal/voucher-types/?page_size=200"),
+        fmsRequest<{ results: any[] } | any[]>("voucher-portal/prefixes/?page_size=200"),
+      ]);
+      setDepartments(unwrap(d)); setTypes(unwrap(t)); setPrefixes(unwrap(p));
+    } catch (err: any) { setError(parseApiError(err)); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, []);
+
+  /** Every write refreshes the create-batch form's own copy too, so a type
+   *  added here is selectable there without a reload. */
+  const write = async (key: string, path: string, body: any, method = "POST") => {
+    setSaving(key); setError("");
+    try {
+      await fmsRequest(path, { method, body: JSON.stringify(body) });
+      await load();
+      await onChanged();
+      return true;
+    } catch (err: any) { setError(parseApiError(err)); return false; }
+    finally { setSaving(""); }
+  };
+
+  const toggle = (path: string, row: { id: number; is_active?: boolean }) =>
+    write(`toggle-${path}-${row.id}`, `${path}${row.id}/`, { is_active: !row.is_active }, "PATCH");
+
+  const addDepartment = async () => {
+    if (await write("department", "voucher-portal/departments/",
+                    { code: deptForm.code.trim().toUpperCase(), name: deptForm.name.trim() })) {
+      setDeptForm({ code: "", name: "" }); setAdding(null);
+    }
+  };
+  const addType = async () => {
+    if (await write("type", "voucher-portal/voucher-types/", {
+      code: typeForm.code.trim().toUpperCase(), name: typeForm.name.trim(), department: typeForm.department,
+    })) { setTypeForm({ code: "", name: "", department: "" }); setAdding(null); }
+  };
+  const addPrefix = async () => {
+    if (await write("prefix", "voucher-portal/prefixes/", {
+      prefix: prefixForm.prefix.trim().toUpperCase(), label: prefixForm.label.trim(),
+      department: prefixForm.department, voucher_type: prefixForm.voucher_type,
+      sequence_length: Number(prefixForm.sequence_length) || 4,
+    })) { setPrefixForm({ prefix: "", label: "", department: "", voucher_type: "", sequence_length: "4" }); setAdding(null); }
+  };
+
+  const typesForDepartment = prefixForm.department
+    ? types.filter(t => String(t.department) === prefixForm.department) : types;
+
+  const statusCell = (row: { id: number; is_active?: boolean }, path: string) => <>
+    <span className={"status " + (row.is_active === false ? "cancelled" : "approved")}>
+      {row.is_active === false ? "inactive" : "active"}
+    </span>
+    <button type="button" className="link-button" style={{ marginLeft: 10 }}
+            disabled={saving === `toggle-${path}-${row.id}`} onClick={() => toggle(path, row)}>
+      {row.is_active === false ? "Reactivate" : "Deactivate"}
+    </button>
+  </>;
+
+  if (loading) return <section className="voucher-card"><div className="data-state">Loading…</div></section>;
+
+  return <>
+    {error && <section className="voucher-card"><div className="form-error">{error}</div></section>}
+
+    <section className="voucher-card">
+      <div className="voucher-card-head">
+        <h2>Departments</h2>
+        <button type="button" className="primary designer-btn"
+                onClick={() => setAdding(adding === "department" ? null : "department")}>
+          {adding === "department" ? "Cancel" : "Add department"}
+        </button>
+      </div>
+      {adding === "department" && <div className="setup-form">
+        <label>Code <small>(short, unique)</small>
+          <input value={deptForm.code} maxLength={20} placeholder="HR"
+                 onChange={e => setDeptForm({ ...deptForm, code: e.target.value })} /></label>
+        <label>Name<input value={deptForm.name} placeholder="Human Resources"
+                          onChange={e => setDeptForm({ ...deptForm, name: e.target.value })} /></label>
+        <button type="button" className="primary" disabled={saving === "department" || !deptForm.code.trim() || !deptForm.name.trim()}
+                onClick={addDepartment}>{saving === "department" ? "Adding…" : "Add"}</button>
+      </div>}
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Code</th><th>Status</th></tr></thead>
+          <tbody>
+            {departments.map(d => <tr key={d.id}>
+              <td><strong>{d.name}</strong></td><td>{d.code}</td>
+              <td>{statusCell(d as any, "voucher-portal/departments/")}</td>
+            </tr>)}
+            {departments.length === 0 && <tr><td colSpan={3}><div className="data-state">None yet.</div></td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section className="voucher-card">
+      <div className="voucher-card-head">
+        <h2>Voucher types</h2>
+        <button type="button" className="primary designer-btn" disabled={departments.length === 0}
+                onClick={() => setAdding(adding === "type" ? null : "type")}>
+          {adding === "type" ? "Cancel" : "Add voucher type"}
+        </button>
+      </div>
+      {departments.length === 0 && <div className="data-state">Add a department first — a type belongs to one.</div>}
+      {adding === "type" && <div className="setup-form">
+        <label>Code<input value={typeForm.code} maxLength={20} placeholder="EMP"
+                          onChange={e => setTypeForm({ ...typeForm, code: e.target.value })} /></label>
+        <label>Name<input value={typeForm.name} placeholder="Employee Voucher"
+                          onChange={e => setTypeForm({ ...typeForm, name: e.target.value })} /></label>
+        <label>Department
+          <select value={typeForm.department} onChange={e => setTypeForm({ ...typeForm, department: e.target.value })}>
+            <option value="">Select…</option>
+            {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select></label>
+        <button type="button" className="primary"
+                disabled={saving === "type" || !typeForm.code.trim() || !typeForm.name.trim() || !typeForm.department}
+                onClick={addType}>{saving === "type" ? "Adding…" : "Add"}</button>
+      </div>}
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>Name</th><th>Code</th><th>Department</th><th>Status</th></tr></thead>
+          <tbody>
+            {types.map(t => <tr key={t.id}>
+              <td><strong>{t.name}</strong></td><td>{t.code}</td>
+              <td>{t.department_name || departments.find(d => d.id === t.department)?.name || "—"}</td>
+              <td>{statusCell(t as any, "voucher-portal/voucher-types/")}</td>
+            </tr>)}
+            {types.length === 0 && <tr><td colSpan={4}><div className="data-state">None yet.</div></td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section className="voucher-card">
+      <div className="voucher-card-head">
+        <h2>Numbering prefixes</h2>
+        <button type="button" className="primary designer-btn" disabled={types.length === 0}
+                onClick={() => setAdding(adding === "prefix" ? null : "prefix")}>
+          {adding === "prefix" ? "Cancel" : "Add prefix"}
+        </button>
+      </div>
+      {types.length === 0 && <div className="data-state">Add a voucher type first — a prefix numbers one type.</div>}
+      {adding === "prefix" && <div className="setup-form">
+        <label>Prefix<input value={prefixForm.prefix} maxLength={20} placeholder="EMP"
+                            onChange={e => setPrefixForm({ ...prefixForm, prefix: e.target.value })} /></label>
+        <label>Label<input value={prefixForm.label} placeholder="Employee vouchers"
+                           onChange={e => setPrefixForm({ ...prefixForm, label: e.target.value })} /></label>
+        <label>Department
+          <select value={prefixForm.department}
+                  onChange={e => setPrefixForm({ ...prefixForm, department: e.target.value, voucher_type: "" })}>
+            <option value="">Select…</option>
+            {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select></label>
+        <label>Voucher type
+          <select value={prefixForm.voucher_type}
+                  onChange={e => setPrefixForm({ ...prefixForm, voucher_type: e.target.value })}>
+            <option value="">Select…</option>
+            {typesForDepartment.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select></label>
+        <label>Digits <small>(EMP + 4 digits → EMP0001)</small>
+          <input type="number" min={2} max={10} value={prefixForm.sequence_length}
+                 onChange={e => setPrefixForm({ ...prefixForm, sequence_length: e.target.value })} /></label>
+        <button type="button" className="primary"
+                disabled={saving === "prefix" || !prefixForm.prefix.trim() || !prefixForm.label.trim()
+                          || !prefixForm.department || !prefixForm.voucher_type}
+                onClick={addPrefix}>{saving === "prefix" ? "Adding…" : "Add"}</button>
+      </div>}
+      <p className="designer-note" style={{ marginBottom: 10 }}>
+        Each prefix owns one running sequence. “Next” is the number the following voucher will take — it only ever
+        moves forward, which is what stops two batches from printing the same code.
+      </p>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>Prefix</th><th>Label</th><th>Department</th><th>Type</th><th>Digits</th><th>Next</th><th>Status</th></tr></thead>
+          <tbody>
+            {prefixes.map(p => <tr key={p.id}>
+              <td><strong>{p.prefix}</strong></td><td>{p.label}</td>
+              <td>{p.department_name || departments.find(d => d.id === p.department)?.name || "—"}</td>
+              <td>{p.voucher_type_name || types.find(t => t.id === p.voucher_type)?.name || "—"}</td>
+              <td>{p.sequence_length}</td>
+              <td>{String(p.next_sequence).padStart(p.sequence_length, "0")}</td>
+              <td>{statusCell(p as any, "voucher-portal/prefixes/")}</td>
+            </tr>)}
+            {prefixes.length === 0 && <tr><td colSpan={7}><div className="data-state">None yet.</div></td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </>;
 }
 
 function AccessScreen({ departments }: { departments: Department[] }) {

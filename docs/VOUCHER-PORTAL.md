@@ -60,8 +60,9 @@ python manage.py seed_voucher_portal
 ```
 
 Departments (HR, Marketing), voucher types (Employee/Marketing/Gift Voucher),
-prefixes (EMP, MKT, ADCOOP, 4-digit sequences) — edit via `/admin/` once real
-data is available; nothing about them is hard-coded elsewhere.
+prefixes (EMP, MKT, ADCOOP, 4-digit sequences) — after that they are managed
+from the portal's own Setup screen (or `/admin/`); nothing about them is
+hard-coded elsewhere.
 
 ## Snapshotting
 
@@ -444,6 +445,114 @@ One gotcha worth knowing if you extend the template endpoints: they accept
 artwork upload; `field_geometry` is a nested structure a form encoder can't
 represent, so dropping `JSONParser` makes every geometry save fail with a 415.
 
+## Reference data from the UI (Setup screen)
+
+Departments, voucher types and numbering prefixes used to be addable only
+through the database or the Django admin, which made "we need a new voucher
+type" a developer's errand. The **Setup** screen (administrator-only, matching
+what the API already enforced through `AdminWriteMixin`) adds and
+activates/deactivates all three, in the order they depend on each other — a
+type belongs to a department, a prefix numbers one type. Each write refreshes
+the create-batch form's own copy, so a type added here is selectable there
+without a reload.
+
+Prefixes show `next_sequence` as the number the next voucher will take. It is
+deliberately not editable from this screen: winding it back re-issues codes
+that are already printed, and `PortalVoucher.number` is unique.
+
+## Every batch field has a placeholder
+
+Everything the create form collects can be placed on a card, so no value is
+collected from a requester with nowhere to print. The mapping is pinned by
+`BatchFieldCoverageTests`: add a field to `BatchFormSerializer` and the test
+fails until a placeholder exists for it.
+
+| Create form | Placeholder |
+| --- | --- |
+| Voucher name | `batch_name` |
+| Quantity | `quantity` |
+| Department / Voucher type | `department` / `voucher_type` |
+| Prefix | `prefix` |
+| Currency | `currency` |
+| Description | `description` |
+| Discount type / value | `discount_type`, `discount_value`, `discount_numeral`, `discount_unit` |
+| Maximum discount | `discount_cap` (formatted line), `max_discount_value` (bare amount) |
+| Valid from / until | `valid_from` / `valid_to` |
+| Restrictions / Terms | `restrictions` / `terms` |
+
+Placing one is the designer's *Voucher field* palette entry. The create form
+closes the loop from the other side: under the card picker it lists what the
+chosen design prints, and warns when a customer-facing value has been typed
+with nowhere to go ("Not on this card: Terms and conditions"), with a link
+straight into the designer. It stays quiet about operational values like
+quantity and prefix — they are placeable, but flagging them on every batch
+would be noise.
+
+## Which frontends may call the API
+
+The portal is a browser app on a different origin from the API, so
+`CORS_ALLOWED_ORIGINS` decides whether it can talk to it at all. An origin
+that isn't listed fails as a CORS error in the browser with a perfectly
+healthy API behind it and nothing in its log to explain the failure.
+
+Amplify complicates the list: every branch is served from its own subdomain of
+one app id (`main.<app>.amplifyapp.com`, `my-branch.<app>.amplifyapp.com`), so
+a fixed list stops working each time a new branch is deployed.
+`CORS_ALLOWED_ORIGIN_REGEXES` takes comma-separated patterns for that case.
+Anchor them at both ends and scope them to one app id — unanchored,
+`^https://[a-z0-9-]+[.]<app>[.]amplifyapp[.]com` also matches
+`https://x.<app>.amplifyapp.com.attacker.example`. `CorsTests` covers the
+allowed, the unlisted and the lookalike cases.
+
+## Django admin
+
+`https://api-test.phloz.app/fms/admin/` — nginx routes `/fms/` to this app, so
+the admin sits under the same prefix as the API.
+
+**Getting in requires `is_staff`.** That is a different thing from portal
+access: a Voucher Portal login (a `PortalUserAccess` row) does not let you into
+the admin, and Django staff status is not something the portal grants. To make
+an existing FMS user a Django admin, an existing superuser flips
+`is_staff`/`is_superuser` on them under *Authentication and Authorisation →
+Users*, or from the box:
+
+```bash
+cd /opt/phloz/fms/current && set -a && . /opt/phloz/fms/shared/fms.env && set +a
+/opt/phloz/fms/venv/bin/python manage.py createsuperuser          # a new one
+/opt/phloz/fms/venv/bin/python manage.py shell -c "
+from django.contrib.auth.models import User
+u = User.objects.get(username='someone'); u.is_staff = u.is_superuser = True; u.save()"
+```
+
+Note the knock-on: `services/access.py` gives any Django staff user or
+superuser **implicit portal Administrator rights**, so making someone a Django
+admin also hands them every department's vouchers. That is deliberate — it is
+what keeps the bootstrap login working before any grant exists — but it means
+`is_staff` is not a small thing to hand out.
+
+`DJANGO_SCRIPT_NAME=/fms` has to be set in the environment (the deploy script
+writes it, and back-fills it on installs that predate it). nginx strips the
+prefix before proxying, so without it Django generates every link, form action
+and stylesheet URL against the domain root — a *different* application on that
+host. The symptom is an unstyled admin whose login form posts into the void.
+`STATIC_URL` follows the same prefix, and WhiteNoise strips it back off when
+matching, so no nginx change is needed.
+
+**What the admin is for**, given the portal has its own screens: seeding and
+correcting reference data (departments, types, prefixes), granting portal
+access, repairing a card layout by hand, and reading the audit trail. Two
+things it deliberately won't do:
+
+- **Batches and vouchers can't be created here.** They are only correct when
+  `services/generation.py` builds them — numbers allocated under a row lock,
+  prefix and template snapshotted onto the row. A row typed in by hand would
+  fail at print time instead of at save time.
+- **`StatusChange` is read-only.** An audit trail you can edit isn't one.
+
+Editing a template's `field_geometry` in the admin is validated by
+`VoucherTemplate.clean()` — the same rules the designer is held to, since the
+admin doesn't pass through the API serializer.
+
 ## What's still not included
 
 SAP/external-system integration (explicitly out of scope for this pass),
@@ -473,7 +582,7 @@ department permissions").
 
 ## Tests
 
-`python manage.py test voucher_portal` — 119 tests: numbering (including a real
+`python manage.py test voucher_portal` — 132 tests: numbering (including a real
 concurrent-allocation test across 8 threads), discount validation, the
 preview-hash invalidation flow, the full draft → submit → approve → generate
 → issue → redeem workflow (both via `services/workflow.py` directly and
@@ -485,7 +594,10 @@ user-added elements saving and rendering, out-of-bounds/unknown-type/unknown-
 variable/unknown-font/bad-colour/duplicate-id rejection, the mandatory barcode
 being un-deletable and un-hideable, catalogue/renderer agreement, unsaved-
 geometry preview, reset-to-empty, card resizing, who may design a card versus
-who may change which design everyone else gets, and non-admin lockout), card
+who may change which design everyone else gets, and non-admin lockout), the
+Django admin (every changelist and change form opening, the audit trail being
+read-only, batches and vouchers not being hand-creatable, and a broken layout
+being refused at the model), card
 rendering (every catalogue variable resolving for a real voucher, per-voucher
 barcode uniqueness, hidden and `hide_if_empty` elements, prefix/suffix, and
 version 1/2 layouts still printing), team-access management,

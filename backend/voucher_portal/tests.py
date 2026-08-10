@@ -10,14 +10,17 @@ from decimal import Decimal
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.conf import settings
-from django.test import TestCase, TransactionTestCase, override_settings
+from django.core.exceptions import ValidationError
+from django.test import Client, TestCase, TransactionTestCase, override_settings
+from django.urls import get_script_prefix, set_script_prefix
 from django.utils import timezone
 from rest_framework.test import APIClient
 
 from . import storage
-from .geometry import BLANK_GEOMETRY, LEGACY_ADCOOP_GEOMETRY, VARIABLES, blank_geometry, to_elements
+from .geometry import (BLANK_GEOMETRY, LEGACY_ADCOOP_GEOMETRY, VARIABLE_KEYS, VARIABLES,
+                       blank_geometry, to_elements)
 from .pdf import build_batch_pdf, build_context, build_voucher_pdf
-from .models import (Department, Notification, PortalBatch, PortalUserAccess, PortalVoucher, VoucherPrefix,
+from .models import (Department, Notification, PortalBatch, PortalUserAccess, PortalVoucher, StatusChange, VoucherPrefix,
                      VoucherTemplate, VoucherType)
 from .services import workflow
 from .services.generation import create_draft_batch, generate_vouchers, payload_hash, render_preview
@@ -1242,6 +1245,194 @@ class CardRenderingTests(TestCase):
         self.template.save()
         batch = self._generated_batch()
         self.assertTrue(build_voucher_pdf(batch, batch.vouchers.first()).startswith(b"%PDF"))
+
+
+class AdminTests(TestCase):
+    """The admin is where reference data gets seeded and the audit trail gets
+    read, so every page has to actually open - a bad `list_display` or a stale
+    field name is a 500 nobody notices until they need it."""
+
+    def setUp(self):
+        self.dept, self.vtype, self.prefix, self.template = make_reference_data()
+        self.requester = User.objects.create_user("admin_requester", password="x", is_staff=True)
+        self.approver = User.objects.create_user("admin_approver", password="x", is_staff=True)
+        self.batch = approved_batch(self.dept, self.vtype, self.prefix, self.template,
+                                    self.requester, self.approver, quantity=2)
+        generate_vouchers(self.batch)
+        self.superuser = User.objects.create_superuser("root", "root@example.com", "x")
+        self.client = Client()
+        self.client.force_login(self.superuser)
+
+    def test_every_changelist_opens(self):
+        for model in ["department", "vouchertype", "voucherprefix", "vouchertemplate",
+                      "portalbatch", "portalvoucher", "statuschange", "notification", "portaluseraccess"]:
+            with self.subTest(model=model):
+                response = self.client.get(f"/admin/voucher_portal/{model}/")
+                self.assertEqual(response.status_code, 200)
+
+    def test_every_change_form_opens(self):
+        grant(User.objects.create_user("granted", password="x"), "requester", [self.dept])
+        rows = {
+            "department": self.dept.pk,
+            "vouchertype": self.vtype.pk,
+            "voucherprefix": self.prefix.pk,
+            "vouchertemplate": self.template.pk,
+            "portalbatch": self.batch.pk,
+            "portalvoucher": self.batch.vouchers.first().pk,
+            "portaluseraccess": PortalUserAccess.objects.first().pk,
+        }
+        for model, pk in rows.items():
+            with self.subTest(model=model):
+                response = self.client.get(f"/admin/voucher_portal/{model}/{pk}/change/")
+                self.assertEqual(response.status_code, 200)
+
+    def test_the_audit_trail_cannot_be_edited(self):
+        change = StatusChange.objects.filter(batch=self.batch).first()
+        self.assertIsNotNone(change)
+        self.assertEqual(self.client.get(f"/admin/voucher_portal/statuschange/{change.pk}/change/").status_code, 200)
+        self.assertNotContains(
+            self.client.get(f"/admin/voucher_portal/statuschange/{change.pk}/change/"), "Save and continue")
+
+    def test_batches_and_vouchers_cannot_be_hand_created(self):
+        """They only exist correctly when the service layer builds them - a row
+        typed in here would have no snapshot and no allocated number."""
+        self.assertEqual(self.client.get("/admin/voucher_portal/portalbatch/add/").status_code, 403)
+        self.assertEqual(self.client.get("/admin/voucher_portal/portalvoucher/add/").status_code, 403)
+
+    def test_a_broken_layout_cannot_be_saved_from_the_admin(self):
+        """The admin doesn't go through the API serializer, so the model itself
+        has to hold the line."""
+        self.template.field_geometry = designed_geometry(text_element(y=900))
+        with self.assertRaises(ValidationError):
+            self.template.full_clean()
+
+    def test_the_design_summary_lists_what_is_on_the_card(self):
+        """Asserted on the rendered summary markup, not just the page: the raw
+        `field_geometry` textarea further down contains the same words, so a
+        looser check passes even when the summary is silently erroring (Django
+        swallows a ValueError in a readonly callable and prints "-")."""
+        self.template.field_geometry = designed_geometry(text_element(text="HEADLINE"))
+        self.template.save()
+        response = self.client.get(f"/admin/voucher_portal/vouchertemplate/{self.template.pk}/change/")
+        self.assertContains(response, "<li>text <b>Headline</b> at 20, 20</li>", html=True)
+        self.assertContains(response, "<li>barcode <b>Barcode</b> at 309.5, 128</li>", html=True)
+
+    def test_admin_links_survive_the_production_url_prefix(self):
+        """nginx serves the admin under /fms/, so a hardcoded /admin/... link
+        would 404. Everything must go through reverse()."""
+        # The test client doesn't apply FORCE_SCRIPT_NAME (only the WSGI
+        # handler does), so set the prefix the way a real request would.
+        original = get_script_prefix()
+        set_script_prefix("/fms/")
+        try:
+            response = self.client.get("/admin/voucher_portal/portalbatch/")
+            self.assertEqual(response.status_code, 200)
+            self.assertContains(response, "/fms/admin/voucher_portal/portalvoucher/?batch__id__exact=")
+        finally:
+            set_script_prefix(original)
+
+    def test_making_a_design_default_clears_the_others(self):
+        other = VoucherTemplate.objects.create(name="Other")
+        response = self.client.post("/admin/voucher_portal/vouchertemplate/", {
+            "action": "make_default", "_selected_action": [str(other.pk)],
+        }, follow=True)
+        self.assertEqual(response.status_code, 200)
+        other.refresh_from_db(); self.template.refresh_from_db()
+        self.assertTrue(other.is_default)
+        self.assertFalse(self.template.is_default)
+
+
+class BatchFieldCoverageTests(TestCase):
+    """Everything the create-batch form asks for has to be placeable on a card.
+
+    A field collected from the requester but with nowhere to print is a value
+    that silently never reaches the voucher, so this pins the mapping: add a
+    field to the form and you must add the placeholder to go with it."""
+
+    # create-form field -> the variable a designer picks to print it
+    FORM_FIELD_PLACEHOLDERS = {
+        "name": "batch_name",
+        "quantity": "quantity",
+        "department": "department",
+        "voucher_type": "voucher_type",
+        "description": "description",
+        "discount_type": "discount_type",
+        "percentage_value": "discount_numeral",
+        "fixed_value": "discount_numeral",
+        "max_discount_value": "max_discount_value",
+        "currency": "currency",
+        "valid_from": "valid_from",
+        "valid_to": "valid_to",
+        "restrictions": "restrictions",
+        "terms": "terms",
+        "prefix": "prefix",
+        # `template` is the card being printed on, not a value printed on it.
+        "template": None,
+    }
+
+    def test_every_create_form_field_has_a_placeholder(self):
+        from .serializers import BatchFormSerializer
+        self.assertEqual(set(BatchFormSerializer().fields), set(self.FORM_FIELD_PLACEHOLDERS),
+                         "the create form changed - map the new field to a placeholder (or to None)")
+        for field, variable in self.FORM_FIELD_PLACEHOLDERS.items():
+            if variable is not None:
+                with self.subTest(field=field):
+                    self.assertIn(variable, VARIABLE_KEYS)
+
+    def test_those_placeholders_carry_the_submitted_values(self):
+        dept, vtype, prefix, template = make_reference_data()
+        requester = User.objects.create_user("coverage_requester", password="x", is_staff=True)
+        approver = User.objects.create_user("coverage_approver", password="x", is_staff=True)
+        batch = approved_batch(dept, vtype, prefix, template, requester, approver,
+                               quantity=7, restrictions="Brands : Sample", terms="No cash value")
+        generate_vouchers(batch)
+        context = build_context(batch, batch.vouchers.first())
+        self.assertEqual(context["quantity"], "7")
+        self.assertEqual(context["prefix"], "EMP")
+        self.assertEqual(context["batch_name"], batch.name)
+        self.assertEqual(context["discount_type"], "Fixed amount")
+        self.assertEqual(context["terms"], "No cash value")
+
+
+class CorsTests(TestCase):
+    """The browser calls this API cross-origin from Amplify, so an origin the
+    server doesn't recognise fails as a CORS error on the UI with nothing in
+    the API logs to explain it."""
+
+    AMPLIFY = "^https://[a-z0-9-]+[.]d12iaal63qqmzf[.]amplifyapp[.]com$"
+
+    def setUp(self):
+        make_reference_data()
+        self.user = User.objects.create_user("cors_user", password="x", is_staff=True)
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def _origin(self, origin):
+        response = self.client.get("/api/v1/voucher-portal/templates/", HTTP_ORIGIN=origin)
+        self.assertEqual(response.status_code, 200)
+        return response.headers.get("access-control-allow-origin")
+
+    @override_settings(CORS_ALLOWED_ORIGINS=["https://track.phloz.app"], CORS_ALLOWED_ORIGIN_REGEXES=[])
+    def test_an_origin_that_is_not_configured_gets_no_cors_header(self):
+        """What the Amplify UI hit: the deployed origin list had only the
+        console in it."""
+        self.assertIsNone(self._origin("https://main.d12iaal63qqmzf.amplifyapp.com"))
+        self.assertEqual(self._origin("https://track.phloz.app"), "https://track.phloz.app")
+
+    @override_settings(CORS_ALLOWED_ORIGINS=[], CORS_ALLOWED_ORIGIN_REGEXES=[AMPLIFY])
+    def test_every_branch_of_the_amplify_app_is_allowed_by_pattern(self):
+        for origin in ["https://main.d12iaal63qqmzf.amplifyapp.com",
+                       "https://claude-voucher-x.d12iaal63qqmzf.amplifyapp.com"]:
+            with self.subTest(origin=origin):
+                self.assertEqual(self._origin(origin), origin)
+
+    @override_settings(CORS_ALLOWED_ORIGINS=[], CORS_ALLOWED_ORIGIN_REGEXES=[AMPLIFY])
+    def test_the_pattern_is_anchored_against_lookalike_domains(self):
+        for origin in ["https://main.d12iaal63qqmzf.amplifyapp.com.evil.example",
+                       "https://main.someoneelse.amplifyapp.com",
+                       "http://main.d12iaal63qqmzf.amplifyapp.com"]:
+            with self.subTest(origin=origin):
+                self.assertIsNone(self._origin(origin))
 
 
 class AdvancedReportsTests(TestCase):

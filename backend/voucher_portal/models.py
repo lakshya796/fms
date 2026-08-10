@@ -115,6 +115,21 @@ class VoucherTemplate(Timestamped):
     def __str__(self):
         return self.name
 
+    def clean(self):
+        """Same rules the designer is held to.
+
+        The API validates `field_geometry` in its serializer, which the Django
+        admin doesn't go through - and the admin is exactly where someone hand-
+        edits this document to repair it. Without this, a typo there is only
+        discovered by a batch failing to print."""
+        from .validators import GeometryError, validate_field_geometry
+
+        try:
+            validate_field_geometry(self.field_geometry, coupon_width=self.coupon_width,
+                                    coupon_height=self.coupon_height)
+        except GeometryError as error:
+            raise ValidationError({"field_geometry": str(error)})
+
     def save(self, *args, **kwargs):
         super().save(*args, **kwargs)
         if self.is_default:
