@@ -1620,11 +1620,13 @@ function TemplateDesigner({ template, canAdmin, previewArtwork, onClose, onSaved
     const timer = window.setTimeout(async () => {
       setProofing(true);
       try {
-        const body = previewArtwork ? new FormData() : JSON.stringify({ field_geometry: doc });
-        if (body instanceof FormData) {
-          body.append("field_geometry", JSON.stringify(doc));
-          body.append("artwork", previewArtwork);
-        }
+        let body: BodyInit;
+        if (previewArtwork) {
+          const multipart = new FormData();
+          multipart.append("field_geometry", JSON.stringify(doc));
+          multipart.append("artwork", previewArtwork);
+          body = multipart;
+        } else body = JSON.stringify({ field_geometry: doc });
         const response = await fmsRequestRaw(`voucher-portal/templates/${template.id}/preview/`, {
           method: "POST", body,
         });
