@@ -1620,8 +1620,13 @@ function TemplateDesigner({ template, canAdmin, previewArtwork, onClose, onSaved
     const timer = window.setTimeout(async () => {
       setProofing(true);
       try {
+        const body = previewArtwork ? new FormData() : JSON.stringify({ field_geometry: doc });
+        if (body instanceof FormData) {
+          body.append("field_geometry", JSON.stringify(doc));
+          body.append("artwork", previewArtwork);
+        }
         const response = await fmsRequestRaw(`voucher-portal/templates/${template.id}/preview/`, {
-          method: "POST", body: JSON.stringify({ field_geometry: doc }),
+          method: "POST", body,
         });
         const url = URL.createObjectURL(await response.blob());
         if (sequence === proofSequence.current) {
@@ -1635,7 +1640,7 @@ function TemplateDesigner({ template, canAdmin, previewArtwork, onClose, onSaved
       }
     }, 900);
     return () => window.clearTimeout(timer);
-  }, [doc, showProof, template.id]);
+  }, [doc, showProof, template.id, previewArtwork]);
 
   /** Ignores half-typed sizes: "4" on the way to "479" would otherwise clamp
    *  every element onto a 4pt card, and no undo would bring the layout back. */
