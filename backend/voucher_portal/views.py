@@ -257,6 +257,7 @@ class PortalBatchViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = PortalBatch.objects.select_related("department", "voucher_type", "created_by", "approved_by").all()
     serializer_class = PortalBatchSerializer
     permission_classes = [HasPortalAccess]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -516,7 +517,7 @@ class PortalVoucherViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class ReportsViewSet(viewsets.ViewSet):
-    """Department-level reporting (§12). Every action here scopes to the
+    """Department-level reporting (Â§12). Every action here scopes to the
     caller's visible departments before aggregating - a Report Viewer scoped
     to HR only never sees Marketing's numbers, even in a summary total."""
     permission_classes = [HasPortalAccess]
@@ -587,3 +588,4 @@ class ReportsViewSet(viewsets.ViewSet):
         response = HttpResponse(buffer.getvalue(), content_type="text/csv")
         response["Content-Disposition"] = 'attachment; filename="voucher-report.csv"'
         return response
+
