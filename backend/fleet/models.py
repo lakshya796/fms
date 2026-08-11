@@ -51,6 +51,11 @@ VEHICLE_STATUSES = [
 ]
 
 
+VEHICLE_TEMPERATURE_CLASSES = [("dry", "Dry"), ("chiller", "Chiller"), ("frozen", "Frozen"), ("multi", "Multi-compartment")]
+VEHICLE_BODY_TYPES = [("open", "Open"), ("closed", "Closed"), ("container", "Container"),
+                      ("tanker", "Tanker"), ("flatbed", "Flatbed"), ("reefer", "Reefer")]
+
+
 class Vehicle(Timestamped):
     registration_number=models.CharField(max_length=20,unique=True); vehicle_type=models.CharField(max_length=60); capacity_kg=models.PositiveIntegerField(default=0)
     ownership=models.CharField(max_length=20,choices=OWNERSHIP_TYPES,default="own")
@@ -68,6 +73,38 @@ class Vehicle(Timestamped):
     insurance_expiry=models.DateField(null=True,blank=True); permit_expiry=models.DateField(null=True,blank=True)
     make_model=models.CharField(max_length=120,blank=True); chassis_number=models.CharField(max_length=40,blank=True); engine_number=models.CharField(max_length=40,blank=True)
     fuel_type=models.CharField(max_length=20,default="diesel"); fastag_id=models.CharField(max_length=40,blank=True); current_odometer_km=models.PositiveIntegerField(default=0)
+
+    # Dispatch planning: what the CVRP solver needs beyond weight capacity and a
+    # live position - volume, whether it is a dry, chiller or frozen body (or a
+    # bulkheaded reefer that can run more than one at once), and the duty-cycle
+    # figures used to build each vehicle class's cost basis and route ceilings.
+    volume_cbm=models.DecimalField(max_digits=8,decimal_places=2,default=0)
+    temperature_class=models.CharField(max_length=10,choices=VEHICLE_TEMPERATURE_CLASSES,default="dry")
+    body_type=models.CharField(max_length=20,choices=VEHICLE_BODY_TYPES,default="open")
+    reefer_min_c=models.DecimalField(max_digits=5,decimal_places=1,null=True,blank=True)
+    reefer_max_c=models.DecimalField(max_digits=5,decimal_places=1,null=True,blank=True)
+    reefer_fuel_lph=models.DecimalField(max_digits=5,decimal_places=2,default=0,
+                                        help_text="Reefer unit diesel burn per hour while running, litres")
+    home_place=models.ForeignKey("Place",on_delete=models.SET_NULL,null=True,blank=True,related_name="home_vehicles")
+    average_speed_kph=models.DecimalField(max_digits=5,decimal_places=1,default=40,
+                                          help_text="Fallback average speed for route timing where no travel-time matrix entry exists")
+    max_drive_hours_per_day=models.DecimalField(max_digits=4,decimal_places=1,default=10)
+
+    def compatible_with_temperature(self, required_class):
+        """Whether this vehicle's body can carry `required_class` cargo.
+
+        Frozen cargo needs a frozen (or multi-compartment) unit; chiller cargo can
+        also ride in a frozen unit (a colder box still holds a chiller set point);
+        dry cargo can go anywhere unless the operator has opted to keep dry loads
+        out of reefer bodies.
+        """
+        if not required_class or required_class == "dry":
+            return True
+        if self.temperature_class == "multi":
+            return True
+        if required_class == "chiller":
+            return self.temperature_class in ("chiller", "frozen")
+        return self.temperature_class == required_class
     def __str__(self): return self.registration_number
 
 
@@ -172,8 +209,11 @@ class Trip(Timestamped):
         """The trip-sheet numbers an accountant fills in by hand today: total expense,
         the diesel/cash advance settled against it, and cost/revenue per km."""
         total_exp = money(self.expenses.aggregate(value=models.Sum("amount"))["value"] or 0)
-        order = self.orders.first()
-        freight = money(order.total_amount) if order else money(self.freight_amount)
+        # A trip carries every order allocated to it (a consolidated multi-drop route
+        # is several orders on one trip), so its freight is their sum - pricing from a
+        # single order here silently dropped the rest of a consolidated trip's revenue.
+        orders_total = self.orders.aggregate(value=models.Sum("total_amount"))["value"]
+        freight = money(orders_total) if orders_total else money(self.freight_amount)
         distance = self.passed_km or self.running_km or 0
         return {
             "total_exp": float(total_exp), "diesel_given": float(money(self.advance_amount)),

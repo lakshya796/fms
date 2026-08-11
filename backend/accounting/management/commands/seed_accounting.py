@@ -48,9 +48,11 @@ ROLES = [
     ("Branch manager", "branch_manager", "Runs a branch end to end", [
         "operations.view", "operations.manage", "masters.view", "masters.manage", "rates.view",
         "maintenance.view", "maintenance.manage", "compliance.view", "compliance.manage",
-        "expenses.view", "expenses.manage", "expenses.approve", "accounting.view", "reports.view"]),
-    ("Dispatcher", "dispatcher", "Books and allocates consignments", [
-        "operations.view", "operations.manage", "masters.view", "rates.view", "reports.view"]),
+        "expenses.view", "expenses.manage", "expenses.approve", "accounting.view", "reports.view",
+        "dispatch.view", "dispatch.plan", "dispatch.commit"]),
+    ("Dispatcher", "dispatcher", "Books, allocates and dispatch-plans consignments", [
+        "operations.view", "operations.manage", "masters.view", "rates.view", "reports.view",
+        "dispatch.view", "dispatch.plan", "dispatch.commit"]),
     ("Accounts executive", "accounts", "Billing, collections and vouchers", [
         "operations.view", "masters.view", "rates.view", "accounting.view", "accounting.manage",
         "expenses.view", "expenses.approve", "reports.view"]),

@@ -42,6 +42,9 @@ PERMISSION_CATALOGUE = [
     ("reports.view", "View dashboards and analytics"),
     ("messages.view", "View outbound emails and their delivery status"),
     ("messages.manage", "Resend outbound emails"),
+    ("dispatch.view", "View dispatch plans, routes and hire requirements"),
+    ("dispatch.plan", "Create plans, collect demand and solve"),
+    ("dispatch.commit", "Commit a plan, override routes and award hires"),
 ]
 PERMISSION_CODES = [code for code, _ in PERMISSION_CATALOGUE]
 

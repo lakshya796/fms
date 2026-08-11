@@ -732,6 +732,10 @@ when data is thin.
   rather than replacing them.
 - **§23 allocation optimiser** — the Phase 4 scorer with learned cost and duration estimates, and
   optionally a multi-order assignment solver when several orders compete for the same vehicles.
+  That solver is now specified in its own right — heterogeneous dry/reefer fleet, third-party
+  hire as a priced outsourcing decision, GPS start positions and re-planning — in
+  [DISPATCH-PLANNING.md](DISPATCH-PLANNING.md). It does not need the learned estimators here: it
+  is deterministic, and consumes Phases 1, 3 and 5 as inputs.
 
 *Prerequisite:* a `TripOutcome` feature store written on trip settlement. Worth adding in Phase 2
 even though nothing reads it until Phase 7, so history accumulates from the moment margins become
