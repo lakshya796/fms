@@ -26,6 +26,14 @@ priced consignment order. Logins carry a role and a branch, with a full audit tr
 Built for a 1000+ vehicle operation — see
 [docs/ACCOUNTING-AND-ADMIN.md](docs/ACCOUNTING-AND-ADMIN.md).
 
+## Dispatch planning (planned)
+
+An implementation plan for a CVRP-based dispatch planning module: day-ahead multi-order routing
+across own dry vehicles, own reefers and hired third-party capacity, with temperature
+compatibility, time windows, GPS start positions and live re-planning, an own-versus-hire
+decision priced per load, and a one-action commit into orders, trips and vehicle hires. Design
+only — not built. See [docs/DISPATCH-PLANNING.md](docs/DISPATCH-PLANNING.md).
+
 ## Gift Voucher Desk (ADCOOP retail)
 
 A separate, publicly accessible page for generating and issuing ADCOOP retail gift vouchers —
