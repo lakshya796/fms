@@ -5,7 +5,7 @@ import { UNAUTHORISED_EVENT, fmsRequest, login, logout } from "./lib/fms-api";
 
 const navGroups: { label: string; items: [string, string][] }[] = [
   { label: "WORKSPACE", items: [["Overview", "⌂"], ["Analytics", "◎"]] },
-  { label: "TRANSPORT", items: [["Indents", "◰"], ["Dispatch", "▦"], ["Orders", "◈"], ["Hires", "⚑"], ["ePOD", "✍"], ["Tracking", "⌖"], ["Operations", "▤"]] },
+  { label: "TRANSPORT", items: [["Indents", "◰"], ["Dispatch", "▦"], ["Planning", "⛁"], ["Orders", "◈"], ["Hires", "⚑"], ["ePOD", "✍"], ["Tracking", "⌖"], ["Operations", "▤"]] },
   { label: "COMMERCIAL", items: [["Customers", "◇"], ["Sales", "↗"], ["Rates", "⚖"], ["Invoices", "▥"]] },
   { label: "FLEET", items: [["Fleet", "▱"], ["Fleets", "▩"], ["Drivers", "♙"], ["Maintenance", "⚒"], ["Compliance", "▣"], ["Fuel", "⛽"], ["Issues", "⚠"]] },
   { label: "NETWORK", items: [["Vendors", "⌸"], ["Places", "⌂"], ["Service areas", "◫"], ["Zones", "◍"]] },
@@ -1631,6 +1631,150 @@ const hireStatusLabel: Record<string, string> = {
   draft: "Draft", confirmed: "Confirmed", billed: "Billed", settled: "Settled", cancelled: "Cancelled",
 };
 
+// CVRP dispatch planning - see docs/DISPATCH-PLANNING.md. Deliberately a simpler
+// list-and-drawer UI rather than the Gantt/map board the design describes: this
+// is the "costed plan on screen" milestone, not the full console build-out.
+const planStatusLabel: Record<string, string> = {
+  draft: "Draft", ready: "Ready to solve", solving: "Solving", solved: "Solved",
+  failed: "Failed", committed: "Committed", superseded: "Superseded",
+};
+
+function DispatchPlanningView({ onAction }: { onAction: Notify }) {
+  const [plans, setPlans] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<any>(null);
+  const [drivers, setDrivers] = useState<any[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [newDate, setNewDate] = useState(() => new Date().toISOString().slice(0, 10));
+
+  const load = () => {
+    setLoading(true);
+    fmsRequest<any>(wholeSet("dispatch/plans/")).then(payload => setPlans(asList(payload))).finally(() => setLoading(false));
+  };
+  useEffect(load, []);
+  useEffect(() => { fmsRequest<any>(wholeSet("drivers/")).then(payload => setDrivers(asList(payload))).catch(() => undefined); }, []);
+
+  const openPlan = async (id: number) => {
+    const payload = await fmsRequest<any>(`dispatch/plans/${id}/`);
+    setSelected(payload);
+  };
+
+  const refreshSelected = async () => { if (selected) await openPlan(selected.id); };
+
+  const createPlan = async () => {
+    setBusy(true);
+    try {
+      const plan = await fmsRequest<any>("dispatch/plans/", { method: "POST", body: JSON.stringify({ plan_date: newDate }) });
+      onAction(`Plan ${plan.code} created`);
+      load();
+      openPlan(plan.id);
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 160) : "Could not create plan", "warn");
+    } finally { setBusy(false); }
+  };
+
+  const runStep = async (path: string, message: (payload: any) => string) => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      const payload = await fmsRequest<any>(`dispatch/plans/${selected.id}/${path}/`, { method: "POST", body: "{}" });
+      onAction(message(payload));
+      await refreshSelected();
+      load();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 200) : "Action failed", "warn");
+    } finally { setBusy(false); }
+  };
+
+  const assignDriver = async (routeId: number, driverId: string) => {
+    if (!driverId) return;
+    setBusy(true);
+    try {
+      await fmsRequest<any>(`dispatch/routes/${routeId}/assign-driver/`, { method: "POST", body: JSON.stringify({ driver: Number(driverId) }) });
+      onAction("Driver assigned to route");
+      await refreshSelected();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 160) : "Could not assign driver", "warn");
+    } finally { setBusy(false); }
+  };
+
+  const summary = selected?.summary || {};
+
+  return <div className="module-page">
+    <div className="module-title"><div><p className="eyebrow">CVRP DISPATCH PLANNING</p><h2>Route planning</h2><p>Collect tomorrow's demand, solve a costed plan across own dry, own reefer and hired capacity, then commit it.</p></div></div>
+
+    <section className="module-table-card">
+      <div className="module-toolbar">
+        <div><strong>Plans</strong><span>{plans.length} records</span></div>
+        <div className="assign-row">
+          <input type="date" value={newDate} onChange={event => setNewDate(event.target.value)} />
+          <button className="primary" disabled={busy} onClick={createPlan}>＋ New plan</button>
+          <button onClick={load}>↻ Refresh</button>
+        </div>
+      </div>
+      {loading ? <div className="data-state">Loading plans…</div> : !plans.length ? <div className="data-state">No dispatch plans yet. Create one for tomorrow's demand.</div> :
+      <div className="table-wrap"><table><thead><tr><th>Plan</th><th>Date</th><th>Status</th><th>Fill rate</th><th>Margin</th></tr></thead>
+        <tbody>{plans.map(plan => <tr key={plan.id} className="clickable" onClick={() => openPlan(plan.id)}>
+          <td><strong>{plan.code}</strong></td>
+          <td>{plan.plan_date}</td>
+          <td><span className={"status " + plan.status}>{planStatusLabel[plan.status] || plan.status}</span></td>
+          <td>{plan.summary?.fill_rate_percent != null ? `${plan.summary.fill_rate_percent}%` : "—"}</td>
+          <td>{plan.summary?.total_margin != null ? rupees(plan.summary.total_margin) : "—"}</td>
+        </tr>)}</tbody></table></div>}
+    </section>
+
+    {selected && <div className="record-backdrop" onMouseDown={() => setSelected(null)}><aside className="record-drawer" onMouseDown={event => event.stopPropagation()}>
+      <div className="record-head"><div><p className="eyebrow">{selected.code}</p><h2>Plan for {selected.plan_date}</h2><span className={"status " + selected.status}>{planStatusLabel[selected.status] || selected.status}</span></div><button className="panel-close" onClick={() => setSelected(null)}>×</button></div>
+
+      <div className="record-actions">
+        <button className="secondary" disabled={busy || ["committed", "superseded"].includes(selected.status)} onClick={() => runStep("collect", p => `${p.task_count} task(s), ${p.vehicle_count} vehicle(s) collected`)}>Collect demand</button>
+        <button className="secondary" disabled={busy || ["committed", "superseded"].includes(selected.status)} onClick={() => runStep("solve", p => p.solver_status || "Solved")}>Solve</button>
+        <button className="primary" disabled={busy || selected.status !== "solved"} onClick={() => runStep("commit", p => `${p.committed_routes?.length || 0} route(s) committed`)}>Commit plan</button>
+      </div>
+
+      {!!Object.keys(summary).length && <div className="record-section">
+        <p className="eyebrow">PLAN SUMMARY</p>
+        <div className="tracking-grid">
+          <div><span>Total tasks</span><strong>{summary.total_tasks}</strong></div>
+          <div><span>Served (own fleet)</span><strong>{summary.served_own_fleet}</strong></div>
+          <div><span>Outsourced</span><strong>{summary.outsourced}</strong></div>
+          <div><span>Unroutable</span><strong>{summary.dropped_unroutable}</strong></div>
+          <div><span>Fill rate</span><strong>{summary.fill_rate_percent}%</strong></div>
+          <div><span>Routes used</span><strong>{summary.routes_used}</strong></div>
+          <div><span>Distance</span><strong>{summary.total_distance_km} km</strong></div>
+          <div><span>Revenue</span><strong>{rupees(summary.total_revenue)}</strong></div>
+          <div><span>Cost</span><strong>{rupees(summary.total_cost)}</strong></div>
+          <div><span>Margin</span><strong className={Number(summary.total_margin) >= 0 ? "good" : "bad"}>{rupees(summary.total_margin)}</strong></div>
+        </div>
+      </div>}
+
+      {!!(selected.routes || []).length && <div className="record-section">
+        <p className="eyebrow">ROUTES</p>
+        {(selected.routes || []).map((route: any) => <div key={route.id} className="record-field" style={{ display: "block", marginBottom: 12 }}>
+          <div><strong>{route.plan_vehicle_detail?.registration_number || "Route #" + route.sequence}</strong> · {route.total_distance_km} km · {rupees(route.estimated_cost)} cost · {rupees(route.estimated_margin)} margin</div>
+          <div style={{ marginTop: 4 }}>
+            {(route.stops || []).map((stop: any) => <span key={stop.id} style={{ marginRight: 8, fontSize: 12 }}>{stop.stop_type === "pickup" ? "▲" : "▼"} {stop.place_name} ({stop.load_after_kg}kg)</span>)}
+          </div>
+          {!route.plan_vehicle_detail?.driver && !route.committed_trip && <div className="assign-row" style={{ marginTop: 6 }}>
+            <select onChange={event => assignDriver(route.id, event.target.value)} defaultValue="">
+              <option value="">Assign a driver…</option>
+              {drivers.map(d => <option key={d.id} value={d.id}>{d.name} · {d.phone}</option>)}
+            </select>
+          </div>}
+        </div>)}
+      </div>}
+
+      {!!(selected.hire_requirements || []).length && <div className="record-section">
+        <p className="eyebrow">CAPACITY TO BUY (OUTSOURCED)</p>
+        {(selected.hire_requirements || []).map((req: any) => <div key={req.id} className="record-field">
+          <span>{req.pickup_name} → {req.dropoff_name}</span>
+          <strong>{req.capacity_kg} kg · {rupees(req.estimated_cost)} · {req.task_count} task(s) · {req.status}</strong>
+        </div>)}
+      </div>}
+    </aside></div>}
+  </div>;
+}
+
 function HiresView({ reloadKey, onAction, openAction }: { reloadKey: number; onAction: Notify; openAction: (type: string) => void }) {
   const [hires, setHires] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
@@ -2744,7 +2888,7 @@ export default function Home() {
             <div className="section-heading"><div><p className="eyebrow">ACTIVE MOVEMENT</p><h2>Recent trips</h2></div><button className="link-button" onClick={() => show("All trips opened")}>View all trips →</button></div>
             <div className="table-wrap"><table><thead><tr><th>Trip & route</th><th>Vehicle</th><th>Driver</th><th>Status</th><th>ETA / POD</th><th>Revenue</th></tr></thead><tbody>{(dashboard?.recent_trips || []).map((t: any) => <tr key={t.id}><td><strong>{t.number}</strong><small>{t.origin} → {t.destination}</small></td><td>{t.vehicle_number}</td><td>{t.driver_name}</td><td><span className={`status ${t.status.toLowerCase().replaceAll("_","-")}`}>{t.status.replaceAll("_"," ")}</span></td><td>{t.planned_departure ? new Date(t.planned_departure).toLocaleString("en-IN") : "—"}</td><td><strong>₹{Number(t.estimated_cost || 0).toLocaleString("en-IN")}</strong></td></tr>)}</tbody></table></div>
           </section>
-        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Hires" ? <HiresView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Fleet" ? <FleetVehiclesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Tracking" ? <TrackingView reloadKey={dataVersion} onAction={show} /> : active === "Fleets" ? <FleetsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
+        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Planning" ? <DispatchPlanningView onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Hires" ? <HiresView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Fleet" ? <FleetVehiclesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Tracking" ? <TrackingView reloadKey={dataVersion} onAction={show} /> : active === "Fleets" ? <FleetsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
       </section>
       {action && <ActionPanel type={action} onClose={() => setAction("")} onCreated={() => setDataVersion(v => v + 1)} />}
       {toast && <div className={"toast " + toast.tone}>{toast.tone === "warn" ? "⚠" : "✓"} {toast.text}</div>}

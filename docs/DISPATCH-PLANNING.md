@@ -1,5 +1,46 @@
 # Dispatch planning — CVRP module implementation plan
 
+## Implementation update
+
+A first slice of Phases A–C is built on branch `claude/cvrp-dispatch-planning-ewm262`:
+a `dispatch` Django app (`DispatchPlan`, `DispatchTask`, `PlanVehicle`, `PlannedRoute`,
+`PlannedStop`, `PlanEvent`, `HireRequirement`, `TravelMatrixEntry`), a dependency-free
+greedy solver (`dispatch/solver/greedy.py` — cluster-by-shared-pickup, cheapest sequential
+insertion, temperature compatibility, capacity, soft time windows, the own-vs-outsource
+disjunction), and `collect` / `solve` / `commit` / `readiness` / `explain` endpoints under
+`/api/v1/dispatch/`. Commit lands orders on a real `Trip` and moves the vehicle to
+`allocated`, converting an indent to an order inline where needed. `Vehicle` gained
+`volume_cbm`, `temperature_class`, `body_type`, reefer fields and a `home_place`. The
+three defects in §3 below are fixed. `dispatch.view` / `dispatch.plan` / `dispatch.commit`
+permissions are seeded on the Dispatcher and Branch manager roles. 18 new tests, 352
+backend tests pass overall. A minimal **Planning** console page lists plans and drives
+collect/solve/commit from a detail drawer.
+
+**Scope taken, stated plainly:**
+- The greedy solver clusters tasks by shared pickup and serves one cluster's stops in
+  full before starting the next (§6.10's stated limitation) — it does not interleave
+  pickups from different origins mid-route. OR-Tools (§6.10, §17) is not wired in; the
+  `solver="ortools"` field exists on `DispatchPlan` and falls back to greedy when the
+  module import fails, so it is a drop-in addition later.
+- Own, attached and leased `fleet.Vehicle` rows become `PlanVehicle` candidates.
+  Genuinely spot capacity (§6.7's second mechanism) is not pre-loaded as a vehicle; it is
+  priced as `outsource_estimate` per task and surfaces as a `HireRequirement` when the
+  solver drops a task, exactly as designed.
+- GPS is read from `Vehicle.current_latitude/longitude` as-is (§7.1's freshness flag is
+  implemented as `PlanVehicle.position_stale`); the live position time-series, geofence
+  arrival capture and re-planning in §7.2–7.3 are not built.
+- India-specific constraints (§9 — city no-entry hours, e-way bill validity, border
+  dwell) and the console's Gantt/map board (§12) are not built; the shipped console is a
+  list-and-drawer view proportionate to this pass.
+- Vendor RFQ (`request-quotes`) and manual `award` exist as a minimal version of §8 —
+  award requires the requirement's tasks to already carry a linked order (i.e. the
+  underlying indent has been converted), rather than the full `CarrierOffer` quote
+  workflow.
+
+What follows is the original design in full, unedited, as the reference for what is not
+yet built.
+
+
 A plan for turning today's one-order-at-a-time allocation desk into a **dispatch planning
 module**: the dispatcher loads tomorrow's demand, the system produces a costed, feasible set
 of routes across own dry vehicles, own reefers and hired third-party capacity, and the

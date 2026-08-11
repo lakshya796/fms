@@ -26,13 +26,15 @@ priced consignment order. Logins carry a role and a branch, with a full audit tr
 Built for a 1000+ vehicle operation — see
 [docs/ACCOUNTING-AND-ADMIN.md](docs/ACCOUNTING-AND-ADMIN.md).
 
-## Dispatch planning (planned)
+## Dispatch planning
 
-An implementation plan for a CVRP-based dispatch planning module: day-ahead multi-order routing
-across own dry vehicles, own reefers and hired third-party capacity, with temperature
-compatibility, time windows, GPS start positions and live re-planning, an own-versus-hire
-decision priced per load, and a one-action commit into orders, trips and vehicle hires. Design
-only — not built. See [docs/DISPATCH-PLANNING.md](docs/DISPATCH-PLANNING.md).
+A CVRP-based dispatch planning module: collect tomorrow's demand, solve a costed plan across
+own dry vehicles, own reefers and hired third-party capacity with a dependency-free greedy
+solver (capacity, temperature compatibility, soft time windows, an own-versus-hire decision
+priced per load), then commit it into real orders, trips and vehicle hires in one action. A
+first slice (own/attached/leased fleet, collect/solve/commit, a minimal Planning console page)
+is built; GPS re-planning, OR-Tools and the full Gantt/map board remain design only. See
+[docs/DISPATCH-PLANNING.md](docs/DISPATCH-PLANNING.md).
 
 ## Gift Voucher Desk (ADCOOP retail)
 

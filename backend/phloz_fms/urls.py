@@ -8,6 +8,7 @@ urlpatterns = [
     path("api/v1/iam/", include("iam.urls")),
     path("api/v1/accounting/", include("accounting.urls")),
     path("api/v1/", include("fleet.urls")),
+    path("api/v1/dispatch/", include("dispatch.urls")),
     path("api/v1/vouchers/", include("vouchers.urls")),
     path("api/v1/voucher-portal/", include("voucher_portal.urls")),
 ] + static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

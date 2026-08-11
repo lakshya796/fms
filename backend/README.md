@@ -17,8 +17,13 @@ expenses, issues, statutory compliance documents and preventive maintenance sche
 vouchers, vendor bills with TDS, receipts and payments, and reports for trial balance, P&L,
 ledger, receivable and payable ageing, vehicle profitability and GST.
 
-**Identity and access** (`/api/v1/iam/`) — organisation, branches, roles with a 19 permission
+**Identity and access** (`/api/v1/iam/`) — organisation, branches, roles with a permission
 catalogue, users, and an audit trail.
+
+**Dispatch planning** (`/api/v1/dispatch/`) — CVRP-based route planning across own dry
+vehicles, own reefers and hired capacity: collect demand into a plan, solve it with a
+dependency-free greedy solver, then commit routes into real orders and trips. See
+[../docs/DISPATCH-PLANNING.md](../docs/DISPATCH-PLANNING.md).
 
 Endpoint references: [../docs/FLEETOPS.md](../docs/FLEETOPS.md) and
 [../docs/ACCOUNTING-AND-ADMIN.md](../docs/ACCOUNTING-AND-ADMIN.md).
@@ -37,7 +42,7 @@ Endpoint references: [../docs/FLEETOPS.md](../docs/FLEETOPS.md) and
 
 ## Tests
 
-`python manage.py test` — 235 tests across fleet, accounting, iam, vouchers and voucher_portal.
+`python manage.py test` — 352 tests across fleet, dispatch, accounting, iam, vouchers and voucher_portal.
 
 ## EC2 deployment
 
