@@ -1,7 +1,7 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 from rest_framework.authtoken.views import obtain_auth_token
-from .views import (health, dashboard, fleet_analytics, public_tracking, CustomerViewSet, DriverViewSet, VehicleViewSet,
+from .views import (health, dashboard, fleet_analytics, public_tracking, live_tracking, CustomerViewSet, DriverViewSet, VehicleViewSet,
                     LorryReceiptViewSet, TripViewSet, TrackingEventViewSet, InvoiceViewSet, SettlementViewSet,
                     SalesQuoteViewSet, MaintenanceWorkOrderViewSet, VendorViewSet, ServiceAreaViewSet, ZoneViewSet,
                     PlaceViewSet, FleetViewSet, ServiceRateViewSet, ServiceQuoteViewSet, OrderViewSet, WaypointViewSet,
@@ -43,6 +43,7 @@ urlpatterns = [
     path("health/", health),
     path("dashboard/", dashboard),
     path("analytics/fleet/", fleet_analytics),
+    path("live-tracking/", live_tracking),
     path("track/<str:tracking_number>/", public_tracking),
     path("orders/<int:pk>/profitability/", order_profitability),
     path("auth/token/", obtain_auth_token),

@@ -2225,7 +2225,130 @@ const trackingFilters: [string, string][] = [
 const isDelayed = (order: any) =>
   Boolean(order.scheduled_at) && !["completed", "cancelled"].includes(order.status) && new Date(order.scheduled_at) < new Date();
 
+// --- Live GPS (Geotrackers) --------------------------------------------------
+
+const GPS_STATUS_COLOR: Record<string, string> = {
+  moving: "#22c55e",
+  idle: "#f59e0b",
+  parked: "#94a3b8",
+};
+// India outline polygon: lat 8–37 N, lng 68–97 E mapped to 280×310 SVG
+const INDIA_PATH = "M48,41 L77,32 L106,41 L124,72 L197,99 L221,103 L279,83 L279,93 L235,141 L221,152 L197,152 L183,172 L152,193 L124,214 L115,245 L105,290 L91,306 L87,300 L77,286 L64,266 L58,235 L50,214 L48,193 L46,181 L45,162 L46,155 L19,163 L11,166 L5,138 L1,131 L19,93 L24,62 L48,52 Z";
+const INDIA_MAP_W = 280, INDIA_MAP_H = 310;
+const toMapXY = (lat: number, lng: number) => ({
+  x: ((lng - 68) / 29) * INDIA_MAP_W,
+  y: ((37 - lat) / 29) * INDIA_MAP_H,
+});
+
+function LiveGpsView({ onAction }: { onAction: Notify }) {
+  const [vehicles, setVehicles] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+
+  const load = async () => {
+    try {
+      const data = await fmsRequest<any>("live-tracking/");
+      setVehicles(data.vehicles || []);
+      setLastRefresh(new Date());
+      setError(data.error || null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message.slice(0, 120) : "Could not reach live tracking");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 30_000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const moving = vehicles.filter(v => v.gps_status === "moving").length;
+  const idle = vehicles.filter(v => v.gps_status === "idle").length;
+  const parked = vehicles.filter(v => v.gps_status === "parked").length;
+  const withPos = vehicles.filter(v => v.lat && v.lng).length;
+  const sel = vehicles.find(v => v.reg === selected) || null;
+
+  const toggle = (reg: string) => setSelected(prev => (prev === reg ? null : reg));
+
+  return <div className="module-page">
+    <div className="module-title">
+      <div><p className="eyebrow">LIVE GPS TRACKING</p><h2>Fleet positions</h2>
+        <p>Real-time positions from Geotrackers · auto-refreshes every 30 s.{lastRefresh ? ` Last: ${lastRefresh.toLocaleTimeString("en-IN")}` : ""}</p></div>
+      <button className="primary module-action" onClick={load}>↻ Refresh</button>
+    </div>
+    {error && <div className="pod-note warn" style={{ marginBottom: 12 }}>Geotrackers: {error}</div>}
+    <div className="module-stats">
+      <div className="module-stat"><span>Reporting</span><strong>{loading ? "—" : vehicles.length}</strong><small>{withPos} with position</small></div>
+      <div className="module-stat"><span>Moving</span><strong>{loading ? "—" : moving}</strong><small>Speed &gt; 3 km/h</small></div>
+      <div className="module-stat warn"><span>Idle</span><strong>{loading ? "—" : idle}</strong><small>Engine on, stationary</small></div>
+      <div className="module-stat"><span>Parked</span><strong>{loading ? "—" : parked}</strong><small>Engine off</small></div>
+    </div>
+    <div className="tracking-page-layout">
+      <section className="module-table-card shipment-list">
+        <div className="module-toolbar"><div><strong>Vehicles</strong><span>{vehicles.length} reporting</span></div></div>
+        <div className="shipment-rows">
+          {vehicles.map(v => <div key={v.reg} className={"shipment-row" + (v.reg === selected ? " active" : "")} onClick={() => toggle(v.reg)}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+              <span style={{ width: 10, height: 10, borderRadius: "50%", background: GPS_STATUS_COLOR[v.gps_status] || "#94a3b8", flexShrink: 0, marginTop: 4 }} />
+              <div><strong>{v.reg}</strong><small>{v.address ? v.address.slice(0, 48) : "No location"}</small></div>
+            </div>
+            <div className="shipment-row-meta">
+              <span className={"status " + (v.gps_status === "moving" ? "completed" : v.gps_status === "idle" ? "assigned" : "available")}>{v.gps_status}</span>
+              {v.speed_kph > 0 && <small>{v.speed_kph} km/h</small>}
+            </div>
+          </div>)}
+          {!loading && !vehicles.length && <div className="data-state">{error ? "Geotrackers is unreachable." : "No vehicles reporting."}</div>}
+        </div>
+      </section>
+
+      <section className="track-detail" style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ padding: "12px 16px 6px", borderBottom: "1px solid var(--border)" }}>
+          <strong>India fleet map</strong>
+          <small style={{ marginLeft: 10, color: "var(--text-2)" }}>
+            <span style={{ color: "#22c55e" }}>●</span> moving &nbsp;<span style={{ color: "#f59e0b" }}>●</span> idle &nbsp;<span style={{ color: "#94a3b8" }}>●</span> parked
+          </small>
+        </div>
+        <svg viewBox={`0 0 ${INDIA_MAP_W} ${INDIA_MAP_H}`} style={{ width: "100%", maxHeight: 340, display: "block", background: "var(--surface-2,#f8fafc)" }}>
+          <path d={INDIA_PATH} fill="var(--surface-1,#fff)" stroke="var(--border,#cbd5e1)" strokeWidth="1.5" />
+          {vehicles.filter(v => v.lat && v.lng).map(v => {
+            const { x, y } = toMapXY(v.lat, v.lng);
+            if (x < 0 || x > INDIA_MAP_W || y < 0 || y > INDIA_MAP_H) return null;
+            const isSelected = v.reg === selected;
+            const color = GPS_STATUS_COLOR[v.gps_status] || "#94a3b8";
+            return <g key={v.reg} style={{ cursor: "pointer" }} onClick={() => toggle(v.reg)}>
+              {isSelected && <circle cx={x} cy={y} r={13} fill={color} opacity={0.2} />}
+              <circle cx={x} cy={y} r={isSelected ? 8 : 5} fill={color} opacity={0.85} stroke="#fff" strokeWidth={1.5} />
+            </g>;
+          })}
+        </svg>
+        {sel
+          ? <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border)" }}>
+              <div className="tracking-grid">
+                <div><span>Registration</span><strong>{sel.reg}</strong></div>
+                <div><span>GPS status</span><strong style={{ color: GPS_STATUS_COLOR[sel.gps_status] || "#94a3b8" }}>{sel.gps_status}</strong></div>
+                <div><span>Speed</span><strong>{sel.speed_kph} km/h</strong></div>
+                <div><span>Ignition</span><strong>{sel.ignition ? "ON" : "OFF"}</strong></div>
+                <div><span>FMS status</span><strong>{sel.fms_status ? String(sel.fms_status).replaceAll("_", " ") : "Not in FMS"}</strong></div>
+                <div><span>Last fix</span><strong>{sel.gps_time || "—"}</strong></div>
+              </div>
+              {sel.address && <p className="pod-note" style={{ marginTop: 8 }}>📍 {sel.address}</p>}
+              {sel.lat && sel.lng && <a href={`https://maps.google.com/?q=${sel.lat},${sel.lng}`} target="_blank" rel="noreferrer" className="chip" style={{ display: "inline-block", marginTop: 8 }}>Open in Google Maps ↗</a>}
+            </div>
+          : <div className="data-state" style={{ padding: 16 }}>Click a vehicle to see its details.</div>}
+      </section>
+    </div>
+  </div>;
+}
+
+// --- Shipment tracking -------------------------------------------------------
+
 function TrackingView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify }) {
+  const [tab, setTab] = useState<"live" | "shipments">("live");
   const [orders, setOrders] = useState<any[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [filter, setFilter] = useState("");
@@ -2305,8 +2428,16 @@ function TrackingView({ reloadKey, onAction }: { reloadKey: number; onAction: No
     ? new Date(Date.now() + (remainingKm / 40) * 3600 * 1000) : null;
   const pinFraction = Math.min(1, Number(selected?.progress_percent || 0) / 100);
 
+  const tabBar = <div style={{ display: "flex", gap: 8, padding: "4px 24px 0" }}>
+    <button className={tab === "live" ? "chip active" : "chip"} onClick={() => setTab("live")}>⌖ Live GPS</button>
+    <button className={tab === "shipments" ? "chip active" : "chip"} onClick={() => setTab("shipments")}>◈ Shipments</button>
+  </div>;
+
+  if (tab === "live") return <>{tabBar}<LiveGpsView onAction={onAction} /></>;
+
   return <div className="module-page">
-    <div className="module-title"><div><p className="eyebrow">LIVE FLEET MAP</p><h2>Track fleet operations</h2><p>Where every consignment is right now, its movement history, and a link to share with the consignee.</p></div><button className="primary module-action" onClick={load}>↻ Refresh</button></div>
+    {tabBar}
+    <div className="module-title"><div><p className="eyebrow">SHIPMENT TRACKING</p><h2>Track fleet operations</h2><p>Where every consignment is right now, its movement history, and a link to share with the consignee.</p></div><button className="primary module-action" onClick={load}>↻ Refresh</button></div>
     <div className="module-stats">
       <div className="module-stat"><span>On the road</span><strong>{loading ? "—" : active.length}</strong><small>Dispatched or in transit</small></div>
       <div className="module-stat warn"><span>Running late</span><strong>{loading ? "—" : delayed.length}</strong><small>Past their scheduled time</small></div>
