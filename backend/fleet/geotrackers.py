@@ -19,6 +19,7 @@ only function that does I/O.
 import json
 import re
 import urllib.request
+from datetime import datetime, timezone as dt_timezone
 
 DASHBOARD_URL = "https://www.geotrackers.com/gt/track/v1/dashboard"
 # base64("dataiceman:dataiceman")
@@ -38,14 +39,32 @@ _LNG_KEYS = ("lng", "lon", "long", "longitude", "curlng", "curlon", "currentlng"
 _REG_KEYS = ("vehicleno", "vehiclenumber", "vehicleregno", "vehreg", "vehno", "vehicle",
              "regno", "registrationno", "registrationnumber", "assetname", "assetno",
              "devicename", "label", "name")
+_MAKE_KEYS = ("make", "brand", "manufacturer")
+_MODEL_KEYS = ("model", "variant")
+
+# An Indian plate: two state letters, the RTO number, an optional series and
+# four digits - `MH14LX8206`, `MH 04 JU 9182`, `KA-51-MN-6814`. The trailing
+# four digits are what stop a model name such as "TATA 1109" matching.
+_PLATE_RE = re.compile(r"\b[A-Z]{2}[\s-]?\d{1,2}[\s-]?[A-Z]{0,3}[\s-]?\d{4}\b")
 _SPEED_KEYS = ("speed", "spd", "curspeed", "currentspeed", "lastspeed", "gpsspeed", "speedkph", "speedkmph")
 _IGN_KEYS = ("ignition", "ign", "ignitionstatus", "acc", "accstatus")
 _TIME_KEYS = ("fixtime", "gpstime", "devicetime", "servertime", "lastupdate", "lastupdated",
               "lastseen", "datetime", "timestamp", "packetdate", "tm")
 _ADDR_KEYS = ("address", "addr", "location", "place", "landmark", "currentaddress", "lastaddress")
-_STATUS_KEYS = ("status", "vehiclestatus", "movingstatus", "state", "gpsstatus")
-# Nested objects that may themselves carry the coordinates.
-_NESTED_KEYS = ("position", "location", "gps", "lastposition", "lastlocation", "latlng", "coordinates")
+# `state` reads "Moving for 49 mins" / "Stopped for 3 hrs" and is the clearest
+# statement of movement the feed makes, so it is consulted before `status`
+# ("AC On, Key On, Motion"), which mixes movement in with the digital inputs.
+_STATUS_KEYS = ("state", "status", "vehiclestatus", "movingstatus", "gpsstatus")
+_DRIVER_KEYS = ("drivername", "driver")
+_HEADING_KEYS = ("direction", "heading", "course", "bearing", "angle")
+
+_MOVING_WORDS = ("moving", "motion", "running", "transit")
+_IDLE_WORDS = ("idle", "idling")
+_PARKED_WORDS = ("stopped", "stop", "parked", "parking", "halt", "stationary")
+# Nested objects worth merging in: the coordinates live under `position` in some
+# builds, and the registration under a whole `vehicle` master record in others.
+_NESTED_KEYS = ("position", "location", "gps", "lastposition", "lastlocation", "latlng", "coordinates",
+                "vehicle", "vehicledetail", "vehicledetails", "asset", "device", "deviceinfo")
 
 
 def _nk(key):
@@ -77,12 +96,30 @@ def _flatten(row):
 
 
 def _pick(flat, keys):
+    """First usable scalar among `keys`.
+
+    Containers are skipped rather than stringified: the feed nests a whole
+    `vehicle` object under a key that also names the registration in other
+    builds, and `str()` of that dict is what used to end up on screen.
+    """
     for key in keys:
         if key in flat:
             value = flat[key]
+            if isinstance(value, (dict, list, tuple)):
+                continue
             if value is not None and str(value).strip().lower() not in ("", "null", "none", "-", "na"):
                 return value
     return None
+
+
+def registration_from(text):
+    """The plate inside a descriptive asset name.
+
+    Vendors label assets `32 TON BOLR MH14LX8206` or `TATA 1109 - MH43CK1211`;
+    the plate is what matches an FMS vehicle, the rest is decoration.
+    """
+    match = _PLATE_RE.search(str(text or "").upper())
+    return match.group().strip() if match else ""
 
 
 def _to_float(value):
@@ -177,42 +214,98 @@ def _truthy(value):
     return str(value).strip().lower() in ("1", "true", "yes", "y", "on", "running", "ign_on")
 
 
+def _analog(flat, *types):
+    """A reading out of the `analogs` array, e.g. TEMPERATURE or BATTERY.
+
+    On a reefer fleet the body temperature is the number the operator is
+    actually watching, so it is lifted out of the array and onto the ping.
+    """
+    for entry in flat.get("analogs") or []:
+        if isinstance(entry, dict) and str(entry.get("type", "")).upper() in types:
+            value = _to_float(entry.get("value"))
+            if value is not None:
+                return value
+    return None
+
+
+def _digital(flat, *types):
+    """A boolean input out of the `digitals` array - KEY is the ignition, AC is
+    the reefer unit. The feed has no top-level `ignition` field; this is it."""
+    for entry in flat.get("digitals") or []:
+        if isinstance(entry, dict) and str(entry.get("type", "")).upper() in types:
+            return bool(entry.get("state"))
+    return None
+
+
+def _fix_time(flat):
+    """The feed times fixes in epoch milliseconds. Hand back ISO-8601 so the
+    console can localise it, rather than printing 1786535659000 at the user."""
+    raw = _pick(flat, _TIME_KEYS)
+    number = _to_float(raw)
+    if number and number > 1e11:                      # milliseconds
+        number /= 1000
+    if number and number > 1e8:                       # plausible epoch seconds
+        try:
+            return datetime.fromtimestamp(number, tz=dt_timezone.utc).isoformat()
+        except (OverflowError, OSError, ValueError):
+            pass
+    return str(raw or "")
+
+
+def _movement(text, speed, ignition):
+    """Movement state from the vendor's own wording, falling back to telemetry."""
+    words = str(text or "").lower()
+    if any(w in words for w in _PARKED_WORDS):
+        return "parked"
+    if any(w in words for w in _IDLE_WORDS):
+        return "idle"
+    if any(w in words for w in _MOVING_WORDS):
+        return "moving"
+    if speed > MOVING_SPEED_KPH:
+        return "moving"
+    return "idle" if ignition else "parked"
+
+
 def row_to_ping(row):
     """One vendor record -> the flat shape the console renders."""
     flat = _flatten(row)
     lat, lng, swapped = _coordinates(flat)
     speed = _to_float(_pick(flat, _SPEED_KEYS)) or 0.0
 
-    ignition_raw = _pick(flat, _IGN_KEYS)
-    ignition = _truthy(ignition_raw) if ignition_raw is not None else None
+    # Ignition comes off the KEY digital input; only fall back to a named field
+    # for feeds that do not send the digitals array.
+    ignition = _digital(flat, "KEY", "IGNITION", "ACC")
+    if ignition is None:
+        raw_ignition = _pick(flat, _IGN_KEYS)
+        ignition = _truthy(raw_ignition) if raw_ignition is not None else False
 
-    # Prefer the vendor's own movement state when it sends one; fall back to
-    # speed and ignition, which every feed has.
-    vendor_status = str(_pick(flat, _STATUS_KEYS) or "").strip().lower()
-    if "mov" in vendor_status or "runn" in vendor_status:
-        gps_status = "moving"
-    elif "idl" in vendor_status:
-        gps_status = "idle"
-    elif "stop" in vendor_status or "park" in vendor_status or "halt" in vendor_status:
-        gps_status = "parked"
-    elif speed > MOVING_SPEED_KPH:
-        gps_status = "moving"
-    elif ignition:
-        gps_status = "idle"
-    else:
-        gps_status = "parked"
+    vendor_state = _pick(flat, _STATUS_KEYS)
+    gps_status = _movement(vendor_state, speed, ignition)
 
-    registration = str(_pick(flat, _REG_KEYS) or "").strip()
+    # The asset name doubles as a description; keep both so the console can show
+    # a clean plate as the heading and the vendor's own wording underneath.
+    label = str(_pick(flat, _REG_KEYS) or "").strip()
+    registration = registration_from(label) or label
+
     return {
         "reg": registration,
+        "label": label if label != registration else "",
+        "make": str(_pick(flat, _MAKE_KEYS) or "").strip(),
+        "model": str(_pick(flat, _MODEL_KEYS) or "").strip(),
         "lat": lat,
         "lng": lng,
         "coords_swapped": swapped,
         "in_india": in_india(lat, lng),
         "speed_kph": round(speed, 1),
+        "heading": _to_float(_pick(flat, _HEADING_KEYS)),
         "ignition": bool(ignition),
+        "ac_on": _digital(flat, "AC"),
+        "temperature_c": _analog(flat, "TEMPERATURE", "TEMP"),
+        "battery_v": _analog(flat, "BATTERY", "VBATT"),
         "gps_status": gps_status,
-        "gps_time": str(_pick(flat, _TIME_KEYS) or ""),
+        "state_text": str(vendor_state or "").strip(),
+        "gps_time": _fix_time(flat),
+        "driver": str(_pick(flat, _DRIVER_KEYS) or "").strip(),
         "address": str(_pick(flat, _ADDR_KEYS) or ""),
     }
 

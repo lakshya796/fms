@@ -2233,13 +2233,147 @@ const GPS_STATUS_COLOR: Record<string, string> = {
   idle: "#f59e0b",
   parked: "#94a3b8",
 };
-// India outline polygon: lat 8–37 N, lng 68–97 E mapped to 280×310 SVG
-const INDIA_PATH = "M48,41 L77,32 L106,41 L124,72 L197,99 L221,103 L279,83 L279,93 L235,141 L221,152 L197,152 L183,172 L152,193 L124,214 L115,245 L105,290 L91,306 L87,300 L77,286 L64,266 L58,235 L50,214 L48,193 L46,181 L45,162 L46,155 L19,163 L11,166 L5,138 L1,131 L19,93 L24,62 L48,52 Z";
-const INDIA_MAP_W = 280, INDIA_MAP_H = 310;
+// An equirectangular projection over the Indian bounding box. The outline and
+// the vehicle pins are both drawn through this one function, so they cannot
+// drift apart the way a hand-written SVG path and a separate projection do.
+const MAP_W = 720, MAP_H = 780;
+const LNG_MIN = 67.5, LNG_MAX = 97.5, LAT_MIN = 6.5, LAT_MAX = 37.5;
 const toMapXY = (lat: number, lng: number) => ({
-  x: ((lng - 68) / 29) * INDIA_MAP_W,
-  y: ((37 - lat) / 29) * INDIA_MAP_H,
+  x: ((lng - LNG_MIN) / (LNG_MAX - LNG_MIN)) * MAP_W,
+  y: ((LAT_MAX - lat) / (LAT_MAX - LAT_MIN)) * MAP_H,
 });
+
+// Simplified national boundary, clockwise from Kashmir, as [lng, lat].
+const INDIA_OUTLINE: [number, number][] = [
+  [76.5, 35.8], [77.8, 35.5], [78.9, 34.4], [79.2, 33.0], [78.7, 31.9], [81.0, 30.3],
+  [82.8, 29.5], [84.7, 28.4], [86.7, 27.8], [88.1, 27.9], [88.9, 27.3], [89.7, 26.7],
+  [92.0, 26.9], [93.4, 27.0], [95.3, 27.9], [97.0, 28.3], [97.4, 27.1], [96.5, 26.0],
+  [95.1, 26.6], [94.6, 25.2], [94.1, 23.8], [93.3, 24.1], [93.0, 23.0], [92.3, 23.7],
+  [91.6, 22.9], [91.4, 23.7], [90.5, 24.0], [89.6, 25.3], [88.1, 24.5], [88.7, 23.2],
+  [88.9, 21.9], [87.0, 21.5], [86.5, 20.1], [85.1, 19.5], [84.0, 18.3], [82.3, 17.0],
+  [80.9, 15.9], [80.3, 13.5], [79.9, 12.0], [79.3, 10.3], [78.2, 9.1], [77.5, 8.1],
+  [76.6, 8.9], [75.8, 11.4], [74.9, 13.0], [74.0, 14.9], [73.2, 16.6], [72.8, 18.6],
+  [72.6, 20.1], [72.9, 21.6], [70.9, 20.8], [69.1, 22.1], [68.2, 23.6], [68.7, 24.3],
+  [70.1, 24.3], [70.8, 25.7], [72.9, 27.7], [73.4, 29.9], [74.6, 31.0], [75.4, 32.3],
+  [74.0, 34.3], [75.0, 35.0],
+];
+const INDIA_PATH = INDIA_OUTLINE
+  .map(([lng, lat], i) => { const { x, y } = toMapXY(lat, lng); return `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`; })
+  .join(" ") + " Z";
+
+// Reference cities, so a cluster of pins is readable as "Bhiwandi" rather than
+// as an anonymous blob somewhere on the west coast.
+const MAP_CITIES: [string, number, number][] = [
+  ["Delhi", 28.61, 77.21], ["Mumbai", 19.08, 72.88], ["Bengaluru", 12.97, 77.59],
+  ["Chennai", 13.08, 80.27], ["Kolkata", 22.57, 88.36], ["Hyderabad", 17.39, 78.49],
+  ["Ahmedabad", 23.02, 72.57], ["Pune", 18.52, 73.86], ["Nagpur", 21.15, 79.09],
+  ["Jaipur", 26.91, 75.79], ["Lucknow", 26.85, 80.95], ["Kochi", 9.93, 76.27],
+];
+
+function FleetMap({ vehicles, selectedReg, onSelect }: {
+  vehicles: any[]; selectedReg: string | null; onSelect: (reg: string) => void;
+}) {
+  const [view, setView] = useState({ x: 0, y: 0, w: MAP_W, h: MAP_H });
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const drag = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
+
+  const zoom = view.w / MAP_W;                 // < 1 means zoomed in
+  const reset = () => setView({ x: 0, y: 0, w: MAP_W, h: MAP_H });
+
+  const zoomBy = (factor: number, focusX?: number, focusY?: number) => setView(v => {
+    const w = Math.min(MAP_W, Math.max(MAP_W / 14, v.w * factor));
+    const h = w * (MAP_H / MAP_W);
+    // Keep the point under the cursor fixed while the box shrinks around it.
+    const fx = focusX ?? v.x + v.w / 2, fy = focusY ?? v.y + v.h / 2;
+    const x = Math.min(MAP_W - w, Math.max(0, fx - (fx - v.x) * (w / v.w)));
+    const y = Math.min(MAP_H - h, Math.max(0, fy - (fy - v.y) * (h / v.h)));
+    return { x, y, w, h };
+  });
+
+  const svgPoint = (clientX: number, clientY: number) => {
+    const box = svgRef.current?.getBoundingClientRect();
+    if (!box) return null;
+    return { x: view.x + ((clientX - box.left) / box.width) * view.w,
+             y: view.y + ((clientY - box.top) / box.height) * view.h };
+  };
+
+  const onWheel = (e: React.WheelEvent) => {
+    const point = svgPoint(e.clientX, e.clientY);
+    zoomBy(e.deltaY > 0 ? 1.25 : 0.8, point?.x, point?.y);
+  };
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    drag.current = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!drag.current) return;
+    const box = svgRef.current?.getBoundingClientRect();
+    if (!box) return;
+    const dx = ((e.clientX - drag.current.x) / box.width) * view.w;
+    const dy = ((e.clientY - drag.current.y) / box.height) * view.h;
+    setView(v => ({ ...v,
+      x: Math.min(MAP_W - v.w, Math.max(0, drag.current!.vx - dx)),
+      y: Math.min(MAP_H - v.h, Math.max(0, drag.current!.vy - dy)) }));
+  };
+  const endDrag = () => { drag.current = null; };
+
+  // Pins keep a constant on-screen size however far the map is zoomed in.
+  const r = (base: number) => base * zoom;
+
+  return <div style={{ position: "relative" }}>
+    <svg ref={svgRef} viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`}
+      onWheel={onWheel} onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+      onPointerUp={endDrag} onPointerLeave={endDrag} onDoubleClick={reset}
+      style={{ width: "100%", aspectRatio: `${MAP_W} / ${MAP_H}`, maxHeight: "62vh", display: "block",
+               background: "var(--surface-2,#eef2f7)", cursor: drag.current ? "grabbing" : "grab",
+               touchAction: "none" }}>
+      <defs>
+        <filter id="pin-shadow" x="-50%" y="-50%" width="200%" height="200%">
+          <feDropShadow dx="0" dy="0.6" stdDeviation="0.8" floodOpacity="0.35" />
+        </filter>
+      </defs>
+
+      <path d={INDIA_PATH} fill="var(--surface-1,#ffffff)" stroke="#94a3b8" strokeWidth={r(1.4)}
+            strokeLinejoin="round" />
+
+      {MAP_CITIES.map(([name, lat, lng]) => {
+        const { x, y } = toMapXY(lat, lng);
+        return <g key={name} pointerEvents="none">
+          <circle cx={x} cy={y} r={r(1.8)} fill="#cbd5e1" />
+          <text x={x + r(4)} y={y + r(3)} fontSize={r(10)} fill="#94a3b8">{name}</text>
+        </g>;
+      })}
+
+      {vehicles.map(v => {
+        const { x, y } = toMapXY(v.lat, v.lng);
+        const isSelected = v.reg === selectedReg;
+        const color = GPS_STATUS_COLOR[v.gps_status] || "#94a3b8";
+        return <g key={v.reg} style={{ cursor: "pointer" }}
+                  onClick={e => { e.stopPropagation(); onSelect(v.reg); }}>
+          <title>{`${v.reg} · ${v.gps_status} · ${v.speed_kph} km/h`}
+            {v.temperature_c != null ? ` · ${v.temperature_c}°C` : ""}</title>
+          {isSelected && <circle cx={x} cy={y} r={r(16)} fill={color} opacity={0.18} />}
+          {/* A moving vehicle gets a heading arrow; a stopped one is just a dot. */}
+          {v.gps_status === "moving" && v.heading != null
+            ? <path d={`M0,${-r(9)} L${r(6)},${r(6)} L0,${r(3)} L${-r(6)},${r(6)} Z`}
+                    transform={`translate(${x} ${y}) rotate(${v.heading})`}
+                    fill={color} stroke="#fff" strokeWidth={r(1.2)} filter="url(#pin-shadow)" />
+            : <circle cx={x} cy={y} r={isSelected ? r(8) : r(6)} fill={color}
+                      stroke="#fff" strokeWidth={r(1.5)} filter="url(#pin-shadow)" />}
+        </g>;
+      })}
+      {!vehicles.length && <text x={MAP_W / 2} y={MAP_H / 2} textAnchor="middle"
+                                 fontSize="16" fill="#94a3b8">No positioned vehicles</text>}
+    </svg>
+
+    <div style={{ position: "absolute", right: 10, bottom: 10, display: "flex", flexDirection: "column", gap: 4 }}>
+      <button className="chip" onClick={() => zoomBy(0.7)} aria-label="Zoom in">＋</button>
+      <button className="chip" onClick={() => zoomBy(1.4)} aria-label="Zoom out">−</button>
+      {zoom < 0.99 && <button className="chip" onClick={reset} aria-label="Reset zoom">⤢</button>}
+    </div>
+  </div>;
+}
 
 function LiveGpsView({ onAction }: { onAction: Notify }) {
   const [vehicles, setVehicles] = useState<any[]>([]);
@@ -2248,6 +2382,8 @@ function LiveGpsView({ onAction }: { onAction: Notify }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [diagnostic, setDiagnostic] = useState<any>(null);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
 
   const load = async () => {
     try {
@@ -2280,11 +2416,20 @@ function LiveGpsView({ onAction }: { onAction: Notify }) {
   const idle = vehicles.filter(v => v.gps_status === "idle").length;
   const parked = vehicles.filter(v => v.gps_status === "parked").length;
   const plotted = vehicles.filter(v => v.in_india);
+  // A reefer above +8 °C is a cold-chain excursion, not a rounding error.
+  const excursions = vehicles.filter(v => v.temperature_c != null && v.temperature_c > 8);
   const noFix = vehicles.filter(v => !v.lat || !v.lng);
   // Reporting a position, but not one anywhere near India - worth showing as a
   // number rather than dropping the pin on the floor and saying nothing.
   const offMap = vehicles.filter(v => v.lat && v.lng && !v.in_india);
   const sel = vehicles.find(v => v.reg === selected) || null;
+
+  // 110 vehicles is too many to scan by eye; let the operator narrow by plate,
+  // by where the truck is, or by what it is doing.
+  const needle = query.trim().toLowerCase();
+  const shown = vehicles.filter(v =>
+    (!statusFilter || v.gps_status === statusFilter) &&
+    (!needle || `${v.reg} ${v.label} ${v.address}`.toLowerCase().includes(needle)));
 
   const toggle = (reg: string) => setSelected(prev => (prev === reg ? null : reg));
 
@@ -2316,6 +2461,7 @@ function LiveGpsView({ onAction }: { onAction: Notify }) {
       <div className="module-stat"><span>Moving</span><strong>{loading ? "—" : moving}</strong><small>Speed &gt; 3 km/h</small></div>
       <div className="module-stat warn"><span>Idle</span><strong>{loading ? "—" : idle}</strong><small>Engine on, stationary</small></div>
       <div className="module-stat"><span>Parked</span><strong>{loading ? "—" : parked}</strong><small>Engine off</small></div>
+      {excursions.length > 0 && <div className="module-stat warn"><span>Temp. excursions</span><strong>{excursions.length}</strong><small>Reefer above +8 °C</small></div>}
     </div>
     {!loading && !error && vehicles.length > 0 && plotted.length === 0 &&
       <div className="pod-note warn" style={{ marginBottom: 12 }}>
@@ -2324,20 +2470,38 @@ function LiveGpsView({ onAction }: { onAction: Notify }) {
       </div>}
     <div className="tracking-page-layout">
       <section className="module-table-card shipment-list">
-        <div className="module-toolbar"><div><strong>Vehicles</strong><span>{vehicles.length} reporting</span></div></div>
+        <div className="module-toolbar"><div><strong>Vehicles</strong><span>{shown.length} of {vehicles.length}</span></div></div>
+        <div style={{ padding: "0 12px 8px" }}>
+          <input value={query} onChange={e => setQuery(e.target.value)} aria-label="Search vehicles"
+                 placeholder="Search plate or location…" style={{ width: "100%" }} />
+        </div>
+        <div className="toolbar-actions wrap">
+          {[["", "All"], ["moving", "Moving"], ["idle", "Idle"], ["parked", "Parked"]].map(([value, label]) =>
+            <button key={value} className={value === statusFilter ? "chip active" : "chip"}
+                    onClick={() => setStatusFilter(value)}>{label}</button>)}
+        </div>
         <div className="shipment-rows">
-          {vehicles.map(v => <div key={v.reg} className={"shipment-row" + (v.reg === selected ? " active" : "")} onClick={() => toggle(v.reg)}>
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+          {shown.map(v => <div key={v.reg} className={"shipment-row" + (v.reg === selected ? " active" : "")} onClick={() => toggle(v.reg)}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 8, minWidth: 0 }}>
               <span style={{ width: 10, height: 10, borderRadius: "50%", background: GPS_STATUS_COLOR[v.gps_status] || "#94a3b8", flexShrink: 0, marginTop: 4 }} />
-              <div><strong>{v.reg}</strong><small>{v.address ? v.address.slice(0, 48) : "No location"}</small></div>
+              <div style={{ minWidth: 0 }}>
+                <strong>{v.reg}</strong>
+                <small style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {v.address || v.label || "No location"}
+                </small>
+              </div>
             </div>
             <div className="shipment-row-meta">
               <span className={"status " + (v.gps_status === "moving" ? "completed" : v.gps_status === "idle" ? "assigned" : "available")}>{v.gps_status}</span>
               {!v.in_india && <span className="status cancelled">no fix</span>}
+              {/* Reefer body temperature is the number this fleet is actually watching. */}
+              {v.temperature_c != null && <small style={{ color: v.temperature_c > 8 ? "#dc2626" : "#0284c7", fontWeight: 600 }}>{v.temperature_c}°C</small>}
               {v.speed_kph > 0 && <small>{v.speed_kph} km/h</small>}
             </div>
           </div>)}
-          {!loading && !vehicles.length && <div className="data-state">{error ? "Geotrackers is unreachable." : "No vehicles reporting."}</div>}
+          {!loading && !shown.length && <div className="data-state">
+            {error ? "Geotrackers is unreachable." : vehicles.length ? "No vehicles match this filter." : "No vehicles reporting."}
+          </div>}
         </div>
       </section>
 
@@ -2348,20 +2512,7 @@ function LiveGpsView({ onAction }: { onAction: Notify }) {
             <span style={{ color: "#22c55e" }}>●</span> moving &nbsp;<span style={{ color: "#f59e0b" }}>●</span> idle &nbsp;<span style={{ color: "#94a3b8" }}>●</span> parked
           </small>
         </div>
-        <svg viewBox={`0 0 ${INDIA_MAP_W} ${INDIA_MAP_H}`} style={{ width: "100%", maxHeight: 340, display: "block", background: "var(--surface-2,#f8fafc)" }}>
-          <path d={INDIA_PATH} fill="var(--surface-1,#fff)" stroke="var(--border,#cbd5e1)" strokeWidth="1.5" />
-          {plotted.map(v => {
-            const { x, y } = toMapXY(v.lat, v.lng);
-            const isSelected = v.reg === selected;
-            const color = GPS_STATUS_COLOR[v.gps_status] || "#94a3b8";
-            return <g key={v.reg} style={{ cursor: "pointer" }} onClick={() => toggle(v.reg)}>
-              <title>{`${v.reg} · ${v.gps_status} · ${v.speed_kph} km/h`}</title>
-              {isSelected && <circle cx={x} cy={y} r={13} fill={color} opacity={0.2} />}
-              <circle cx={x} cy={y} r={isSelected ? 8 : 5} fill={color} opacity={0.85} stroke="#fff" strokeWidth={1.5} />
-            </g>;
-          })}
-          {!loading && !plotted.length && <text x={INDIA_MAP_W / 2} y={INDIA_MAP_H / 2} textAnchor="middle" fontSize="11" fill="var(--text-2,#64748b)">No positioned vehicles</text>}
-        </svg>
+        <FleetMap vehicles={plotted} selectedReg={selected} onSelect={toggle} />
         {(noFix.length > 0 || offMap.length > 0) && <p style={{ padding: "6px 16px", margin: 0, fontSize: 12, color: "var(--text-2,#64748b)" }}>
           Not shown: {noFix.length} without a GPS fix{offMap.length ? `, ${offMap.length} reporting a position outside India` : ""}.
         </p>}
@@ -2369,12 +2520,20 @@ function LiveGpsView({ onAction }: { onAction: Notify }) {
           ? <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border)" }}>
               <div className="tracking-grid">
                 <div><span>Registration</span><strong>{sel.reg}</strong></div>
-                <div><span>GPS status</span><strong style={{ color: GPS_STATUS_COLOR[sel.gps_status] || "#94a3b8" }}>{sel.gps_status}</strong></div>
+                <div><span>Status</span><strong style={{ color: GPS_STATUS_COLOR[sel.gps_status] || "#94a3b8" }}>{sel.state_text || sel.gps_status}</strong></div>
                 <div><span>Speed</span><strong>{sel.speed_kph} km/h</strong></div>
                 <div><span>Ignition</span><strong>{sel.ignition ? "ON" : "OFF"}</strong></div>
+                {sel.temperature_c != null && <div>
+                  <span>Body temperature</span>
+                  <strong style={{ color: sel.temperature_c > 8 ? "#dc2626" : "#0284c7" }}>
+                    {sel.temperature_c}°C{sel.ac_on === false ? " · unit off" : ""}
+                  </strong></div>}
+                {sel.battery_v != null && <div><span>Battery</span><strong>{sel.battery_v} V</strong></div>}
+                {(sel.make || sel.model) && <div><span>Body / model</span><strong>{[sel.make, sel.model].filter(Boolean).join(" · ")}</strong></div>}
                 <div><span>FMS status</span><strong>{sel.fms_status ? String(sel.fms_status).replaceAll("_", " ") : "Not in FMS"}</strong></div>
-                <div><span>Last fix</span><strong>{sel.gps_time || "—"}</strong></div>
+                <div><span>Last fix</span><strong>{sel.gps_time ? new Date(sel.gps_time).toLocaleString("en-IN") : "—"}</strong></div>
               </div>
+              {sel.label && <p className="pod-note" style={{ marginTop: 8 }}>{sel.label}</p>}
               {sel.lat && sel.lng && <p className="pod-note" style={{ marginTop: 8 }}>
                 📍 {sel.address || `${Number(sel.lat).toFixed(5)}, ${Number(sel.lng).toFixed(5)}`}
                 {sel.coords_swapped ? " · latitude and longitude arrived transposed and were corrected" : ""}
