@@ -1,4 +1,5 @@
 """Tests for the Fleetbase FleetOps inspired modules."""
+import json as _json
 from datetime import timedelta
 from decimal import Decimal
 from unittest import mock
@@ -1020,6 +1021,109 @@ class GeotrackersParsingTests(TestCase):
         self.assertEqual(geotrackers.parse({"message": "no data"}), [])
         self.assertEqual(geotrackers.parse([]), [])
 
+    def test_a_model_name_is_not_mistaken_for_a_plate(self):
+        self.assertEqual(geotrackers.registration_from("TATA 1109"), "")
+        self.assertEqual(geotrackers.registration_from("TATA 1109 - MH43CK1211"), "MH43CK1211")
+
+    def test_an_asset_with_no_plate_at_all_keeps_its_name(self):
+        ping = geotrackers.parse([{"assetName": "Yard genset", "lat": 19.2, "lng": 73.0}])[0]
+        self.assertEqual(ping["reg"], "Yard genset")
+
+    def test_a_clean_plate_is_not_duplicated_into_the_label(self):
+        ping = geotrackers.parse([{"vehicleNo": "MH04JU9182", "lat": 19.2, "lng": 73.0}])[0]
+        self.assertEqual(ping["reg"], "MH04JU9182")
+        self.assertEqual(ping["label"], "")
+
+
+# One real record captured from the vendor, kept verbatim. Everything the
+# console shows is derived from this shape, so it is the fixture that matters.
+GEOTRACKERS_LIVE_RECORD = {
+    "id": None,
+    "vehicle": {
+        "id": "a717c5f1-86ea-4f46-a077-bb5a44314dbd",
+        "registrationNumber": "10 FT 1 TON BOLR MH14LX8206",
+        "make": "Reefer", "model": "2820", "type": "Reefer",
+        "fmId": "3ea104f150768a07fd55453b14585368fd7dd975d8a05a9423930b45f442becf",
+        "createdBy": "alpha", "createdAt": 1774092500482, "virtualName": None,
+    },
+    "loadStatus": None,
+    "driver": None,
+    "location": {
+        "id": "257381842439", "vtuId": 47598, "timestamp": 1786535659000,
+        "address": "2.3 kms from Government Hospital, Sangamner Kh, Sangamner Bypass, "
+                   "Sangamner, Ahilyanagar District, MH",
+        "latitude": 19.54, "longitude": 74.2043, "speed": 30, "speedUnit": "kmph",
+        "direction": 202, "distance": None, "exceptionBM": 524336, "exceptionBM2": 0,
+        "state": "Moving for 49 mins ", "status": "AC On, Key On, Motion",
+        "sysTime": 0, "lateData": 0,
+    },
+    "analogs": [
+        {"type": "TEMPERATURE", "name": "Temperature", "value": -22.8, "unit": "°C",
+         "disOrShortValue": None, "disOrShort": False},
+        {"type": "BATTERY", "name": "VBatt", "value": 14.292, "unit": "V",
+         "disOrShortValue": None, "disOrShort": False},
+    ],
+    "digitals": [
+        {"type": "AC", "name": "AC On", "bit": 32, "state": True},
+        {"type": "KEY", "name": "Key On", "bit": 16, "state": True},
+        {"type": "CUSTOM", "name": "Motion", "bit": 524288, "state": True},
+        {"type": "CUSTOM", "name": None, "bit": 1048576, "state": False},
+    ],
+    "trips": None,
+    "fuelTankCapacity": 0,
+}
+
+
+class GeotrackersLiveRecordTests(TestCase):
+    """Pinned against the real vendor record rather than an invented one."""
+
+    def setUp(self):
+        self.ping = geotrackers.parse([GEOTRACKERS_LIVE_RECORD])[0]
+
+    def test_the_plate_is_extracted_from_the_descriptive_registration(self):
+        self.assertEqual(self.ping["reg"], "MH14LX8206")
+        self.assertEqual(self.ping["label"], "10 FT 1 TON BOLR MH14LX8206")
+
+    def test_coordinates_come_off_the_nested_location_object(self):
+        self.assertAlmostEqual(self.ping["lat"], 19.54)
+        self.assertAlmostEqual(self.ping["lng"], 74.2043)
+        self.assertTrue(self.ping["in_india"])
+        self.assertFalse(self.ping["coords_swapped"])
+
+    def test_epoch_milliseconds_become_a_readable_timestamp(self):
+        # 1786535659000 ms, not the integer printed straight at the operator.
+        self.assertTrue(self.ping["gps_time"].startswith("2026-"))
+        self.assertIn("T", self.ping["gps_time"])
+
+    def test_reefer_temperature_and_battery_are_lifted_off_the_analogs_array(self):
+        self.assertAlmostEqual(self.ping["temperature_c"], -22.8)
+        self.assertAlmostEqual(self.ping["battery_v"], 14.292)
+
+    def test_ignition_and_reefer_ac_come_off_the_digitals_array(self):
+        self.assertTrue(self.ping["ignition"])   # KEY
+        self.assertTrue(self.ping["ac_on"])      # AC
+
+    def test_movement_is_read_from_the_state_wording(self):
+        self.assertEqual(self.ping["gps_status"], "moving")
+        self.assertEqual(self.ping["state_text"], "Moving for 49 mins")
+        self.assertEqual(self.ping["speed_kph"], 30.0)
+        self.assertEqual(self.ping["heading"], 202.0)
+
+    def test_a_stopped_reading_is_not_reported_as_moving(self):
+        record = _json.loads(_json.dumps(GEOTRACKERS_LIVE_RECORD))
+        record["location"].update({"state": "Stopped for 3 hrs ", "status": "AC Off, Key Off", "speed": 0})
+        record["digitals"] = [{"type": "KEY", "name": "Key Off", "bit": 16, "state": False}]
+        ping = geotrackers.parse([record])[0]
+        self.assertEqual(ping["gps_status"], "parked")
+        self.assertFalse(ping["ignition"])
+
+    def test_the_telemetry_arrays_are_not_mistaken_for_the_vehicle_list(self):
+        # `digitals` and `analogs` are lists of dicts too; the scorer has to
+        # prefer the list whose entries carry coordinates.
+        rows = geotrackers.extract_rows({"data": [GEOTRACKERS_LIVE_RECORD]})
+        self.assertEqual(len(rows), 1)
+        self.assertIn("vehicle", rows[0])
+
 
 class LiveTrackingEndpointTests(BaseFleetOpsTest):
     def test_positions_are_written_back_onto_matching_vehicles(self):
@@ -1063,3 +1167,4 @@ class LiveTrackingEndpointTests(BaseFleetOpsTest):
         self.assertEqual(response.data["rows_detected"], 1)
         self.assertEqual(response.data["first_row_raw"]["vehicleNo"], "MH04JU9182")
         self.assertEqual(response.data["top_level_keys"], ["data"])
+

@@ -49,3 +49,6 @@ __pycache__/
 /backend/media/
 tsconfig.tsbuildinfo
 
+
+# Stray Next.js build output if a build is run from backend/
+backend/.next/
