@@ -2793,6 +2793,19 @@ function IndentsView({ reloadKey, onAction, openAction }: { reloadKey: number; o
 // Report views
 // ---------------------------------------------------------------------------
 
+function downloadCSV(filename: string, headers: string[], rows: (string | number | null | undefined)[][]) {
+  const escape = (v: string | number | null | undefined) => {
+    const s = String(v ?? "");
+    return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const lines = [headers, ...rows].map(row => row.map(escape).join(",")).join("\r\n");
+  const blob = new Blob(["﻿" + lines], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
 function ReportDateRange({ range, setRange, onApply }: { range: { from: string; to: string }; setRange: (r: { from: string; to: string }) => void; onApply: () => void }) {
   return (
     <div className="report-range">
@@ -2825,11 +2838,21 @@ function DriverAvailabilityReport({ reloadKey, onAction }: { reloadKey: number; 
     return <span className={"status " + cls}>{s.replaceAll("_", " ")}</span>;
   };
 
+  const handleDownload = () => {
+    const headers = ["Driver", "Phone", "Licence Number", "Licence Expiry", "Expiry Status", "Status", "Home City", "Active Trips"];
+    const rows = visible.map((d: any) => [d.name, d.phone, d.licence_number, d.licence_expiry || "", d.licence_expiry_status.replaceAll("_", " "), d.status, d.home_city || "", d.active_trips]);
+    downloadCSV("driver-availability.csv", headers, rows);
+    onAction("Driver availability report downloaded");
+  };
+
   return (
     <div className="module-page">
       <div className="module-title">
         <div><p className="eyebrow">REPORTS</p><h2>Driver &amp; Availability</h2><p>Licence status, current availability and trip count for every driver in the fleet.</p></div>
-        <button className="primary module-action" onClick={load}>↻ Refresh</button>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button className="secondary module-action" onClick={handleDownload} disabled={!data || loading}>⇩ Download CSV</button>
+          <button className="primary module-action" onClick={load}>↻ Refresh</button>
+        </div>
       </div>
       {data && (
         <div className="module-stats">
@@ -2845,6 +2868,7 @@ function DriverAvailabilityReport({ reloadKey, onAction }: { reloadKey: number; 
           <div className="toolbar-actions">
             <input placeholder="Search drivers…" value={query} onChange={e => setQuery(e.target.value)} />
             <button onClick={load}>↻ Refresh</button>
+            <button onClick={handleDownload} disabled={!data || loading}>⇩ Export</button>
           </div>
         </div>
         {loading ? <div className="data-state">Loading report…</div> : !data ? <div className="data-state error">Could not load the report.</div> : visible.length === 0 ? <div className="data-state">No drivers found.</div> : (
@@ -2895,11 +2919,21 @@ function FleetReport({ reloadKey, onAction }: { reloadKey: number; onAction: Not
     return <span className={"status " + cls}>{s.replaceAll("_", " ")}</span>;
   };
 
+  const handleDownload = () => {
+    const headers = ["Registration", "Type", "Ownership", "Capacity (kg)", "Status", "Insurance Expiry", "Insurance Status", "Permit Expiry", "Permit Status", "Odometer (km)", "Total Trips"];
+    const rows = visible.map((v: any) => [v.registration_number, v.vehicle_type, v.ownership, v.capacity_kg, v.status, v.insurance_expiry || "", v.insurance_status.replaceAll("_", " "), v.permit_expiry || "", v.permit_status.replaceAll("_", " "), v.current_odometer_km, v.trips_total]);
+    downloadCSV("fleet-report.csv", headers, rows);
+    onAction("Fleet report downloaded");
+  };
+
   return (
     <div className="module-page">
       <div className="module-title">
         <div><p className="eyebrow">REPORTS</p><h2>Fleet Report</h2><p>Vehicle-by-vehicle status, utilisation, and insurance &amp; permit compliance across the entire fleet.</p></div>
-        <button className="primary module-action" onClick={load}>↻ Refresh</button>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button className="secondary module-action" onClick={handleDownload} disabled={!data || loading}>⇩ Download CSV</button>
+          <button className="primary module-action" onClick={load}>↻ Refresh</button>
+        </div>
       </div>
       {data && (
         <div className="module-stats">
@@ -2915,6 +2949,7 @@ function FleetReport({ reloadKey, onAction }: { reloadKey: number; onAction: Not
           <div className="toolbar-actions">
             <input placeholder="Search vehicles…" value={query} onChange={e => setQuery(e.target.value)} />
             <button onClick={load}>↻ Refresh</button>
+            <button onClick={handleDownload} disabled={!data || loading}>⇩ Export</button>
           </div>
         </div>
         {loading ? <div className="data-state">Loading report…</div> : !data ? <div className="data-state error">Could not load the report.</div> : visible.length === 0 ? <div className="data-state">No vehicles found.</div> : (
@@ -2967,11 +3002,27 @@ function CustomerInvoicesReport({ reloadKey, onAction }: { reloadKey: number; on
 
   const statusBadge = (s: string) => <span className={"status " + (s === "paid" ? "active" : s === "overdue" ? "expired" : "pending")}>{s}</span>;
 
+  const handleDownload = () => {
+    if (tab === 0) {
+      const headers = ["Invoice", "Customer", "GSTIN", "Freight", "GST", "Total", "Due Date", "Days Overdue", "Status", "Date"];
+      const rows = visibleInvoices.map((i: any) => [i.number, i.customer, i.customer_gstin, i.freight_amount, i.tax_amount, i.total_amount, i.due_date, i.days_overdue, i.status, i.created_at]);
+      downloadCSV("customer-invoices.csv", headers, rows);
+    } else {
+      const headers = ["Customer", "Invoice Count", "Total Billed", "Paid", "Outstanding"];
+      const rows = visibleCustomers.map((c: any) => [c.customer, c.count, c.total, c.paid, c.outstanding]);
+      downloadCSV("customer-invoices-by-customer.csv", headers, rows);
+    }
+    onAction("Customer invoice report downloaded");
+  };
+
   return (
     <div className="module-page">
       <div className="module-title">
         <div><p className="eyebrow">REPORTS</p><h2>Customer Invoice Report</h2><p>Invoice-level detail and customer-wise outstanding with ageing.</p></div>
-        <button className="primary module-action" onClick={load}>↻ Refresh</button>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button className="secondary module-action" onClick={handleDownload} disabled={!data || loading}>⇩ Download CSV</button>
+          <button className="primary module-action" onClick={load}>↻ Refresh</button>
+        </div>
       </div>
       {data && (
         <div className="module-stats">
@@ -2989,7 +3040,7 @@ function CustomerInvoicesReport({ reloadKey, onAction }: { reloadKey: number; on
       <section className="module-table-card">
         <div className="module-toolbar">
           <div><strong>{tab === 0 ? "All invoices" : "Customer summary"}</strong><span>{loading ? "Loading…" : tab === 0 ? `${visibleInvoices.length} invoices` : `${visibleCustomers.length} customers`}</span></div>
-          <div className="toolbar-actions"><input placeholder="Search…" value={query} onChange={e => setQuery(e.target.value)} /></div>
+          <div className="toolbar-actions"><input placeholder="Search…" value={query} onChange={e => setQuery(e.target.value)} /><button onClick={handleDownload} disabled={!data || loading}>⇩ Export</button></div>
         </div>
         {loading ? <div className="data-state">Loading report…</div> : !data ? <div className="data-state error">Could not load the report.</div> : tab === 0 ? (
           visibleInvoices.length === 0 ? <div className="data-state">No invoices in this period.</div> : (
@@ -3058,11 +3109,21 @@ function VehicleSettlementReport({ reloadKey, onAction }: { reloadKey: number; o
 
   const statusBadge = (s: string) => <span className={"status " + (s === "settled" ? "active" : "pending")}>{s}</span>;
 
+  const handleDownload = () => {
+    const headers = ["Driver", "Phone", "Trip", "Vehicle", "Route", "Advance (INR)", "Approved Expenses (INR)", "Net Payable (INR)", "Status", "Trip Status", "Date"];
+    const rows = visible.map((s: any) => [s.driver, s.driver_phone, s.trip, s.vehicle, s.route, s.advance_amount, s.approved_expenses, s.net_payable, s.status, s.trip_status, s.created_at]);
+    downloadCSV("vehicle-settlement.csv", headers, rows);
+    onAction("Vehicle settlement report downloaded");
+  };
+
   return (
     <div className="module-page">
       <div className="module-title">
         <div><p className="eyebrow">REPORTS</p><h2>Vehicle Settlement Report</h2><p>Trip-wise driver advance, approved expenses and net payable for every settlement.</p></div>
-        <button className="primary module-action" onClick={load}>↻ Refresh</button>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button className="secondary module-action" onClick={handleDownload} disabled={!data || loading}>⇩ Download CSV</button>
+          <button className="primary module-action" onClick={load}>↻ Refresh</button>
+        </div>
       </div>
       {data && (
         <div className="module-stats">
@@ -3076,7 +3137,7 @@ function VehicleSettlementReport({ reloadKey, onAction }: { reloadKey: number; o
       <section className="module-table-card">
         <div className="module-toolbar">
           <div><strong>All settlements</strong><span>{loading ? "Loading…" : `${visible.length} records`}</span></div>
-          <div className="toolbar-actions"><input placeholder="Search…" value={query} onChange={e => setQuery(e.target.value)} /><button onClick={load}>↻ Refresh</button></div>
+          <div className="toolbar-actions"><input placeholder="Search…" value={query} onChange={e => setQuery(e.target.value)} /><button onClick={load}>↻ Refresh</button><button onClick={handleDownload} disabled={!data || loading}>⇩ Export</button></div>
         </div>
         {loading ? <div className="data-state">Loading report…</div> : !data ? <div className="data-state error">Could not load the report.</div> : visible.length === 0 ? <div className="data-state">No settlements in this period.</div> : (
           <div className="table-wrap">
@@ -3127,11 +3188,21 @@ function SalesReport({ reloadKey, onAction }: { reloadKey: number; onAction: Not
     return <span className={"status " + cls}>{s}</span>;
   };
 
+  const handleDownload = () => {
+    const headers = ["Quote Number", "Customer", "GSTIN", "Origin", "Destination", "Freight (INR)", "Valid Until", "Status", "Date"];
+    const rows = visible.map((q: any) => [q.number, q.customer, q.customer_gstin, q.origin, q.destination, q.freight_amount, q.valid_until, q.status, q.created_at]);
+    downloadCSV("sales-report.csv", headers, rows);
+    onAction("Sales report downloaded");
+  };
+
   return (
     <div className="module-page">
       <div className="module-title">
         <div><p className="eyebrow">REPORTS</p><h2>Sales Report</h2><p>Quotation pipeline, conversion rate and freight value by customer and lane.</p></div>
-        <button className="primary module-action" onClick={load}>↻ Refresh</button>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button className="secondary module-action" onClick={handleDownload} disabled={!data || loading}>⇩ Download CSV</button>
+          <button className="primary module-action" onClick={load}>↻ Refresh</button>
+        </div>
       </div>
       {data && (
         <div className="module-stats">
@@ -3154,7 +3225,7 @@ function SalesReport({ reloadKey, onAction }: { reloadKey: number; onAction: Not
       <section className="module-table-card">
         <div className="module-toolbar">
           <div><strong>All quotations</strong><span>{loading ? "Loading…" : `${visible.length} quotes`}</span></div>
-          <div className="toolbar-actions"><input placeholder="Search…" value={query} onChange={e => setQuery(e.target.value)} /><button onClick={load}>↻ Refresh</button></div>
+          <div className="toolbar-actions"><input placeholder="Search…" value={query} onChange={e => setQuery(e.target.value)} /><button onClick={load}>↻ Refresh</button><button onClick={handleDownload} disabled={!data || loading}>⇩ Export</button></div>
         </div>
         {loading ? <div className="data-state">Loading report…</div> : !data ? <div className="data-state error">Could not load the report.</div> : visible.length === 0 ? <div className="data-state">No quotations in this period.</div> : (
           <div className="table-wrap">
