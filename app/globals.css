@@ -474,3 +474,30 @@ tr.clickable:hover td{background:#f8faf7}
 .status.unassigned{background:#fff4df;color:#9a6b22}
 @media(max-width:700px){.voucher-stats{grid-template-columns:repeat(2,1fr)}.voucher-form{grid-template-columns:1fr}}
 .assign-row button{white-space:nowrap;width:auto;height:auto;padding:9px 14px}
+
+/* --- Live GPS map (Leaflet) ------------------------------------------------ */
+.fleet-map{position:relative;height:min(60vh,560px);width:100%;overflow:hidden;background:#e8eef3}
+.fleet-map .leaflet-container{height:100%;width:100%;font:inherit;background:#e8eef3}
+/* Leaflet stacks its panes at z-index 400-700, which would otherwise sit over
+   the app's own drawers and toasts. */
+.fleet-map .leaflet-pane,.fleet-map .leaflet-top,.fleet-map .leaflet-bottom{z-index:1}
+.fleet-map .leaflet-control-attribution{font-size:9px;background:rgba(255,255,255,.8)}
+
+.gps-pin{position:relative;width:16px;height:16px}
+.gps-pin i{position:absolute;inset:0;border-radius:50%;background:var(--pin);border:2px solid #fff;box-shadow:0 1px 4px rgba(16,25,21,.4)}
+/* A moving vehicle points where it is going; a stopped one is just a dot. */
+.gps-pin.moving i{border-radius:50% 50% 50% 0;transform:rotate(calc(var(--heading,0) * 1deg - 45deg))}
+.gps-pin.selected::after{content:"";position:absolute;inset:-9px;border-radius:50%;border:2px solid var(--pin);opacity:.75;animation:gps-ping 1.6s ease-out infinite}
+@keyframes gps-ping{0%{transform:scale(.6);opacity:.8}100%{transform:scale(1.3);opacity:0}}
+.gps-pin b{position:absolute;left:50%;top:19px;transform:translateX(-50%);font-size:9px;font-weight:700;white-space:nowrap;color:#17211d;background:rgba(255,255,255,.86);border-radius:4px;padding:0 3px;letter-spacing:-.2px}
+
+.gps-cluster{background:rgba(13,95,69,.9);color:#fff;border:2px solid #fff;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:12px;box-shadow:0 1px 6px rgba(16,25,21,.45)}
+.gps-popup h4{margin:0 0 4px;font-size:13px}
+.gps-popup dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:11px}
+.gps-popup dt{color:var(--muted)}
+.gps-popup dd{margin:0;font-weight:600}
+.gps-popup .excursion{color:#c0342b}
+.fleet-map-layers{position:absolute;top:10px;right:10px;z-index:2;display:flex;gap:4px;background:rgba(255,255,255,.92);padding:4px;border-radius:9px;box-shadow:0 1px 6px rgba(16,25,21,.2)}
+.fleet-map-layers button{border:0;background:transparent;border-radius:6px;padding:4px 9px;font-size:11px;cursor:pointer;color:var(--muted)}
+.fleet-map-layers button.active{background:var(--green);color:#fff}
+.fleet-map-overlay{position:absolute;inset:0;z-index:3;display:grid;place-items:center;padding:20px;background:rgba(232,238,243,.94);text-align:center}
