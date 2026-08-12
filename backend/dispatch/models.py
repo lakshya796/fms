@@ -9,6 +9,7 @@ touching operational data until it is committed (see `views.commit`).
 See docs/DISPATCH-PLANNING.md for the design this implements.
 """
 from decimal import Decimal
+from uuid import uuid4
 
 from django.db import models
 from django.utils import timezone
@@ -51,7 +52,10 @@ class DispatchPlan(Timestamped):
 
     def save(self, *args, **kwargs):
         if not self.code:
-            self.code = "DP-" + timezone.now().strftime("%y%m%d") + "-" + timezone.now().strftime("%H%M%S")
+            # A random suffix, not just a timestamp: two plans created in the same
+            # second (routine for a re-plan, which creates a child right after its
+            # parent) would otherwise collide on this unique field.
+            self.code = "DP-" + timezone.now().strftime("%y%m%d") + "-" + uuid4().hex[:6].upper()
         super().save(*args, **kwargs)
 
     def log(self, event_type, description="", data=None):
@@ -270,3 +274,35 @@ class HireRequirement(Timestamped):
 
     def __str__(self):
         return f"{self.plan.code}: {self.vehicle_type or 'any'} {self.capacity_kg}kg"
+
+
+CARRIER_OFFER_STATUSES = [("invited", "Invited"), ("quoted", "Quoted"), ("accepted", "Accepted"),
+                          ("rejected", "Rejected"), ("expired", "Expired")]
+
+
+class CarrierOffer(Timestamped):
+    """One vendor's response to a `HireRequirement` RFQ - what §8.2/§8.3 of
+    docs/DISPATCH-PLANNING.md calls sourcing and award. Accepting one creates the
+    existing `fleet.VehicleHire`, so the commercial record stays singular."""
+    requirement = models.ForeignKey(HireRequirement, on_delete=models.CASCADE, related_name="offers")
+    vendor = models.ForeignKey("fleet.Vendor", on_delete=models.CASCADE, related_name="carrier_offers")
+    offered_rate = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    rate_basis = models.CharField(max_length=10, default="trip")
+    vehicle_number = models.CharField(max_length=20, blank=True)
+    vehicle_type = models.CharField(max_length=60, blank=True)
+    temperature_class = models.CharField(max_length=10, choices=TEMPERATURE_CLASSES, default="dry")
+    gps_available = models.BooleanField(default=False)
+    driver_name = models.CharField(max_length=120, blank=True)
+    driver_phone = models.CharField(max_length=20, blank=True)
+    message_id = models.PositiveIntegerField(null=True, blank=True, help_text="iam.OutboundMessage this RFQ was sent as")
+    valid_until = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=10, choices=CARRIER_OFFER_STATUSES, default="invited")
+    responded_at = models.DateTimeField(null=True, blank=True)
+    remarks = models.CharField(max_length=240, blank=True)
+
+    class Meta:
+        ordering = ["offered_rate", "-created_at"]
+        indexes = [models.Index(fields=["requirement", "status"])]
+
+    def __str__(self):
+        return f"{self.vendor.name} -> {self.requirement_id} ({self.status})"

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import DispatchPlan, DispatchTask, HireRequirement, PlanEvent, PlannedRoute, PlannedStop, PlanVehicle
+from .models import CarrierOffer, DispatchPlan, DispatchTask, HireRequirement, PlanEvent, PlannedRoute, PlannedStop, PlanVehicle
 
 
 class PlanVehicleSerializer(serializers.ModelSerializer):
@@ -29,8 +29,15 @@ class PlannedStopSerializer(serializers.ModelSerializer):
 class PlannedRouteSerializer(serializers.ModelSerializer):
     stops = PlannedStopSerializer(many=True, read_only=True)
     plan_vehicle_detail = PlanVehicleSerializer(source="plan_vehicle", read_only=True)
+    gps_verified = serializers.SerializerMethodField()
     class Meta:
         model = PlannedRoute; fields = "__all__"
+
+    def get_gps_verified(self, route):
+        """Whether arrivals on this route can be trusted from a GPS device
+        rather than a driver's own say-so - see docs/DISPATCH-PLANNING.md §7.3."""
+        vehicle = route.plan_vehicle.vehicle
+        return bool(vehicle and vehicle.gps_device_id)
 
 
 class PlanEventSerializer(serializers.ModelSerializer):
@@ -38,10 +45,17 @@ class PlanEventSerializer(serializers.ModelSerializer):
         model = PlanEvent; fields = "__all__"
 
 
+class CarrierOfferSerializer(serializers.ModelSerializer):
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True, default="")
+    class Meta:
+        model = CarrierOffer; fields = "__all__"
+
+
 class HireRequirementSerializer(serializers.ModelSerializer):
     pickup_name = serializers.CharField(source="pickup.name", read_only=True, default="")
     dropoff_name = serializers.CharField(source="dropoff.name", read_only=True, default="")
     task_count = serializers.IntegerField(source="tasks.count", read_only=True)
+    offers = CarrierOfferSerializer(many=True, read_only=True)
     class Meta:
         model = HireRequirement; fields = "__all__"
 
