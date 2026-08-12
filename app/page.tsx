@@ -2247,6 +2247,7 @@ function LiveGpsView({ onAction }: { onAction: Notify }) {
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const [diagnostic, setDiagnostic] = useState<any>(null);
 
   const load = async () => {
     try {
@@ -2255,10 +2256,17 @@ function LiveGpsView({ onAction }: { onAction: Notify }) {
       setLastRefresh(new Date());
       setError(data.error || null);
     } catch (e) {
-      setError(e instanceof Error ? e.message.slice(0, 120) : "Could not reach live tracking");
+      setError(e instanceof Error ? e.message.slice(0, 200) : "Could not reach live tracking");
     } finally {
       setLoading(false);
     }
+  };
+
+  // The vendor endpoint is undocumented; when a field moves this is how the
+  // operator gets the raw shape without needing a shell on the server.
+  const diagnose = async () => {
+    try { setDiagnostic(await fmsRequest<any>("live-tracking/?debug=1")); }
+    catch (e) { onAction(e instanceof Error ? e.message.slice(0, 90) : "Diagnostics failed", "warn"); }
   };
 
   useEffect(() => {
@@ -2271,7 +2279,11 @@ function LiveGpsView({ onAction }: { onAction: Notify }) {
   const moving = vehicles.filter(v => v.gps_status === "moving").length;
   const idle = vehicles.filter(v => v.gps_status === "idle").length;
   const parked = vehicles.filter(v => v.gps_status === "parked").length;
-  const withPos = vehicles.filter(v => v.lat && v.lng).length;
+  const plotted = vehicles.filter(v => v.in_india);
+  const noFix = vehicles.filter(v => !v.lat || !v.lng);
+  // Reporting a position, but not one anywhere near India - worth showing as a
+  // number rather than dropping the pin on the floor and saying nothing.
+  const offMap = vehicles.filter(v => v.lat && v.lng && !v.in_india);
   const sel = vehicles.find(v => v.reg === selected) || null;
 
   const toggle = (reg: string) => setSelected(prev => (prev === reg ? null : reg));
@@ -2280,15 +2292,36 @@ function LiveGpsView({ onAction }: { onAction: Notify }) {
     <div className="module-title">
       <div><p className="eyebrow">LIVE GPS TRACKING</p><h2>Fleet positions</h2>
         <p>Real-time positions from Geotrackers · auto-refreshes every 30 s.{lastRefresh ? ` Last: ${lastRefresh.toLocaleTimeString("en-IN")}` : ""}</p></div>
-      <button className="primary module-action" onClick={load}>↻ Refresh</button>
+      <div className="toolbar-actions">
+        <button className="chip" onClick={diagnose}>⚙ Diagnose feed</button>
+        <button className="primary module-action" onClick={load}>↻ Refresh</button>
+      </div>
     </div>
     {error && <div className="pod-note warn" style={{ marginBottom: 12 }}>Geotrackers: {error}</div>}
+    {diagnostic && <div className="pod-note" style={{ marginBottom: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <strong>Raw feed diagnostics</strong>
+        <button className="chip" onClick={() => setDiagnostic(null)}>Dismiss</button>
+      </div>
+      <p style={{ margin: "6px 0" }}>
+        Payload <code>{diagnostic.payload_type}</code> · {diagnostic.rows_detected} row(s) detected
+        {diagnostic.top_level_keys ? ` · keys: ${diagnostic.top_level_keys.join(", ")}` : ""}
+      </p>
+      <pre style={{ maxHeight: 220, overflow: "auto", fontSize: 11, background: "var(--surface-2,#f1f5f9)", padding: 10, borderRadius: 6 }}>
+        {JSON.stringify(diagnostic.first_row_raw ?? diagnostic.raw_excerpt ?? diagnostic.error, null, 2)}
+      </pre>
+    </div>}
     <div className="module-stats">
-      <div className="module-stat"><span>Reporting</span><strong>{loading ? "—" : vehicles.length}</strong><small>{withPos} with position</small></div>
+      <div className="module-stat"><span>Reporting</span><strong>{loading ? "—" : vehicles.length}</strong><small>{plotted.length} plotted on map</small></div>
       <div className="module-stat"><span>Moving</span><strong>{loading ? "—" : moving}</strong><small>Speed &gt; 3 km/h</small></div>
       <div className="module-stat warn"><span>Idle</span><strong>{loading ? "—" : idle}</strong><small>Engine on, stationary</small></div>
       <div className="module-stat"><span>Parked</span><strong>{loading ? "—" : parked}</strong><small>Engine off</small></div>
     </div>
+    {!loading && !error && vehicles.length > 0 && plotted.length === 0 &&
+      <div className="pod-note warn" style={{ marginBottom: 12 }}>
+        {vehicles.length} vehicle(s) are reporting but none have a usable position
+        ({noFix.length} with no GPS fix, {offMap.length} outside India). Use <strong>Diagnose feed</strong> to see the raw fields.
+      </div>}
     <div className="tracking-page-layout">
       <section className="module-table-card shipment-list">
         <div className="module-toolbar"><div><strong>Vehicles</strong><span>{vehicles.length} reporting</span></div></div>
@@ -2300,6 +2333,7 @@ function LiveGpsView({ onAction }: { onAction: Notify }) {
             </div>
             <div className="shipment-row-meta">
               <span className={"status " + (v.gps_status === "moving" ? "completed" : v.gps_status === "idle" ? "assigned" : "available")}>{v.gps_status}</span>
+              {!v.in_india && <span className="status cancelled">no fix</span>}
               {v.speed_kph > 0 && <small>{v.speed_kph} km/h</small>}
             </div>
           </div>)}
@@ -2316,17 +2350,21 @@ function LiveGpsView({ onAction }: { onAction: Notify }) {
         </div>
         <svg viewBox={`0 0 ${INDIA_MAP_W} ${INDIA_MAP_H}`} style={{ width: "100%", maxHeight: 340, display: "block", background: "var(--surface-2,#f8fafc)" }}>
           <path d={INDIA_PATH} fill="var(--surface-1,#fff)" stroke="var(--border,#cbd5e1)" strokeWidth="1.5" />
-          {vehicles.filter(v => v.lat && v.lng).map(v => {
+          {plotted.map(v => {
             const { x, y } = toMapXY(v.lat, v.lng);
-            if (x < 0 || x > INDIA_MAP_W || y < 0 || y > INDIA_MAP_H) return null;
             const isSelected = v.reg === selected;
             const color = GPS_STATUS_COLOR[v.gps_status] || "#94a3b8";
             return <g key={v.reg} style={{ cursor: "pointer" }} onClick={() => toggle(v.reg)}>
+              <title>{`${v.reg} · ${v.gps_status} · ${v.speed_kph} km/h`}</title>
               {isSelected && <circle cx={x} cy={y} r={13} fill={color} opacity={0.2} />}
               <circle cx={x} cy={y} r={isSelected ? 8 : 5} fill={color} opacity={0.85} stroke="#fff" strokeWidth={1.5} />
             </g>;
           })}
+          {!loading && !plotted.length && <text x={INDIA_MAP_W / 2} y={INDIA_MAP_H / 2} textAnchor="middle" fontSize="11" fill="var(--text-2,#64748b)">No positioned vehicles</text>}
         </svg>
+        {(noFix.length > 0 || offMap.length > 0) && <p style={{ padding: "6px 16px", margin: 0, fontSize: 12, color: "var(--text-2,#64748b)" }}>
+          Not shown: {noFix.length} without a GPS fix{offMap.length ? `, ${offMap.length} reporting a position outside India` : ""}.
+        </p>}
         {sel
           ? <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border)" }}>
               <div className="tracking-grid">
@@ -2337,7 +2375,11 @@ function LiveGpsView({ onAction }: { onAction: Notify }) {
                 <div><span>FMS status</span><strong>{sel.fms_status ? String(sel.fms_status).replaceAll("_", " ") : "Not in FMS"}</strong></div>
                 <div><span>Last fix</span><strong>{sel.gps_time || "—"}</strong></div>
               </div>
-              {sel.address && <p className="pod-note" style={{ marginTop: 8 }}>📍 {sel.address}</p>}
+              {sel.lat && sel.lng && <p className="pod-note" style={{ marginTop: 8 }}>
+                📍 {sel.address || `${Number(sel.lat).toFixed(5)}, ${Number(sel.lng).toFixed(5)}`}
+                {sel.coords_swapped ? " · latitude and longitude arrived transposed and were corrected" : ""}
+              </p>}
+              {!sel.lat && <p className="pod-note warn" style={{ marginTop: 8 }}>This device is not reporting a GPS fix.</p>}
               {sel.lat && sel.lng && <a href={`https://maps.google.com/?q=${sel.lat},${sel.lng}`} target="_blank" rel="noreferrer" className="chip" style={{ display: "inline-block", marginTop: 8 }}>Open in Google Maps ↗</a>}
             </div>
           : <div className="data-state" style={{ padding: 16 }}>Click a vehicle to see its details.</div>}

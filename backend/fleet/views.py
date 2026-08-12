@@ -1,6 +1,4 @@
 import json as _json
-import re as _re
-import urllib.request as _urllib
 from decimal import Decimal
 
 from django.db import transaction
@@ -13,6 +11,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.decorators import permission_classes
 from iam.filtering import apply_filters
 from iam.permissions import HasModulePermission, requires
+from . import geotrackers
 from .models import (Customer, Driver, Vehicle, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement, SalesQuote,
                      MaintenanceWorkOrder, VEHICLE_STATUSES, set_vehicle_status)
 from .serializers import (CustomerSerializer, DriverSerializer, VehicleSerializer, VehicleStatusLogSerializer,
@@ -1025,112 +1024,70 @@ class MaintenanceScheduleViewSet(FilterableViewSet):
         return Response(self.get_serializer(schedule).data)
 
 
-_GEOTRACKERS_URL = "https://www.geotrackers.com/gt/track/v1/dashboard"
-# Basic auth header value – base64("dataiceman:dataiceman")
-_GEOTRACKERS_AUTH = "ZGF0YWljZW1hbjpkYXRhaWNlbWFu"
-
-
 @requires("reports.view")
 @api_view(["GET"])
 def live_tracking(request):
-    """Proxy the Geotrackers dashboard API, merge with FMS vehicle records and
-    update Vehicle.current_latitude/longitude so other modules see fresh positions.
+    """Proxy the Geotrackers dashboard feed, merge it with FMS vehicles and
+    write the positions back so the dispatch solver and geofence capture see
+    fresh coordinates.
 
-    Returns a flat list of GPS pings irrespective of whether the vehicle number
-    matches an FMS vehicle, so the dispatcher sees every device in the fleet,
-    not just the ones already registered.
+    Every device the vendor reports is returned, matched to an FMS vehicle or
+    not, so a truck whose registration has not been keyed in yet still shows on
+    the map instead of vanishing silently.
+
+    `?debug=1` returns the raw vendor payload and what the parser made of it -
+    the endpoint is undocumented, so when a field moves this is how you find
+    out where it moved to.
     """
-    def _normalize(reg):
-        return _re.sub(r"[\s\-.]", "", str(reg or "")).upper()
+    raw, error = geotrackers.fetch_dashboard()
 
-    try:
-        req = _urllib.Request(
-            _GEOTRACKERS_URL,
-            data=b"{}",
-            headers={
-                "Authorization": f"Basic {_GEOTRACKERS_AUTH}",
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/plain, */*",
-                "Origin": "https://www.geotrackers.com",
-                "Referer": "https://www.geotrackers.com/GTWeb/TrackApp/TrackApp.jsp",
-                "User-Agent": "Mozilla/5.0",
-            },
-            method="POST",
-        )
-        with _urllib.urlopen(req, timeout=15) as resp:
-            raw = _json.loads(resp.read())
-        error = None
-    except Exception as exc:
-        raw = {}
-        error = str(exc)
-
-    # Handle both list and dict payloads – Geotrackers has returned either shape.
-    vehicle_list = raw if isinstance(raw, list) else next(
-        (raw[k] for k in ("vehicleList", "vehicles", "data", "result", "records")
-         if isinstance(raw.get(k), list)), [])
-
-    # Index all FMS vehicles by their normalised registration for O(1) lookup.
-    fms_index = {_normalize(v.registration_number): v for v in Vehicle.objects.only(
-        "id", "registration_number", "status", "current_latitude", "current_longitude")}
-
-    results = []
-    to_update = []
-
-    for item in vehicle_list:
-        reg_raw = (item.get("vehicleNo") or item.get("vehicle_no") or
-                   item.get("vehNo") or item.get("reg") or "")
-        reg_norm = _normalize(reg_raw)
-
-        def _f(*keys, default=0.0):
-            for k in keys:
-                v = item.get(k)
-                if v is not None and str(v).strip() not in ("", "null", "None"):
-                    try:
-                        return float(v)
-                    except (TypeError, ValueError):
-                        pass
-            return default
-
-        lat = _f("lat", "latitude", "Lat")
-        lng = _f("lng", "lng", "longitude", "Lon")
-        speed = _f("speed", "spd", "Speed")
-        ignition = str(item.get("ignition") or item.get("ign") or "0") in ("1", "true", "True", "ON")
-        gps_time = (item.get("fixTime") or item.get("gpsTime") or
-                    item.get("serverTime") or item.get("tm") or "")
-        address = item.get("address") or item.get("addr") or item.get("location") or ""
-
-        if speed > 3:
-            gps_status = "moving"
-        elif ignition:
-            gps_status = "idle"
-        else:
-            gps_status = "parked"
-
-        fms = fms_index.get(reg_norm)
-        if fms and lat and lng:
-            fms.current_latitude = Decimal(str(round(lat, 6)))
-            fms.current_longitude = Decimal(str(round(lng, 6)))
-            to_update.append(fms)
-
-        results.append({
-            "reg": reg_raw,
-            "lat": lat or None,
-            "lng": lng or None,
-            "speed_kph": round(speed, 1),
-            "ignition": ignition,
-            "gps_status": gps_status,
-            "gps_time": gps_time,
-            "address": address,
-            "fms_id": fms.id if fms else None,
-            "fms_status": fms.status if fms else None,
+    if request.query_params.get("debug"):
+        rows = geotrackers.extract_rows(raw or {})
+        return Response({
+            "error": error,
+            "payload_type": type(raw).__name__,
+            "top_level_keys": sorted(raw.keys())[:40] if isinstance(raw, dict) else None,
+            "rows_detected": len(rows),
+            "first_row_raw": rows[0] if rows else None,
+            "first_row_parsed": geotrackers.row_to_ping(rows[0]) if rows else None,
+            "raw_excerpt": _json.dumps(raw)[:4000] if raw is not None else None,
         })
 
-    if to_update:
-        Vehicle.objects.bulk_update(to_update, ["current_latitude", "current_longitude"])
+    pings = geotrackers.parse(raw or {})
 
-    payload = {"vehicles": results, "total": len(results), "source": "geotrackers"}
+    # One pass over the fleet, indexed on the registration with its punctuation
+    # stripped - the vendor and the FMS rarely agree on spacing.
+    fleet = {geotrackers.normalise_registration(v.registration_number): v
+             for v in Vehicle.objects.only("id", "registration_number", "status",
+                                           "current_latitude", "current_longitude")}
+
+    stale = []
+    for ping in pings:
+        vehicle = fleet.get(geotrackers.normalise_registration(ping["reg"]))
+        ping["fms_id"] = vehicle.id if vehicle else None
+        ping["fms_status"] = vehicle.status if vehicle else None
+        if vehicle and ping["in_india"]:
+            vehicle.current_latitude = Decimal(str(round(ping["lat"], 6)))
+            vehicle.current_longitude = Decimal(str(round(ping["lng"], 6)))
+            stale.append(vehicle)
+
+    if stale:
+        Vehicle.objects.bulk_update(stale, ["current_latitude", "current_longitude"])
+
+    located = [p for p in pings if p["in_india"]]
+    payload = {
+        "vehicles": pings,
+        "total": len(pings),
+        "located": len(located),
+        "matched": sum(1 for p in pings if p["fms_id"]),
+        "source": "geotrackers",
+    }
     if error:
         payload["error"] = error
+    elif pings and not located:
+        # The feed answered, so this is a parsing problem rather than an outage.
+        payload["error"] = ("Geotrackers returned %d vehicles but no usable coordinates. "
+                            "Open /api/v1/live-tracking/?debug=1 to see the raw fields." % len(pings))
     return Response(payload)
 
 
