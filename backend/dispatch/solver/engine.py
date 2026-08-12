@@ -30,7 +30,7 @@ def solve_plan(plan):
     if plan.solver == "ortools":
         try:
             from .ortools_solver import solve as ortools_solve
-            routes, outsourced, skipped = ortools_solve(plan_vehicles, tasks)
+            routes, outsourced, skipped = ortools_solve(plan_vehicles, tasks, horizon_hours=plan.horizon_hours)
         except ImportError:
             routes, outsourced, skipped = greedy_solve(plan_vehicles, tasks)
             plan.solver = "greedy"
