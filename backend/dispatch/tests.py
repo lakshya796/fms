@@ -5,7 +5,10 @@ that do not touch the database beyond fixtures (capacity, temperature,
 own-vs-outsource), and API-level tests for the collect -> solve -> commit round
 trip that actually lands orders on trips.
 """
+import sys
 from decimal import Decimal
+from importlib.util import find_spec
+from unittest import mock, skipUnless
 
 from django.contrib.auth.models import User
 from django.test import TestCase
@@ -659,33 +662,50 @@ class ReplanTests(BaseDispatchTest):
         self.assertEqual(child.status, "solved")
 
 
+try:
+    HAS_ORTOOLS = find_spec("ortools") is not None
+except (ImportError, ValueError):     # a broken or shadowed install, not merely a missing one
+    HAS_ORTOOLS = False
+
+
 class OrToolsSolverTests(BaseDispatchTest):
     """Tests for the OR-Tools CVRP+PD solver integration (Phase F).
 
-    OR-Tools solver is behind a DISPATCH_SOLVER=ortools configuration flag.
-    These tests verify the solver is available and callable, but full integration
-    tests are deferred until the search parameter tuning is complete (OR-Tools
-    with disjunctions can be slow on larger problems).
+    `ortools` is deliberately an optional dependency: `ortools_solver` is only
+    imported when a plan asks for it, and `engine.solve_plan` falls back to the
+    greedy solver when the package is absent. So the tests that need the
+    package skip without it, and the fallback - the behaviour every deployment
+    without `ortools` installed actually gets - is tested unconditionally.
     """
 
-    def test_ortools_solver_can_be_imported(self):
-        """OR-Tools solver module can be imported without errors."""
-        try:
-            from dispatch.solver import ortools_solver
-            self.assertTrue(hasattr(ortools_solver, "solve"))
-        except ImportError:
-            self.fail("OR-Tools solver should be importable (ortools package required)")
+    def test_a_plan_asking_for_ortools_falls_back_to_greedy_when_it_is_absent(self):
+        # Built the same way as the other solve tests, so the own-vs-outsource
+        # economics come from the rate card rather than from bare defaults.
+        self.make_order("ORD-FALLBACK", self.dropA, 2000)
+        inputs.collect_tasks(self.plan)
+        inputs.build_plan_vehicles(self.plan)
+        self.plan.status = "ready"
+        self.plan.solver = "ortools"
+        self.plan.save()
 
-    def test_ortools_solver_signature_matches_greedy(self):
-        """OR-Tools solver has the same signature as greedy solver."""
-        from dispatch.solver import ortools_solver, greedy
+        # A None entry in sys.modules makes the import raise ImportError, so the
+        # fallback is exercised whether or not the package is really installed.
+        with mock.patch.dict(sys.modules, {"dispatch.solver.ortools_solver": None}):
+            solve_plan(self.plan)
+
+        self.plan.refresh_from_db()
+        self.assertEqual(self.plan.status, "solved")
+        self.assertEqual(self.plan.solver, "greedy")     # recorded honestly, not left saying "ortools"
+        self.assertEqual(self.plan.summary["served_own_fleet"], 1)
+
+    @skipUnless(HAS_ORTOOLS, "ortools is an optional dependency and is not installed")
+    def test_ortools_solver_exposes_the_same_entry_point_as_greedy(self):
         import inspect
 
-        ortools_sig = inspect.signature(ortools_solver.solve)
-        greedy_sig = inspect.signature(greedy.solve)
+        from dispatch.solver import ortools_solver
 
-        # Both take plan_vehicles, tasks, and time_limit_seconds, horizon_hours
-        self.assertIn("plan_vehicles", ortools_sig.parameters)
-        self.assertIn("tasks", ortools_sig.parameters)
-        self.assertIn("time_limit_seconds", ortools_sig.parameters)
-        self.assertIn("horizon_hours", ortools_sig.parameters)
+        parameters = inspect.signature(ortools_solver.solve).parameters
+        self.assertIn("plan_vehicles", parameters)
+        self.assertIn("tasks", parameters)
+        self.assertIn("time_limit_seconds", parameters)
+        self.assertIn("horizon_hours", parameters)
