@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import "leaflet/dist/leaflet.css";
+import "leaflet.markercluster/dist/MarkerCluster.css";
 import { UNAUTHORISED_EVENT, fmsRequest, login, logout } from "./lib/fms-api";
 
 const navGroups: { label: string; items: [string, string][] }[] = [
@@ -2233,146 +2235,203 @@ const GPS_STATUS_COLOR: Record<string, string> = {
   idle: "#f59e0b",
   parked: "#94a3b8",
 };
-// An equirectangular projection over the Indian bounding box. The outline and
-// the vehicle pins are both drawn through this one function, so they cannot
-// drift apart the way a hand-written SVG path and a separate projection do.
-const MAP_W = 720, MAP_H = 780;
-const LNG_MIN = 67.5, LNG_MAX = 97.5, LAT_MIN = 6.5, LAT_MAX = 37.5;
-const toMapXY = (lat: number, lng: number) => ({
-  x: ((lng - LNG_MIN) / (LNG_MAX - LNG_MIN)) * MAP_W,
-  y: ((LAT_MAX - lat) / (LAT_MAX - LAT_MIN)) * MAP_H,
-});
-
-// Simplified national boundary, clockwise from Kashmir, as [lng, lat].
-const INDIA_OUTLINE: [number, number][] = [
-  [76.5, 35.8], [77.8, 35.5], [78.9, 34.4], [79.2, 33.0], [78.7, 31.9], [81.0, 30.3],
-  [82.8, 29.5], [84.7, 28.4], [86.7, 27.8], [88.1, 27.9], [88.9, 27.3], [89.7, 26.7],
-  [92.0, 26.9], [93.4, 27.0], [95.3, 27.9], [97.0, 28.3], [97.4, 27.1], [96.5, 26.0],
-  [95.1, 26.6], [94.6, 25.2], [94.1, 23.8], [93.3, 24.1], [93.0, 23.0], [92.3, 23.7],
-  [91.6, 22.9], [91.4, 23.7], [90.5, 24.0], [89.6, 25.3], [88.1, 24.5], [88.7, 23.2],
-  [88.9, 21.9], [87.0, 21.5], [86.5, 20.1], [85.1, 19.5], [84.0, 18.3], [82.3, 17.0],
-  [80.9, 15.9], [80.3, 13.5], [79.9, 12.0], [79.3, 10.3], [78.2, 9.1], [77.5, 8.1],
-  [76.6, 8.9], [75.8, 11.4], [74.9, 13.0], [74.0, 14.9], [73.2, 16.6], [72.8, 18.6],
-  [72.6, 20.1], [72.9, 21.6], [70.9, 20.8], [69.1, 22.1], [68.2, 23.6], [68.7, 24.3],
-  [70.1, 24.3], [70.8, 25.7], [72.9, 27.7], [73.4, 29.9], [74.6, 31.0], [75.4, 32.3],
-  [74.0, 34.3], [75.0, 35.0],
+// Real map tiles rather than a drawn outline: state and district boundaries,
+// city, town and village names, roads and rail all come from the tile layer,
+// which is what makes this readable as a map rather than as a diagram.
+//
+// Tiles are fetched by the operator's browser, so an air-gapped deployment or
+// one behind a strict egress policy should point NEXT_PUBLIC_MAP_TILE_URL at
+// an internal tile server. OpenStreetMap's public tiles carry a usage policy
+// that a heavy commercial fleet should not lean on indefinitely - swapping in
+// MapTiler, Mapbox or Google is a one-line change here.
+const MAP_LAYERS: { id: string; label: string; url: string; attribution: string; maxZoom: number }[] = [
+  {
+    id: "streets", label: "Map",
+    url: process.env.NEXT_PUBLIC_MAP_TILE_URL || "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    maxZoom: 19,
+  },
+  {
+    id: "terrain", label: "Terrain",
+    url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+    attribution: '&copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)',
+    maxZoom: 17,
+  },
 ];
-const INDIA_PATH = INDIA_OUTLINE
-  .map(([lng, lat], i) => { const { x, y } = toMapXY(lat, lng); return `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`; })
-  .join(" ") + " Z";
-
-// Reference cities, so a cluster of pins is readable as "Bhiwandi" rather than
-// as an anonymous blob somewhere on the west coast.
-const MAP_CITIES: [string, number, number][] = [
-  ["Delhi", 28.61, 77.21], ["Mumbai", 19.08, 72.88], ["Bengaluru", 12.97, 77.59],
-  ["Chennai", 13.08, 80.27], ["Kolkata", 22.57, 88.36], ["Hyderabad", 17.39, 78.49],
-  ["Ahmedabad", 23.02, 72.57], ["Pune", 18.52, 73.86], ["Nagpur", 21.15, 79.09],
-  ["Jaipur", 26.91, 75.79], ["Lucknow", 26.85, 80.95], ["Kochi", 9.93, 76.27],
-];
+const INDIA_CENTRE: [number, number] = [22.6, 79.0];
 
 function FleetMap({ vehicles, selectedReg, onSelect }: {
   vehicles: any[]; selectedReg: string | null; onSelect: (reg: string) => void;
 }) {
-  const [view, setView] = useState({ x: 0, y: 0, w: MAP_W, h: MAP_H });
-  const svgRef = useRef<SVGSVGElement | null>(null);
-  const drag = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
+  const container = useRef<HTMLDivElement | null>(null);
+  const map = useRef<any>(null);
+  const leaflet = useRef<any>(null);
+  const cluster = useRef<any>(null);
+  const markers = useRef<Record<string, any>>({});
+  const selectRef = useRef(onSelect);
+  const [layer, setLayer] = useState(MAP_LAYERS[0].id);
+  const [ready, setReady] = useState(false);
+  const [failed, setFailed] = useState("");
 
-  const zoom = view.w / MAP_W;                 // < 1 means zoomed in
-  const reset = () => setView({ x: 0, y: 0, w: MAP_W, h: MAP_H });
+  // The click handler is rebound on every render; keeping it in a ref means the
+  // marker layer does not have to be torn down and rebuilt to stay current.
+  selectRef.current = onSelect;
 
-  const zoomBy = (factor: number, focusX?: number, focusY?: number) => setView(v => {
-    const w = Math.min(MAP_W, Math.max(MAP_W / 14, v.w * factor));
-    const h = w * (MAP_H / MAP_W);
-    // Keep the point under the cursor fixed while the box shrinks around it.
-    const fx = focusX ?? v.x + v.w / 2, fy = focusY ?? v.y + v.h / 2;
-    const x = Math.min(MAP_W - w, Math.max(0, fx - (fx - v.x) * (w / v.w)));
-    const y = Math.min(MAP_H - h, Math.max(0, fy - (fy - v.y) * (h / v.h)));
-    return { x, y, w, h };
-  });
+  // Leaflet reaches for `window` at import time, and this app is statically
+  // exported, so it can only be loaded once the component is actually mounted.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const L = (await import("leaflet")).default;
+        // markercluster is a classic Leaflet plugin: it augments the global `L`
+        // rather than exporting anything, so the global has to exist before it
+        // is imported or `markerClusterGroup` is silently never defined.
+        (window as unknown as { L: unknown }).L = L;
+        await import("leaflet.markercluster");
+        if (cancelled || !container.current || map.current) return;
+        leaflet.current = L;
+        // maxZoom has to be set on the map itself, not left to the tile layer:
+        // the basemap is attached by a later effect, and the cluster group
+        // refuses to initialise against a map whose zoom range is unknown.
+        const instance = L.map(container.current, { center: INDIA_CENTRE, zoom: 5, zoomControl: true,
+                                                    worldCopyJump: true, minZoom: 3, maxZoom: 19 });
+        map.current = instance;
 
-  const svgPoint = (clientX: number, clientY: number) => {
-    const box = svgRef.current?.getBoundingClientRect();
-    if (!box) return null;
-    return { x: view.x + ((clientX - box.left) / box.width) * view.w,
-             y: view.y + ((clientY - box.top) / box.height) * view.h };
+        // Clustering is a bonus, not a dependency. The plugin only attaches
+        // itself when it can see a global `L`, and a bundler is free to
+        // evaluate it before that global is set - so check rather than assume,
+        // and fall back to plain markers instead of losing the whole map.
+        const clusterable = (L as any).markerClusterGroup;
+        cluster.current = typeof clusterable === "function"
+          ? clusterable({
+              maxClusterRadius: 46,
+              showCoverageOnHover: false,
+              iconCreateFunction: (group: any) => {
+                const count = group.getChildCount();
+                const size = count > 99 ? 44 : count > 9 ? 38 : 32;
+                return L.divIcon({ html: `<div class="gps-cluster" style="width:${size}px;height:${size}px">${count}</div>`,
+                                   className: "", iconSize: [size, size] });
+              },
+            })
+          : L.layerGroup();
+        cluster.current.addTo(instance);
+        setReady(true);
+      } catch (e) {
+        // Say what actually went wrong - a silent "could not load" leaves the
+        // operator with nothing to report and nobody able to fix it.
+        if (!cancelled) setFailed(e instanceof Error ? e.message : String(e));
+      }
+    })();
+    return () => { cancelled = true; map.current?.remove(); map.current = null; };
+  }, []);
+
+  // Swap the basemap without disturbing the markers on top of it.
+  useEffect(() => {
+    const L = leaflet.current;
+    if (!ready || !L || !map.current) return;
+    const chosen = MAP_LAYERS.find(l => l.id === layer) || MAP_LAYERS[0];
+    const tiles = L.tileLayer(chosen.url, { attribution: chosen.attribution, maxZoom: chosen.maxZoom });
+    tiles.addTo(map.current);
+    tiles.bringToBack();
+    // Only drop the previous basemap once the new one has pixels, so the map
+    // never flashes empty mid-swap.
+    const previous = map.current.__basemap;
+    const drop = () => { if (previous) map.current?.removeLayer(previous); };
+    tiles.once("load", drop);
+    setTimeout(drop, 2500);
+    map.current.__basemap = tiles;
+  }, [layer, ready]);
+
+  useEffect(() => {
+    const L = leaflet.current;
+    if (!ready || !L || !cluster.current) return;
+
+    cluster.current.clearLayers();
+    markers.current = {};
+
+    for (const vehicle of vehicles) {
+      const colour = GPS_STATUS_COLOR[vehicle.gps_status] || "#94a3b8";
+      const selected = vehicle.reg === selectedReg;
+      const marker = L.marker([vehicle.lat, vehicle.lng], {
+        icon: L.divIcon({
+          className: "",
+          iconSize: [16, 16],
+          iconAnchor: [8, 8],
+          html: `<div class="gps-pin ${vehicle.gps_status} ${selected ? "selected" : ""}"
+                      style="--pin:${colour};--heading:${vehicle.heading ?? 0}"><i></i>${
+                        selected ? `<b>${escapeHtml(vehicle.reg)}</b>` : ""}</div>`,
+        }),
+        title: `${vehicle.reg} · ${vehicle.gps_status}`,
+      });
+      marker.bindPopup(vehiclePopup(vehicle), { closeButton: false, minWidth: 210 });
+      marker.on("click", () => selectRef.current(vehicle.reg));
+      markers.current[vehicle.reg] = marker;
+      cluster.current.addLayer(marker);
+    }
+  }, [vehicles, selectedReg, ready]);
+
+  // Selecting a vehicle in the list should bring it into view here, including
+  // when it is hidden inside a cluster.
+  useEffect(() => {
+    const marker = selectedReg ? markers.current[selectedReg] : null;
+    if (!ready || !marker || !cluster.current) return;
+    // zoomToShowLayer only exists when the cluster plugin loaded; without it a
+    // plain pan to the marker does the same job.
+    if (typeof cluster.current.zoomToShowLayer === "function") {
+      cluster.current.zoomToShowLayer(marker, () => marker.openPopup());
+    } else {
+      map.current?.panTo(marker.getLatLng());
+      marker.openPopup();
+    }
+  }, [selectedReg, ready]);
+
+  const fitAll = () => {
+    const L = leaflet.current;
+    if (!L || !map.current || !vehicles.length) return;
+    map.current.fitBounds(L.latLngBounds(vehicles.map(v => [v.lat, v.lng])), { padding: [40, 40] });
   };
 
-  const onWheel = (e: React.WheelEvent) => {
-    const point = svgPoint(e.clientX, e.clientY);
-    zoomBy(e.deltaY > 0 ? 1.25 : 0.8, point?.x, point?.y);
-  };
-
-  const onPointerDown = (e: React.PointerEvent) => {
-    drag.current = { x: e.clientX, y: e.clientY, vx: view.x, vy: view.y };
-    (e.target as Element).setPointerCapture?.(e.pointerId);
-  };
-  const onPointerMove = (e: React.PointerEvent) => {
-    if (!drag.current) return;
-    const box = svgRef.current?.getBoundingClientRect();
-    if (!box) return;
-    const dx = ((e.clientX - drag.current.x) / box.width) * view.w;
-    const dy = ((e.clientY - drag.current.y) / box.height) * view.h;
-    setView(v => ({ ...v,
-      x: Math.min(MAP_W - v.w, Math.max(0, drag.current!.vx - dx)),
-      y: Math.min(MAP_H - v.h, Math.max(0, drag.current!.vy - dy)) }));
-  };
-  const endDrag = () => { drag.current = null; };
-
-  // Pins keep a constant on-screen size however far the map is zoomed in.
-  const r = (base: number) => base * zoom;
-
-  return <div style={{ position: "relative" }}>
-    <svg ref={svgRef} viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`}
-      onWheel={onWheel} onPointerDown={onPointerDown} onPointerMove={onPointerMove}
-      onPointerUp={endDrag} onPointerLeave={endDrag} onDoubleClick={reset}
-      style={{ width: "100%", aspectRatio: `${MAP_W} / ${MAP_H}`, maxHeight: "62vh", display: "block",
-               background: "var(--surface-2,#eef2f7)", cursor: drag.current ? "grabbing" : "grab",
-               touchAction: "none" }}>
-      <defs>
-        <filter id="pin-shadow" x="-50%" y="-50%" width="200%" height="200%">
-          <feDropShadow dx="0" dy="0.6" stdDeviation="0.8" floodOpacity="0.35" />
-        </filter>
-      </defs>
-
-      <path d={INDIA_PATH} fill="var(--surface-1,#ffffff)" stroke="#94a3b8" strokeWidth={r(1.4)}
-            strokeLinejoin="round" />
-
-      {MAP_CITIES.map(([name, lat, lng]) => {
-        const { x, y } = toMapXY(lat, lng);
-        return <g key={name} pointerEvents="none">
-          <circle cx={x} cy={y} r={r(1.8)} fill="#cbd5e1" />
-          <text x={x + r(4)} y={y + r(3)} fontSize={r(10)} fill="#94a3b8">{name}</text>
-        </g>;
-      })}
-
-      {vehicles.map(v => {
-        const { x, y } = toMapXY(v.lat, v.lng);
-        const isSelected = v.reg === selectedReg;
-        const color = GPS_STATUS_COLOR[v.gps_status] || "#94a3b8";
-        return <g key={v.reg} style={{ cursor: "pointer" }}
-                  onClick={e => { e.stopPropagation(); onSelect(v.reg); }}>
-          <title>{`${v.reg} · ${v.gps_status} · ${v.speed_kph} km/h`}
-            {v.temperature_c != null ? ` · ${v.temperature_c}°C` : ""}</title>
-          {isSelected && <circle cx={x} cy={y} r={r(16)} fill={color} opacity={0.18} />}
-          {/* A moving vehicle gets a heading arrow; a stopped one is just a dot. */}
-          {v.gps_status === "moving" && v.heading != null
-            ? <path d={`M0,${-r(9)} L${r(6)},${r(6)} L0,${r(3)} L${-r(6)},${r(6)} Z`}
-                    transform={`translate(${x} ${y}) rotate(${v.heading})`}
-                    fill={color} stroke="#fff" strokeWidth={r(1.2)} filter="url(#pin-shadow)" />
-            : <circle cx={x} cy={y} r={isSelected ? r(8) : r(6)} fill={color}
-                      stroke="#fff" strokeWidth={r(1.5)} filter="url(#pin-shadow)" />}
-        </g>;
-      })}
-      {!vehicles.length && <text x={MAP_W / 2} y={MAP_H / 2} textAnchor="middle"
-                                 fontSize="16" fill="#94a3b8">No positioned vehicles</text>}
-    </svg>
-
-    <div style={{ position: "absolute", right: 10, bottom: 10, display: "flex", flexDirection: "column", gap: 4 }}>
-      <button className="chip" onClick={() => zoomBy(0.7)} aria-label="Zoom in">＋</button>
-      <button className="chip" onClick={() => zoomBy(1.4)} aria-label="Zoom out">−</button>
-      {zoom < 0.99 && <button className="chip" onClick={reset} aria-label="Reset zoom">⤢</button>}
-    </div>
+  // The container div is never swapped out conditionally: Leaflet mutates that
+  // subtree itself, and letting React replace it mid-life leaves the panes
+  // reparented into whatever rendered in its place.
+  return <div className="fleet-map">
+    <div ref={container} style={{ height: "100%" }} />
+    {failed
+      ? <div className="fleet-map-overlay"><div className="data-state">The map could not be loaded.<br /><small>{failed}</small></div></div>
+      : <div className="fleet-map-layers">
+          {MAP_LAYERS.map(l => <button key={l.id} className={l.id === layer ? "active" : ""}
+                                       onClick={() => setLayer(l.id)}>{l.label}</button>)}
+          <button onClick={fitAll} title="Zoom to fit every vehicle">Fit</button>
+        </div>}
   </div>;
+}
+
+const escapeHtml = (value: string) =>
+  String(value ?? "").replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
+
+// Popup markup is handed to Leaflet as a string, so every value that came off
+// the telematics feed is escaped on the way in.
+function vehiclePopup(vehicle: any) {
+  const row = (label: string, value: string, className = "") =>
+    value ? `<dt>${label}</dt><dd class="${className}">${escapeHtml(value)}</dd>` : "";
+  const temperature = vehicle.temperature_c != null
+    ? row("Temp", `${vehicle.temperature_c} °C${vehicle.ac_on === false ? " (unit off)" : ""}`,
+          vehicle.temperature_c > 8 ? "excursion" : "")
+    : "";
+  return `<div class="gps-popup">
+    <h4>${escapeHtml(vehicle.reg)}</h4>
+    <dl>
+      ${row("Status", vehicle.state_text || vehicle.gps_status)}
+      ${row("Speed", `${vehicle.speed_kph} km/h`)}
+      ${temperature}
+      ${row("Ignition", vehicle.ignition ? "ON" : "OFF")}
+      ${row("Fleet", [vehicle.make, vehicle.model].filter(Boolean).join(" · "))}
+      ${row("Last fix", vehicle.gps_time ? new Date(vehicle.gps_time).toLocaleString("en-IN") : "")}
+    </dl>
+    ${vehicle.address ? `<p style="margin:6px 0 0;font-size:11px">${escapeHtml(vehicle.address)}</p>` : ""}
+  </div>`;
 }
 
 function LiveGpsView({ onAction }: { onAction: Notify }) {
@@ -2507,9 +2566,9 @@ function LiveGpsView({ onAction }: { onAction: Notify }) {
 
       <section className="track-detail" style={{ padding: 0, overflow: "hidden" }}>
         <div style={{ padding: "12px 16px 6px", borderBottom: "1px solid var(--border)" }}>
-          <strong>India fleet map</strong>
+          <strong>Live fleet map</strong>
           <small style={{ marginLeft: 10, color: "var(--text-2)" }}>
-            <span style={{ color: "#22c55e" }}>●</span> moving &nbsp;<span style={{ color: "#f59e0b" }}>●</span> idle &nbsp;<span style={{ color: "#94a3b8" }}>●</span> parked
+            <span style={{ color: "#22c55e" }}>●</span> moving &nbsp;<span style={{ color: "#f59e0b" }}>●</span> idle &nbsp;<span style={{ color: "#94a3b8" }}>●</span> parked &nbsp;· click a pin for detail
           </small>
         </div>
         <FleetMap vehicles={plotted} selectedReg={selected} onSelect={toggle} />
