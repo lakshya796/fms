@@ -1,6 +1,7 @@
 """Tests for the Fleetbase FleetOps inspired modules."""
 from datetime import timedelta
 from decimal import Decimal
+from unittest import mock
 
 from django.contrib.auth.models import User
 from django.core.management import call_command
@@ -10,6 +11,7 @@ from rest_framework.test import APIClient
 
 from accounting.models import JournalEntry
 from iam.models import OutboundMessage
+from . import geotrackers
 from .models import (ComplianceDocument, Customer, Driver, Fleet, FuelEntry, Invoice, Issue, MaintenanceSchedule, Order,
                      Place, ProofOfDelivery, ServiceArea, ServiceRate, Trip, TripExpense, Vehicle, VehicleHire, Vendor,
                      Waypoint, Zone, haversine_km)
@@ -957,3 +959,107 @@ class TripSettlementTests(BaseFleetOpsTest):
             "service_area": area.data["id"], "name": "Delhi NCR",
             "center_latitude": "28.613900", "center_longitude": "77.209000", "radius_km": 60}, format="json")
         self.assertEqual(zone.status_code, 201, zone.data)
+
+
+class GeotrackersParsingTests(TestCase):
+    """The vendor feed is undocumented, so the parser is pinned against every
+    envelope and field spelling seen so far rather than against one schema."""
+
+    def test_finds_vehicles_nested_two_levels_deep(self):
+        # The shape the first cut missed entirely: the array is not top level,
+        # and `data` is an object rather than the list itself.
+        payload = {"status": "ok", "data": {"vehicleList": [
+            {"vehicleNo": "MH04JU9182", "lat": 19.2967, "lng": 73.0631, "speed": 42}]}}
+        pings = geotrackers.parse(payload)
+        self.assertEqual(len(pings), 1)
+        self.assertEqual(pings[0]["reg"], "MH04JU9182")
+        self.assertAlmostEqual(pings[0]["lat"], 19.2967)
+        self.assertEqual(pings[0]["gps_status"], "moving")
+
+    def test_reads_longitude_written_as_lon(self):
+        # `_f("lng", "lng", ...)` used to drop this on the floor and return 0.
+        pings = geotrackers.parse([{"regNo": "MH04JU9182", "latitude": 19.2967, "lon": 73.0631}])
+        self.assertAlmostEqual(pings[0]["lng"], 73.0631)
+        self.assertTrue(pings[0]["in_india"])
+
+    def test_transposed_coordinates_are_put_back_the_right_way_round(self):
+        pings = geotrackers.parse([{"vehicleNo": "MH04JU9182", "lat": 73.0631, "lng": 19.2967}])
+        self.assertAlmostEqual(pings[0]["lat"], 19.2967)
+        self.assertAlmostEqual(pings[0]["lng"], 73.0631)
+        self.assertTrue(pings[0]["coords_swapped"])
+        self.assertTrue(pings[0]["in_india"])
+
+    def test_string_coordinates_with_a_hemisphere_suffix(self):
+        pings = geotrackers.parse([{"vehicle_no": "MH04JU9182",
+                                    "Latitude": "19.2967 N", "Longitude": "73.0631 E", "Speed": "0"}])
+        self.assertAlmostEqual(pings[0]["lat"], 19.2967)
+        self.assertAlmostEqual(pings[0]["lng"], 73.0631)
+        self.assertEqual(pings[0]["gps_status"], "parked")
+
+    def test_coordinates_nested_under_a_position_object(self):
+        pings = geotrackers.parse({"result": [
+            {"assetName": "MH04JU9182", "position": {"lat": 19.2967, "lng": 73.0631}, "ignition": "1"}]})
+        self.assertAlmostEqual(pings[0]["lat"], 19.2967)
+        self.assertEqual(pings[0]["gps_status"], "idle")   # ignition on, not moving
+
+    def test_null_island_is_treated_as_no_fix(self):
+        pings = geotrackers.parse([{"vehicleNo": "MH04JU9182", "lat": 0, "lng": 0}])
+        self.assertIsNone(pings[0]["lat"])
+        self.assertFalse(pings[0]["in_india"])
+
+    def test_vendor_movement_state_wins_over_speed(self):
+        pings = geotrackers.parse([{"vehicleNo": "X", "lat": 19.2, "lng": 73.0,
+                                    "speed": 0, "status": "Moving"}])
+        self.assertEqual(pings[0]["gps_status"], "moving")
+
+    def test_registration_matching_ignores_spacing(self):
+        self.assertEqual(geotrackers.normalise_registration("MH 04 JU 9182"),
+                         geotrackers.normalise_registration("mh-04-ju-9182"))
+
+    def test_an_unparseable_payload_yields_no_vehicles_rather_than_raising(self):
+        self.assertEqual(geotrackers.parse({"message": "no data"}), [])
+        self.assertEqual(geotrackers.parse([]), [])
+
+
+class LiveTrackingEndpointTests(BaseFleetOpsTest):
+    def test_positions_are_written_back_onto_matching_vehicles(self):
+        # self.vehicle is "MH 04 JU 9182"; the feed sends it unspaced, which is
+        # the whole point of normalising before the lookup.
+        vehicle = self.vehicle
+        feed = {"data": {"vehicleList": [
+            {"vehicleNo": "MH04JU9182", "lat": 19.2967, "lng": 73.0631, "speed": 41.5},
+            {"vehicleNo": "UNKNOWN99", "lat": 18.5, "lng": 73.8, "speed": 0}]}}
+        with mock.patch.object(geotrackers, "fetch_dashboard", return_value=(feed, None)):
+            response = self.client.get("/api/v1/live-tracking/")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["total"], 2)
+        self.assertEqual(response.data["located"], 2)
+        # The device with no FMS row is still reported, just unmatched.
+        self.assertEqual(response.data["matched"], 1)
+        vehicle.refresh_from_db()
+        self.assertAlmostEqual(float(vehicle.current_latitude), 19.2967, places=4)
+        self.assertAlmostEqual(float(vehicle.current_longitude), 73.0631, places=4)
+
+    def test_a_telematics_outage_reports_the_error_and_does_not_500(self):
+        with mock.patch.object(geotrackers, "fetch_dashboard", return_value=(None, "HTTP 403 from Geotrackers")):
+            response = self.client.get("/api/v1/live-tracking/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["vehicles"], [])
+        self.assertIn("403", response.data["error"])
+
+    def test_vehicles_without_coordinates_are_called_out_as_a_parsing_problem(self):
+        feed = [{"vehicleNo": "MH04JU9182", "speed": 10}]
+        with mock.patch.object(geotrackers, "fetch_dashboard", return_value=(feed, None)):
+            response = self.client.get("/api/v1/live-tracking/")
+        self.assertEqual(response.data["total"], 1)
+        self.assertEqual(response.data["located"], 0)
+        self.assertIn("no usable coordinates", response.data["error"])
+
+    def test_debug_mode_exposes_the_raw_shape(self):
+        feed = {"data": {"vehicleList": [{"vehicleNo": "MH04JU9182", "lat": 19.2, "lng": 73.0}]}}
+        with mock.patch.object(geotrackers, "fetch_dashboard", return_value=(feed, None)):
+            response = self.client.get("/api/v1/live-tracking/?debug=1")
+        self.assertEqual(response.data["rows_detected"], 1)
+        self.assertEqual(response.data["first_row_raw"]["vehicleNo"], "MH04JU9182")
+        self.assertEqual(response.data["top_level_keys"], ["data"])
