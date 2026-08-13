@@ -80,7 +80,7 @@ DEFAULT_COUPON_HEIGHT = 178.0
 
 # Card shapes offered in the designer. Points, landscape.
 COUPON_PRESETS = [
-    {"key": "adcoop", "label": "ADCOOP coupon", "w": DEFAULT_COUPON_WIDTH, "h": DEFAULT_COUPON_HEIGHT},
+    {"key": "adcoop", "label": "Classic coupon (169 x 63 mm)", "w": DEFAULT_COUPON_WIDTH, "h": DEFAULT_COUPON_HEIGHT},
     {"key": "card", "label": "Credit-card size (85.6 x 54 mm)", "w": 242.6, "h": 153.0},
     {"key": "a6", "label": "A6 landscape", "w": 419.5, "h": 297.6},
     {"key": "half_a5", "label": "Wide ticket (200 x 70 mm)", "w": 567.0, "h": 198.4},
@@ -92,27 +92,27 @@ COUPON_PRESETS = [
 PALETTE = [
     {
         "type": "text", "label": "Text", "hint": "Any wording you type yourself.",
-        "defaults": {"text": "Your text", "size": 12, "font": "Helvetica-Bold", "color": "#231B36",
+        "defaults": {"text": "Your text", "size": 12, "font": "Helvetica-Bold", "color": "#12211C",
                      "align": "left", "line_height": 14, "w": 0},
     },
     {
         "type": "field", "label": "Form field", "hint": "A placeholder filled from the batch form when previewed and printed.",
         "defaults": {"source": "voucher_code", "prefix": "", "suffix": "", "size": 10, "font": "Helvetica",
-                     "color": "#231B36", "align": "left", "line_height": 12, "w": 0, "max_lines": 5},
+                     "color": "#12211C", "align": "left", "line_height": 12, "w": 0, "max_lines": 5},
     },
     {
         "type": "box", "label": "Box", "hint": "A filled panel to sit behind text.",
         "defaults": {"w": 140, "h": 60, "fill": "#FFFFFF", "opacity": 1, "radius": 0,
-                     "border_color": "#DCD7E8", "border_width": 0},
+                     "border_color": "#DCE7E1", "border_width": 0},
     },
     {
         "type": "line", "label": "Line", "hint": "A divider rule.",
-        "defaults": {"w": 120, "h": 1, "color": "#DCD7E8"},
+        "defaults": {"w": 120, "h": 1, "color": "#DCE7E1"},
     },
     {
         "type": "barcode", "label": "Barcode", "hint": "Code128 of the voucher's unique number.",
         "defaults": {"w": 150, "h": 24, "color": "#000000", "show_value": True,
-                     "value_size": 7, "value_font": "Courier", "value_color": "#231B36"},
+                     "value_size": 7, "value_font": "Courier", "value_color": "#12211C"},
     },
 ]
 
@@ -146,7 +146,7 @@ def blank_geometry(coupon_width=DEFAULT_COUPON_WIDTH, coupon_height=DEFAULT_COUP
             "show_value": True,
             "value_size": 7,
             "value_font": "Courier",
-            "value_color": "#231B36",
+            "value_color": "#12211C",
         }],
     }
 
@@ -188,21 +188,21 @@ LEGACY_ADCOOP_GEOMETRY = {
     "artwork": {"x": 0, "y": 0, "w": 479.52, "h": 178},
     "fields": [
         {"key": "content_panel", "enabled": True, "x": 2, "y": 5, "w": 144, "h": 164, "fill": "#FFFFFF", "opacity": 1},
-        {"key": "discount_numeral", "enabled": True, "x": 35, "y": 20, "size": 30, "font": "Helvetica-Bold", "color": "#231B36"},
-        {"key": "discount_unit", "enabled": True, "x": 86, "y": 15, "size": 14, "font": "Helvetica", "color": "#4A4160"},
-        {"key": "off_label", "enabled": True, "x": 84.5, "y": 36, "size": 14, "font": "Helvetica", "color": "#4A4160"},
-        {"key": "qualifier", "enabled": True, "x": 36.5, "y": 58, "size": 6.5, "font": "Helvetica", "color": "#6B6480", "static": "on the value of"},
-        {"key": "cap_line", "enabled": True, "x": 34.5, "y": 70, "size": 10, "font": "Helvetica-Bold", "color": "#231B36"},
-        {"key": "valid_label", "enabled": True, "x": 44.4, "y": 82, "size": 5, "font": "Helvetica", "color": "#6B6480", "static": "Discount Valid Until :"},
-        {"key": "valid_date", "enabled": True, "x": 49.2, "y": 91, "size": 8, "font": "Helvetica-Bold", "color": "#231B36"},
-        {"key": "restrictions_label", "enabled": True, "x": 5, "y": 106, "size": 5, "font": "Helvetica", "color": "#6B6480", "static": "Coupon Restrictions :"},
-        {"key": "restrictions_body", "enabled": True, "x": 5, "y": 115, "size": 5, "font": "Helvetica", "color": "#4A4160", "line_height": 9},
+        {"key": "discount_numeral", "enabled": True, "x": 35, "y": 20, "size": 30, "font": "Helvetica-Bold", "color": "#12211C"},
+        {"key": "discount_unit", "enabled": True, "x": 86, "y": 15, "size": 14, "font": "Helvetica", "color": "#3E5B51"},
+        {"key": "off_label", "enabled": True, "x": 84.5, "y": 36, "size": 14, "font": "Helvetica", "color": "#3E5B51"},
+        {"key": "qualifier", "enabled": True, "x": 36.5, "y": 58, "size": 6.5, "font": "Helvetica", "color": "#5C6F67", "static": "on the value of"},
+        {"key": "cap_line", "enabled": True, "x": 34.5, "y": 70, "size": 10, "font": "Helvetica-Bold", "color": "#12211C"},
+        {"key": "valid_label", "enabled": True, "x": 44.4, "y": 82, "size": 5, "font": "Helvetica", "color": "#5C6F67", "static": "Discount Valid Until :"},
+        {"key": "valid_date", "enabled": True, "x": 49.2, "y": 91, "size": 8, "font": "Helvetica-Bold", "color": "#12211C"},
+        {"key": "restrictions_label", "enabled": True, "x": 5, "y": 106, "size": 5, "font": "Helvetica", "color": "#5C6F67", "static": "Coupon Restrictions :"},
+        {"key": "restrictions_body", "enabled": True, "x": 5, "y": 115, "size": 5, "font": "Helvetica", "color": "#3E5B51", "line_height": 9},
         {"key": "barcode_plate", "enabled": True, "x": 282, "y": 116, "w": 170, "h": 42, "fill": "#FFFFFF"},
         {"key": "barcode", "enabled": True, "x": 292, "y": 121, "w": 150, "h": 24},
-        {"key": "voucher_code", "enabled": True, "x": 330, "y": 151, "size": 7, "font": "Courier", "color": "#231B36"},
-        {"key": "recipient_name", "enabled": False, "x": 165, "y": 112, "size": 8, "font": "Helvetica", "color": "#231B36"},
-        {"key": "recipient_phone", "enabled": False, "x": 165, "y": 130, "size": 8, "font": "Helvetica", "color": "#231B36"},
-        {"key": "recipient_email", "enabled": False, "x": 165, "y": 148, "size": 8, "font": "Helvetica", "color": "#231B36"},
+        {"key": "voucher_code", "enabled": True, "x": 330, "y": 151, "size": 7, "font": "Courier", "color": "#12211C"},
+        {"key": "recipient_name", "enabled": False, "x": 165, "y": 112, "size": 8, "font": "Helvetica", "color": "#12211C"},
+        {"key": "recipient_phone", "enabled": False, "x": 165, "y": 130, "size": 8, "font": "Helvetica", "color": "#12211C"},
+        {"key": "recipient_email", "enabled": False, "x": 165, "y": 148, "size": 8, "font": "Helvetica", "color": "#12211C"},
     ],
     "text_layers": [],
 }
@@ -269,7 +269,7 @@ def _legacy_element(field):
         element.update({
             "size": field.get("size", 8),
             "font": field.get("font", "Helvetica"),
-            "color": field.get("color", "#231B36"),
+            "color": field.get("color", "#12211C"),
             "align": "left",
             "line_height": field.get("line_height", field.get("size", 8) + 2),
         })
@@ -329,7 +329,7 @@ def to_elements(geometry):
             "x": layer.get("x", 0), "y": layer.get("y", 0),
             "size": layer.get("size", 12),
             "font": layer.get("font", "Helvetica"),
-            "color": layer.get("color", "#231B36"),
+            "color": layer.get("color", "#12211C"),
             "align": "left",
             "line_height": layer.get("line_height", layer.get("size", 12) + 2),
         })
@@ -360,7 +360,7 @@ def starter_layouts(coupon_width=DEFAULT_COUPON_WIDTH, coupon_height=DEFAULT_COU
         {"key": "blank", "label": "Blank card",
          "description": "Just the barcode. Add everything else yourself.",
          "geometry": blank_geometry(coupon_width, coupon_height)},
-        {"key": "adcoop", "label": "ADCOOP coupon",
-         "description": "The measured ADCOOP discount coupon, as editable elements.",
+        {"key": "adcoop", "label": "Classic coupon layout",
+         "description": "The measured classic discount coupon, as editable elements.",
          "geometry": adcoop},
     ]

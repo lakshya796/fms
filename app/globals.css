@@ -257,10 +257,36 @@ tr.clickable:hover td{background:#f8faf7}
 .assign-row{display:flex;gap:8px}
 .assign-row select{flex:1;border:1px solid #dfe4df;border-radius:9px;padding:9px 11px;font-size:11px;background:#fff;outline:none}
 
-/* Gift Voucher Desk (ADCOOP retail) - a standalone public page, not the fleet console.
-   Uses ADCOOP's own brand colours rather than the fleet green theme. */
-:root{--voucher-purple:#4E327D;--voucher-lime:#E2E151;--voucher-ink:#231B36;--voucher-muted:#6B6480;--voucher-line:#DCD7E8}
-.voucher-page{min-height:100vh;padding:32px 20px 60px;max-width:1080px;margin:0 auto;background:#faf9fc}
+/* Two standalone pages share this block, neither of them the fleet console: the
+   public ADCOOP Gift Voucher Desk (/vouchers) and the MAIR Voucher Portal
+   (/voucher-portal). Everything brand-coloured reads from the tokens below and
+   nothing hard-codes a hex, so the portal re-themes itself wholesale by
+   overriding them - see the .mair block - and the ADCOOP page is unaffected. */
+:root{--voucher-purple:#4E327D;--voucher-lime:#E2E151;--voucher-ink:#231B36;--voucher-muted:#6B6480;--voucher-line:#DCD7E8;
+  --voucher-bg:#faf9fc;--voucher-tint:#f6f4fa;--voucher-tint-2:#f8f6fc;--voucher-tint-3:#fbfafd;--voucher-success-bg:#f1eefa;
+  --voucher-focus:#4e327d1a;--voucher-hover-line:#c9bfe0;--voucher-check:#f3f1f8;
+  /* Bare channels, not a colour: these get spliced into rgba() below. */
+  --voucher-shadow-rgb:35,27,54;--voucher-accent-rgb:78,50,125}
+
+/* MAIR Voucher Portal. app/voucher-portal/layout.tsx puts this class on the
+   route, so only the portal picks it up. --mair-green is the single value the
+   rest is derived from: change it and buttons, focus rings, active tabs and
+   links all follow. */
+.mair{--mair-green:#0A4A3A;--mair-green-dark:#063429;--mair-green-soft:#E7F1EB;
+  --voucher-purple:var(--mair-green);      /* legacy name, MAIR value */
+  --voucher-lime:#CDE7DC;--voucher-ink:#12211C;--voucher-muted:#5C6F67;--voucher-line:#DCE7E1;
+  --voucher-bg:#F5F8F6;--voucher-tint:#EEF5F1;--voucher-tint-2:#F2F7F4;--voucher-tint-3:#F9FBFA;--voucher-success-bg:#E7F1EB;
+  --voucher-focus:#0a4a3a1f;--voucher-hover-line:#AFCCC0;--voucher-check:#EDF3F0;
+  --voucher-shadow-rgb:18,33,28;--voucher-accent-rgb:10,74,58}
+/* The sign-in card is the fleet console's, reused - these rules are all it takes
+   to put the MAIR mark on it in place of the phloz wordmark. */
+.mair .login-brand img{height:42px;width:auto}
+.mair .eyebrow{color:var(--voucher-purple)}
+/* .primary is the fleet console's near-black button, shared with /vouchers.
+   Repaint it in brand green here only, so neither of those changes. */
+.mair .primary{background:var(--mair-green)}
+.mair .primary:hover:not(:disabled){background:var(--mair-green-dark)}
+.voucher-page{min-height:100vh;padding:32px 20px 60px;max-width:1080px;margin:0 auto;background:var(--voucher-bg)}
 .voucher-topbar{display:flex;align-items:center;gap:16px;margin-bottom:24px;flex-wrap:wrap}
 .voucher-logo{height:44px;width:auto}
 .voucher-eyebrow{margin:0 0 4px;color:var(--voucher-purple);font-size:9px;letter-spacing:1.6px;font-weight:800}
@@ -277,7 +303,7 @@ tr.clickable:hover td{background:#f8faf7}
 .voucher-form label small{font-weight:500;text-transform:none;letter-spacing:0}
 .voucher-form input,.voucher-form select,.voucher-form textarea{border:1px solid var(--voucher-line);border-radius:9px;padding:10px 11px;font-size:12px;outline:none;color:var(--voucher-ink);font-family:inherit;background:#fff}
 .voucher-form textarea{resize:vertical}
-.voucher-form input:focus,.voucher-form select:focus,.voucher-form textarea:focus{border-color:var(--voucher-purple);box-shadow:0 0 0 3px #4e327d1a}
+.voucher-form input:focus,.voucher-form select:focus,.voucher-form textarea:focus{border-color:var(--voucher-purple);box-shadow:0 0 0 3px var(--voucher-focus)}
 .voucher-topbar button.secondary,.voucher-topbar button.primary{width:auto;padding:0 16px;height:38px}
 .voucher-artwork-preview{display:flex;align-items:center;gap:14px;margin-top:8px}
 .voucher-artwork-preview img{width:180px;height:auto;aspect-ratio:2.74/1;object-fit:cover;border-radius:8px;border:1px solid var(--voucher-line)}
@@ -292,17 +318,17 @@ tr.clickable:hover td{background:#f8faf7}
 .voucher-notif-wrap{position:relative}
 .voucher-notif-bell{position:relative;width:auto;padding:0 14px;height:38px}
 .voucher-notif-badge{position:absolute;top:-6px;right:-6px;background:#b95544;color:#fff;border-radius:10px;font-size:9px;font-weight:800;padding:1px 6px;line-height:1.4}
-.voucher-notif-dropdown{position:absolute;top:44px;right:0;width:320px;max-height:400px;overflow-y:auto;background:#fff;border:1px solid var(--voucher-line);border-radius:12px;box-shadow:0 12px 30px rgba(35,27,54,.15);z-index:20}
+.voucher-notif-dropdown{position:absolute;top:44px;right:0;width:320px;max-height:400px;overflow-y:auto;background:#fff;border:1px solid var(--voucher-line);border-radius:12px;box-shadow:0 12px 30px rgba(var(--voucher-shadow-rgb),.15);z-index:20}
 .voucher-notif-head{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid var(--voucher-line);font-size:12px}
 .voucher-notif-item{padding:10px 14px;border-bottom:1px solid var(--voucher-line);cursor:pointer;display:flex;flex-direction:column;gap:3px}
 .voucher-notif-item:last-child{border-bottom:0}
 .voucher-notif-item span{font-size:11px;color:var(--voucher-ink)}
 .voucher-notif-item time{font-size:9px;color:var(--voucher-muted)}
-.voucher-notif-item.unread{background:#f6f4fa}
+.voucher-notif-item.unread{background:var(--voucher-tint)}
 .voucher-download-link{display:inline-block;padding:8px 14px;border-radius:8px;text-decoration:none;margin-top:10px}
 .voucher-workflow-actions{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
 .voucher-workflow-actions button{width:auto;padding:0 16px;height:38px}
-.voucher-inline-form{margin-top:12px;padding:14px;background:#f8f6fc;border-radius:10px;display:flex;flex-direction:column;gap:8px}
+.voucher-inline-form{margin-top:12px;padding:14px;background:var(--voucher-tint-2);border-radius:10px;display:flex;flex-direction:column;gap:8px}
 .voucher-inline-form textarea,.voucher-inline-form input,.voucher-inline-form select{border:1px solid var(--voucher-line);border-radius:8px;padding:9px 11px;font-size:12px;font-family:inherit;resize:vertical}
 .voucher-template-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px}
 .voucher-template-card{border:1px solid var(--voucher-line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:8px}
@@ -316,14 +342,14 @@ tr.clickable:hover td{background:#f8faf7}
 .voucher-filter-row{display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap}
 .voucher-filter-row label{display:flex;flex-direction:column;gap:5px;font-size:10px;font-weight:700;color:var(--voucher-muted)}
 .voucher-filter-row select,.voucher-filter-row input{border:1px solid var(--voucher-line);border-radius:8px;padding:8px 10px;font-size:11px;font-family:inherit;background:#fff;color:var(--voucher-ink);outline:none}
-.voucher-filter-row select:focus,.voucher-filter-row input:focus{border-color:var(--voucher-purple);box-shadow:0 0 0 3px #4e327d1a}
+.voucher-filter-row select:focus,.voucher-filter-row input:focus{border-color:var(--voucher-purple);box-shadow:0 0 0 3px var(--voucher-focus)}
 .viz-wrap{position:relative}
 .viz-svg{width:100%;height:auto;display:block;overflow:visible}
 .viz-legend{display:flex;gap:14px;list-style:none;margin:0;padding:0}
 .viz-legend li{display:flex;align-items:center;gap:6px;font-size:10.5px;font-weight:600;color:var(--voucher-muted)}
 .viz-legend i{width:10px;height:10px;border-radius:3px;flex:none}
 .viz-tooltip{position:absolute;top:8px;transform:translateX(-50%);background:#fff;border:1px solid var(--voucher-line);border-radius:9px;
-  box-shadow:0 8px 22px rgba(35,27,54,.14);padding:9px 11px;font-size:10.5px;pointer-events:none;min-width:132px;z-index:5}
+  box-shadow:0 8px 22px rgba(var(--voucher-shadow-rgb),.14);padding:9px 11px;font-size:10.5px;pointer-events:none;min-width:132px;z-index:5}
 .viz-tooltip strong{display:block;margin-bottom:6px;color:var(--voucher-ink);font-size:11px}
 .viz-tooltip span{display:flex;align-items:center;gap:6px;color:var(--voucher-muted);line-height:1.9}
 .viz-tooltip span i{width:8px;height:8px;border-radius:2px;flex:none}
@@ -350,17 +376,17 @@ tr.clickable:hover td{background:#f8faf7}
 .designer-toolbar-label{font-size:9px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--voucher-muted)}
 .designer-menu-wrap{position:relative}
 .designer-menu{position:absolute;top:calc(100% + 6px);left:0;z-index:6;width:260px;max-height:320px;overflow-y:auto;
-  background:#fff;border:1px solid var(--voucher-line);border-radius:10px;box-shadow:0 12px 30px rgba(35,27,54,.16);padding:8px}
+  background:#fff;border:1px solid var(--voucher-line);border-radius:10px;box-shadow:0 12px 30px rgba(var(--voucher-shadow-rgb),.16);padding:8px}
 .designer-menu p{margin:2px 6px 8px;font-size:9px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--voucher-muted)}
 .designer-menu button{display:flex;flex-direction:column;gap:2px;width:100%;text-align:left;border:0;background:transparent;
   padding:7px 8px;border-radius:7px;cursor:pointer}
-.designer-menu button:hover{background:#f6f4fa}
+.designer-menu button:hover{background:var(--voucher-tint)}
 .designer-menu button strong{font-size:11px;color:var(--voucher-ink);font-weight:600}
 .designer-menu button small{font-size:9.5px;color:var(--voucher-muted)}
 
 .designer-canvas-wrap{overflow:auto;padding-bottom:4px}
 .designer-canvas{position:relative;display:inline-block;touch-action:none;
-  background:repeating-conic-gradient(#f3f1f8 0% 25%,#fff 0% 50%) 50%/16px 16px}
+  background:repeating-conic-gradient(var(--voucher-check) 0% 25%,#fff 0% 50%) 50%/16px 16px}
 .designer-hint{margin:9px 0 0;font-size:10px;color:var(--voucher-muted)}
 
 /* The card as it prints: shared by the designer canvas and the library
@@ -371,8 +397,8 @@ tr.clickable:hover td{background:#f8faf7}
 .card-el-text{position:absolute;pointer-events:none}
 
 .designer-hit{position:absolute;cursor:grab;border:1px solid transparent;border-radius:2px;min-width:8px;min-height:8px}
-.designer-hit:hover{border-color:rgba(78,50,125,.45);background:rgba(78,50,125,.06)}
-.designer-hit.selected{border-color:var(--voucher-purple);background:rgba(78,50,125,.08);z-index:4}
+.designer-hit:hover{border-color:rgba(var(--voucher-accent-rgb),.45);background:rgba(var(--voucher-accent-rgb),.06)}
+.designer-hit.selected{border-color:var(--voucher-purple);background:rgba(var(--voucher-accent-rgb),.08);z-index:4}
 .designer-hit.hidden{opacity:.4;border-style:dashed}
 .designer-hit:active{cursor:grabbing}
 .designer-handle{position:absolute;width:8px;height:8px;background:#fff;border:1.5px solid var(--voucher-purple);border-radius:2px}
@@ -401,7 +427,7 @@ tr.clickable:hover td{background:#f8faf7}
 .designer-layer-name{flex:1;min-width:0;display:flex;align-items:center;gap:7px;text-align:left;border:0;background:transparent;
   padding:6px 8px;font-size:11px;color:var(--voucher-ink);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .designer-layer-type{display:grid;place-items:center;width:16px;height:16px;flex:none;border-radius:4px;
-  background:rgba(78,50,125,.12);color:var(--voucher-purple);font-size:8.5px;font-weight:800}
+  background:rgba(var(--voucher-accent-rgb),.12);color:var(--voucher-purple);font-size:8.5px;font-weight:800}
 .designer-layers li.selected .designer-layer-type{background:rgba(255,255,255,.24);color:#fff}
 .designer-layer-icon{border:0;background:transparent;color:var(--voucher-muted);font-size:11px;padding:5px 4px;cursor:pointer;line-height:1}
 .designer-layer-icon:hover{color:var(--voucher-purple)}
@@ -422,7 +448,7 @@ tr.clickable:hover td{background:#f8faf7}
 .geo-props input[type=color]{padding:2px;height:30px}
 .geo-props input[type=range]{padding:0;border:0}
 .geo-props input[type=file]{padding:5px;font-size:10px}
-.geo-props input:focus,.geo-props select:focus,.geo-props textarea:focus{border-color:var(--voucher-purple);box-shadow:0 0 0 3px #4e327d1a}
+.geo-props input:focus,.geo-props select:focus,.geo-props textarea:focus{border-color:var(--voucher-purple);box-shadow:0 0 0 3px var(--voucher-focus)}
 
 /* Card-design picker inside the create-batch form: the same miniature the
    library shows, so choosing a design means looking at it, not at a name. */
@@ -433,8 +459,8 @@ tr.clickable:hover td{background:#f8faf7}
 .voucher-picker-row{display:flex;gap:12px;overflow-x:auto;padding-bottom:4px}
 .voucher-picker-card{flex:none;display:flex;flex-direction:column;align-items:center;gap:6px;width:166px;
   border:1.5px solid var(--voucher-line);border-radius:10px;background:#fff;padding:8px;cursor:pointer;text-align:center}
-.voucher-picker-card:hover{border-color:#c9bfe0}
-.voucher-picker-card.selected{border-color:var(--voucher-purple);box-shadow:0 0 0 3px #4e327d1a}
+.voucher-picker-card:hover{border-color:var(--voucher-hover-line)}
+.voucher-picker-card.selected{border-color:var(--voucher-purple);box-shadow:0 0 0 3px var(--voucher-focus)}
 .voucher-picker-card>span{font-size:11px;font-weight:600;color:var(--voucher-ink);overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 .voucher-picker-card>small{font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--voucher-purple)}
@@ -449,18 +475,18 @@ tr.clickable:hover td{background:#f8faf7}
 
 /* Reference-data setup: departments, voucher types, numbering prefixes. */
 .setup-form{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px;padding:14px;
-  border:1px solid var(--voucher-line);border-radius:10px;background:#fbfafd}
+  border:1px solid var(--voucher-line);border-radius:10px;background:var(--voucher-tint-3)}
 .setup-form label{display:flex;flex-direction:column;gap:5px;font-size:10px;font-weight:700;color:var(--voucher-muted)}
 .setup-form small{font-weight:600;text-transform:none;letter-spacing:0}
 .setup-form input,.setup-form select{border:1px solid var(--voucher-line);border-radius:8px;padding:8px 10px;
   font-size:11px;font-family:inherit;color:var(--voucher-ink);outline:none;background:#fff;min-width:150px}
-.setup-form input:focus,.setup-form select:focus{border-color:var(--voucher-purple);box-shadow:0 0 0 3px #4e327d1a}
+.setup-form input:focus,.setup-form select:focus{border-color:var(--voucher-purple);box-shadow:0 0 0 3px var(--voucher-focus)}
 .setup-form button.primary{width:auto;padding:0 18px;height:35px}
 
-.voucher-template-thumb{display:flex;justify-content:center;align-items:center;background:#f6f4fa;border-radius:8px;padding:10px;overflow:hidden}
+.voucher-template-thumb{display:flex;justify-content:center;align-items:center;background:var(--voucher-tint);border-radius:8px;padding:10px;overflow:hidden}
 .voucher-form-wide{grid-column:1 / -1}
 .voucher-form button.primary{background:var(--voucher-purple);height:42px}
-.voucher-success{margin-top:14px;padding:12px 14px;border-radius:10px;background:#f1eefa;color:var(--voucher-purple);font-size:11px}
+.voucher-success{margin-top:14px;padding:12px 14px;border-radius:10px;background:var(--voucher-success-bg);color:var(--voucher-purple);font-size:11px}
 .voucher-search{display:flex;gap:8px}
 .voucher-search input{border:1px solid var(--voucher-line);border-radius:9px;padding:9px 11px;font-size:11px;outline:none;min-width:200px}
 .voucher-tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}

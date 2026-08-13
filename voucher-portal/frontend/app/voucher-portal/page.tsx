@@ -809,10 +809,12 @@ const SERIES = [
   { key: "redeemed", label: "Redeemed", color: "#1baf7a" },
 ] as const;
 
-const CHART_INK = "#231B36";
-const CHART_MUTED = "#6B6480";
-const CHART_GRID = "#E6E1F0";
-const CHART_AXIS = "#CFC7DF";
+// Charts are SVG, so they cannot read the CSS custom properties the rest of the
+// portal is themed with - these mirror the brand tokens by hand.
+const CHART_INK = "#12211C";
+const CHART_MUTED = "#5C6F67";
+const CHART_GRID = "#DCE7E1";
+const CHART_AXIS = "#B9CFC4";
 
 /** Clean axis steps only (1 / 2 / 5 / 10 × a power of ten). A 2.5 step would
  *  round to a label that doesn't sit where the gridline is - "3" drawn at 2.5. */
@@ -1249,14 +1251,14 @@ function ElementView({ element, scale, values }: { element: CardElement; scale: 
       left, top, width: (element.w || 0) * scale, height: (element.h || 0) * scale,
       background: element.fill || "#FFFFFF", opacity: element.opacity ?? 1,
       borderRadius: (element.radius || 0) * scale,
-      border: element.border_width ? `${Math.max(element.border_width * scale, 1)}px solid ${element.border_color || "#DCD7E8"}` : undefined,
+      border: element.border_width ? `${Math.max(element.border_width * scale, 1)}px solid ${element.border_color || "#DCE7E1"}` : undefined,
     }} />;
   }
 
   if (element.type === "line") {
     return <div className="card-el-box" style={{
       left, top, width: (element.w || 0) * scale, height: Math.max((element.h || 1) * scale, 1),
-      background: element.color || "#DCD7E8",
+      background: element.color || "#DCE7E1",
     }} />;
   }
 
@@ -1267,7 +1269,7 @@ function ElementView({ element, scale, values }: { element: CardElement; scale: 
       <div style={{ height: (element.h || 0) * scale, backgroundImage: barcodePattern(value, element.color || "#000000") }} />
       {element.show_value !== false && <div style={{
         ...fontStyle(element.value_font || "Courier"), fontSize: captionSize, lineHeight: `${captionSize * 1.3}px`,
-        color: element.value_color || "#231B36", textAlign: "center", marginTop: scale,
+        color: element.value_color || "#12211C", textAlign: "center", marginTop: scale,
       }}>{value}</div>}
     </div>;
   }
@@ -1291,7 +1293,7 @@ function ElementView({ element, scale, values }: { element: CardElement; scale: 
     top: top - (lineHeight - size * 1.117) / 2 - size * 0.128,
     width: width || undefined,
     transform: width ? undefined : align === "center" ? "translateX(-50%)" : align === "right" ? "translateX(-100%)" : undefined,
-    textAlign: align, color: element.color || "#231B36",
+    textAlign: align, color: element.color || "#12211C",
     fontSize: size, lineHeight: `${lineHeight}px`,
     whiteSpace: width ? "pre-wrap" : "pre",
     maxHeight: element.max_lines ? lineHeight * element.max_lines : undefined,
@@ -1940,7 +1942,7 @@ function TemplateDesigner({ template, canAdmin, previewArtwork, onClose, onSaved
               </select>
             </label>
             <div className="designer-pair">
-              <label>Colour<input type="color" value={active.color || "#231B36"}
+              <label>Colour<input type="color" value={active.color || "#12211C"}
                 onChange={e => setProp(active.id, { color: e.target.value }, `color:${active.id}`)} /></label>
               <label>Align
                 <select value={active.align || "left"} onChange={e => setProp(active.id, { align: e.target.value as Align }, "")}>
@@ -1966,14 +1968,14 @@ function TemplateDesigner({ template, canAdmin, previewArtwork, onClose, onSaved
                      onChange={e => setProp(active.id, { opacity: Number(e.target.value) }, `opacity:${active.id}`)} />
             </label>
             <div className="designer-pair">
-              <label>Border<input type="color" value={active.border_color || "#DCD7E8"}
+              <label>Border<input type="color" value={active.border_color || "#DCE7E1"}
                 onChange={e => setProp(active.id, { border_color: e.target.value }, `bc:${active.id}`)} /></label>
               <label>Border width<input type="number" min={0} step={0.25} value={active.border_width ?? 0}
                 onChange={e => setProp(active.id, { border_width: Number(e.target.value) }, `bw:${active.id}`)} /></label>
             </div>
           </>}
 
-          {active.type === "line" && <label>Colour<input type="color" value={active.color || "#DCD7E8"}
+          {active.type === "line" && <label>Colour<input type="color" value={active.color || "#DCE7E1"}
             onChange={e => setProp(active.id, { color: e.target.value }, `color:${active.id}`)} /></label>}
 
           {active.type === "barcode" && <>
@@ -1990,7 +1992,7 @@ function TemplateDesigner({ template, canAdmin, previewArtwork, onClose, onSaved
             {active.show_value !== false && <div className="designer-pair">
               <label>Number size<input type="number" min={4} step={0.5} value={active.value_size ?? 7}
                 onChange={e => setProp(active.id, { value_size: Number(e.target.value) }, `vs:${active.id}`)} /></label>
-              <label>Number colour<input type="color" value={active.value_color || "#231B36"}
+              <label>Number colour<input type="color" value={active.value_color || "#12211C"}
                 onChange={e => setProp(active.id, { value_color: e.target.value }, `vc:${active.id}`)} /></label>
             </div>}
           </>}
