@@ -1,6 +1,6 @@
-# Gift Voucher Desk (ADCOOP retail)
+# Gift Voucher Desk (MAIR retail)
 
-A standalone, publicly accessible desk for printing and issuing ADCOOP retail gift vouchers.
+A standalone, publicly accessible desk for printing and issuing MAIR retail gift vouchers.
 It lives in this repo purely for shared deployment infrastructure — it is not part of the
 fleet/transport domain, doesn't reference `fleet`, `iam` or `accounting`, and requires no login.
 
@@ -55,18 +55,19 @@ that only has the physical voucher in hand.
 ## PDF
 
 `GET /api/v1/vouchers/vouchers/{id}/pdf/` renders the voucher as a PDF (`backend/vouchers/pdf.py`,
-via `reportlab`) matching the ADCOOP template: logo, "GIFT VOUCHER" heading, a bordered
+via `reportlab`) matching the MAIR template: logo, "GIFT VOUCHER" heading, a bordered
 label/value table (number, phone, value, issue date, validity), a Code128 barcode of the
-voucher number, and the terms line. The logo is the exact artwork extracted from the supplied
-template, stored at `backend/vouchers/assets/adcoop_logo.png`.
+voucher number, and the terms line. The logo is stored at
+`backend/vouchers/assets/mair_logo.png` — replace that file to change the mark on every
+printed voucher.
 
 ## Frontend
 
 `app/vouchers/page.tsx` is a self-contained page — it does not use the authenticated console's
 sidebar shell, and never touches `sessionStorage`/the `fms_token` flow the rest of the console
 relies on. It reuses `fmsRequest` from `app/lib/fms-api.ts`, which already tolerates anonymous
-use. Styling is scoped under `.voucher-*` classes in `app/globals.css`, using ADCOOP's own
-brand colours (`#4E327D` purple, `#E2E151` lime) rather than the fleet console's green theme.
+use. Styling is scoped under `.voucher-*` classes in `app/globals.css`, which derive the whole
+MAIR palette from a single `--mair-green` token rather than the fleet console's own theme.
 
 ## Risk
 

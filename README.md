@@ -36,15 +36,15 @@ first slice (own/attached/leased fleet, collect/solve/commit, a minimal Planning
 is built; GPS re-planning, OR-Tools and the full Gantt/map board remain design only. See
 [docs/DISPATCH-PLANNING.md](docs/DISPATCH-PLANNING.md).
 
-## Gift Voucher Desk (ADCOOP retail)
+## Gift Voucher Desk (MAIR retail)
 
-A separate, publicly accessible page for generating and issuing ADCOOP retail gift vouchers —
+A separate, publicly accessible page for generating and issuing MAIR retail gift vouchers —
 unrelated to the fleet domain, sharing this deployment purely for convenience. No login: create
 a numbered voucher series with a value and validity window, issue vouchers with an optional
 phone number, and print each one as a PDF with its barcode. See
 [docs/GIFT-VOUCHERS.md](docs/GIFT-VOUCHERS.md).
 
-## Voucher Portal (ADCOOP retail, staff login required)
+## Voucher Portal (MAIR retail, staff login required)
 
 An authenticated extension of the gift voucher desk above, covering the fuller retail voucher
 workflow: percentage or fixed discounts, department/type-scoped prefixes with server-allocated

@@ -79,7 +79,7 @@ def validate_field_geometry(geometry, *, coupon_width=None, coupon_height=None):
     * a barcode is present and visible, because the barcode carries the
       voucher's unique number and is what a till scans.
 
-    Version 1 and 2 documents (the fixed ADCOOP field catalogue) are still
+    Version 1 and 2 documents (the fixed coupon field catalogue) are still
     accepted so an older client or an untouched template keeps working."""
     from .geometry import ELEMENT_TYPES, FONTS, ALIGNMENTS, VARIABLE_KEYS
 
@@ -208,7 +208,7 @@ def validate_field_geometry(geometry, *, coupon_width=None, coupon_height=None):
 
 
 def _validate_legacy(geometry, *, coupon_width=None, coupon_height=None):
-    """Version 1 / 2 documents: a fixed catalogue of ADCOOP coupon fields."""
+    """Version 1 / 2 documents: a fixed catalogue of coupon fields."""
     from .geometry import KNOWN_FIELD_KEYS
 
     limits = {"x": coupon_width, "y": coupon_height, "w": coupon_width, "h": coupon_height}

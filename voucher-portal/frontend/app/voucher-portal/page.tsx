@@ -2085,7 +2085,7 @@ function TemplatesScreen({ canAdmin, intent, onIntentDone }: {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [showNew, setShowNew] = useState(false);
-  const [form, setForm] = useState({ name: "", preset: "adcoop" });
+  const [form, setForm] = useState({ name: "", preset: "classic" });
   const [file, setFile] = useState<File | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
@@ -2153,7 +2153,7 @@ function TemplatesScreen({ canAdmin, intent, onIntentDone }: {
       }
       if (file) body.append("artwork", file);
       const created = await fmsRequest<Template>("voucher-portal/templates/", { method: "POST", body });
-      setShowNew(false); setForm({ name: "", preset: "adcoop" }); setFile(null);
+      setShowNew(false); setForm({ name: "", preset: "classic" }); setFile(null);
       await load();
       setEditing(created);  // straight into the designer - that's what they came for
     } catch (error: any) { setCreateError(parseApiError(error)); }

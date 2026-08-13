@@ -6,7 +6,7 @@ on a voucher that has already been printed.
 
 Unlike the first version of this file, this is a *generic* interpreter: it
 walks `elements` and draws whatever the designer put there, rather than
-knowing a fixed set of ADCOOP coupon fields. Older snapshots (version 1/2 with
+knowing a fixed set of coupon fields. Older snapshots (version 1/2 with
 the fixed `fields` catalogue) are converted by `geometry.to_elements()` on the
 way in, so batches generated before the designer existed keep printing exactly
 as they did.
