@@ -17,10 +17,13 @@ its own Next app, its own migrations, its own tests.
   deleted or hidden — validation rejects a layout without one.
 - **Generate in batches.** Pick a template, a prefix and a quantity; the API
   allocates numbers and renders one PDF per voucher plus a combined sheet.
-- **Approval workflow.** Draft → submitted → approved → generated, with status
-  history and notifications.
+- **Two-stage approval.** Draft → submitted → first approval → second
+  approval → generated, with status history and notifications. The second
+  sign-off has to come from someone other than the first.
 - **Reference data from the UI.** Departments, voucher types and prefixes are
   managed in the app, not in the database by hand.
+- **Scoped visibility.** A user is mapped to any number of departments, and
+  within them either sees everyone's vouchers or only the ones they raised.
 
 ## Layout
 
@@ -84,13 +87,13 @@ duplicate voucher numbers.
 
 ```bash
 cd backend
-DJANGO_SECRET_KEY=test USE_SQLITE=true python manage.py test    # 138 tests
+DJANGO_SECRET_KEY=test USE_SQLITE=true python manage.py test    # 154 tests
 cd ../frontend && npm run typecheck
 ```
 
 The suite covers numbering under concurrency, the layout validator, PDF
-rendering of every element type, the workflow transitions, permissions, and the
-admin.
+rendering of every element type, the two-stage approval chain, who can see
+whose vouchers, permissions, and the admin.
 
 ## Configuration
 
@@ -130,9 +133,8 @@ Three places, and nothing else hard-codes the brand:
    3.4:1 aspect ratio so the header height holds.
 2. **`frontend/app/globals.css`**, the `:root` block — the palette hangs off
    `--mair-green: #0A4A3A`. Change that one value and buttons, focus rings,
-   active tabs and links follow. `--voucher-purple` is kept as an alias of it so
-   the component styles carried over from the original portal did not need
-   rewriting line by line.
+   active tabs and links follow. `--voucher-accent` aliases it so the component
+   styles name the role rather than the colour.
 3. **`backend/voucher_portal/geometry.py`**, the `PALETTE` and default element
    colours — the ink colours used *on the cards themselves*, which are rendered
    server-side into the PDF and so cannot come from CSS.

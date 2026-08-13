@@ -230,6 +230,7 @@ class PortalUserAccessViewSet(viewsets.ModelViewSet):
             "role": access.role,
             "actions": sorted(access.actions),
             "department_ids": None if access.department_ids is None else sorted(access.department_ids),
+            "sees_others_vouchers": access.sees_others,
             "is_django_staff": bool(request.user.is_staff or request.user.is_superuser),
         })
 
@@ -265,6 +266,22 @@ def _require_department(access, department_id):
         raise PermissionDenied("You don't have access to this department.")
 
 
+def _scope(queryset, access, *, department_field, creator_field):
+    """The two visibility rules, applied together and in the same order
+    everywhere: which departments this login is mapped to, then - inside those
+    - whether it sees everyone's batches or only the ones it raised.
+
+    Roles that approve or report always have sees_others set (see
+    services/access.py), so the second filter is a no-op for them. It is
+    applied here regardless rather than skipped at the call sites, so nothing
+    leaks if that rule is ever loosened."""
+    if access.department_ids is not None:
+        queryset = queryset.filter(**{f"{department_field}__in": access.department_ids})
+    if not access.sees_others:
+        queryset = queryset.filter(**{creator_field: access.user_id})
+    return queryset
+
+
 class PortalBatchViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = PortalBatch.objects.select_related("department", "voucher_type", "created_by", "approved_by").all()
     serializer_class = PortalBatchSerializer
@@ -272,10 +289,8 @@ class PortalBatchViewSet(viewsets.ReadOnlyModelViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
-        access = self.request.portal_access
-        if access.department_ids is not None:
-            queryset = queryset.filter(department_id__in=access.department_ids)
+        queryset = _scope(super().get_queryset(), self.request.portal_access,
+                         department_field="department_id", creator_field="created_by_id")
         params = self.request.query_params
         status_filter = params.get("status")
         if status_filter:
@@ -333,6 +348,10 @@ class PortalBatchViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
+        """Both sign-offs come through here; which one it is depends on the
+        batch's current status. The stage-specific rule - that the second
+        approval must come from someone other than the first approver - lives
+        in the workflow service, so it holds however the transition is reached."""
         batch = self.get_object()
         access = request.portal_access
         _require(access, "approve")
@@ -481,10 +500,8 @@ class PortalVoucherViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [HasPortalAccess]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
-        access = self.request.portal_access
-        if access.department_ids is not None:
-            queryset = queryset.filter(batch__department_id__in=access.department_ids)
+        queryset = _scope(super().get_queryset(), self.request.portal_access,
+                         department_field="batch__department_id", creator_field="batch__created_by_id")
         params = self.request.query_params
         batch = params.get("batch")
         if batch:
@@ -574,17 +591,17 @@ class ReportsViewSet(viewsets.ViewSet):
     def _scoped_vouchers(self, request):
         access = request.portal_access
         _require(access, "report")
-        queryset = PortalVoucher.objects.select_related("batch", "batch__department", "batch__voucher_type")
-        if access.department_ids is not None:
-            queryset = queryset.filter(batch__department_id__in=access.department_ids)
+        queryset = _scope(
+            PortalVoucher.objects.select_related("batch", "batch__department", "batch__voucher_type"),
+            access, department_field="batch__department_id", creator_field="batch__created_by_id")
         return reports.apply_filters(queryset, request.query_params)
 
     def _scoped_batches(self, request):
         access = request.portal_access
         _require(access, "report")
-        queryset = PortalBatch.objects.select_related("department", "voucher_type", "created_by", "approved_by")
-        if access.department_ids is not None:
-            queryset = queryset.filter(department_id__in=access.department_ids)
+        queryset = _scope(
+            PortalBatch.objects.select_related("department", "voucher_type", "created_by", "approved_by"),
+            access, department_field="department_id", creator_field="created_by_id")
         params = request.query_params
         if params.get("department"):
             queryset = queryset.filter(department_id=params["department"])

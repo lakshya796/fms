@@ -129,6 +129,17 @@ td:first-child small { color: #86958E; }
 .voucher-notif-item time{font-size:9px;color:var(--voucher-muted)}
 .voucher-notif-item.unread{background:#EEF5F1}
 .voucher-download-link{display:inline-block;padding:8px 14px;border-radius:8px;text-decoration:none;margin-top:10px}
+/* The two approval sign-offs. Both steps always render, so an outstanding one
+   shows as a gap in a sequence rather than as something simply not there. */
+.approval-trail{display:flex;flex-direction:column;gap:6px;margin:10px 0 4px;font-size:11px;color:var(--voucher-muted)}
+.approval-step{display:flex;align-items:baseline;gap:8px}
+.approval-step-mark{display:inline-grid;place-items:center;width:16px;height:16px;flex:0 0 16px;
+  border-radius:50%;border:1px solid var(--voucher-line);font-size:9px;line-height:1}
+.approval-step.done{color:var(--voucher-ink)}
+.approval-step.done .approval-step-mark{background:var(--mair-green);border-color:var(--mair-green);color:#fff}
+.approval-step.awaiting{color:var(--voucher-accent)}
+.approval-step.awaiting .approval-step-mark{border-color:var(--voucher-accent);color:var(--voucher-accent)}
+.access-hint{margin:0 0 6px;font-size:10px;color:var(--voucher-muted)}
 .voucher-workflow-actions{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
 .voucher-workflow-actions button{width:auto;padding:0 16px;height:38px}
 .voucher-inline-form{margin-top:12px;padding:14px;background:#F2F7F4;border-radius:10px;display:flex;flex-direction:column;gap:8px}

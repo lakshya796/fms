@@ -15,6 +15,7 @@ typed in by hand would fail at print time rather than at save time. And
 from django.contrib import admin
 from django.urls import reverse
 from django.utils.html import format_html, format_html_join
+from django.utils.safestring import mark_safe
 
 from .geometry import to_elements
 from .models import (Department, Notification, PortalBatch, PortalUserAccess, PortalVoucher, StatusChange,
@@ -147,16 +148,29 @@ class PortalBatchAdmin(admin.ModelAdmin):
     list_filter = ["status", "department", "voucher_type", "discount_type", "created_at"]
     search_fields = ["name", "prefix_snapshot", "description"]
     date_hierarchy = "created_at"
-    autocomplete_fields = ["department", "voucher_type", "prefix", "created_by", "approved_by"]
+    autocomplete_fields = ["department", "voucher_type", "prefix", "created_by",
+                           "first_approved_by", "approved_by"]
     inlines = [StatusChangeInline]
     readonly_fields = ["prefix_snapshot", "sequence_length_snapshot", "template_snapshot", "combined_pdf_url",
-                       "generation_error", "created_at", "updated_at"]
+                       "generation_error", "approval_trail", "created_at", "updated_at"]
 
     # A batch is only correct when services/generation.py builds it: numbers
     # allocated under a row lock, prefix and template snapshotted onto the row.
     # One typed in here would fail at print time instead.
     def has_add_permission(self, request):
         return False
+
+    @admin.display(description="Approvals")
+    def approval_trail(self, batch):
+        stages = [("First", batch.first_approved_by, batch.first_approved_at),
+                  ("Second", batch.approved_by, batch.approved_at)]
+        done = [(label, user, when) for label, user, when in stages if user or when]
+        if not done:
+            return "Not yet approved"
+        return format_html_join(
+            mark_safe("<br>"), "{}: {} on {}",
+            ((label, getattr(user, "username", "—"),
+              when.strftime("%d %b %Y %H:%M") if when else "—") for label, user, when in done))
 
     @admin.display(description="Vouchers")
     def voucher_links(self, batch):
@@ -210,8 +224,8 @@ class PortalUserAccessAdmin(admin.ModelAdmin):
     Separate from Django staff status on purpose - though a Django staff user
     or superuser gets implicit Administrator access without a row here, which
     is what keeps the bootstrap login working (see services/access.py)."""
-    list_display = ["user", "role", "department_list", "is_active", "created_at"]
-    list_filter = ["role", "is_active", "departments"]
+    list_display = ["user", "role", "department_list", "can_view_others_vouchers", "is_active", "created_at"]
+    list_filter = ["role", "is_active", "can_view_others_vouchers", "departments"]
     search_fields = ["user__username", "user__first_name", "user__last_name", "user__email"]
     autocomplete_fields = ["user"]
     filter_horizontal = ["departments"]

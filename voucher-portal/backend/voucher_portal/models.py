@@ -167,8 +167,15 @@ class PortalUserAccess(Timestamped):
     role = models.CharField(max_length=20, choices=VOUCHER_ROLES, default="requester")
     departments = models.ManyToManyField(
         Department, blank=True, related_name="staff",
-        help_text="Empty means every department - only meaningful for Administrator or Report Viewer; "
-                  "Requester/Approver with no department sees nothing.")
+        help_text="A user can belong to any number of departments. Empty means every department - "
+                  "only meaningful for Administrator or Report Viewer; Requester/Approver with no "
+                  "department sees nothing.")
+    can_view_others_vouchers = models.BooleanField(
+        default=False,
+        help_text="Off: this user only sees batches and vouchers they raised themselves. On: they see "
+                  "everything in their departments. Roles that approve or report can always see across "
+                  "users regardless - an approver who could only see their own requests would have "
+                  "nothing to approve.")
     is_active = models.BooleanField(default=True)
 
     class Meta:
@@ -184,6 +191,7 @@ class Notification(Timestamped):
     about the approval workflow needs to change to add it."""
     NOTIFICATION_KINDS = [
         ("submitted", "Submitted for approval"),
+        ("first_approved", "First approval granted"),
         ("approved", "Approved"),
         ("rejected", "Rejected"),
     ]
@@ -202,9 +210,13 @@ class Notification(Timestamped):
 
 DISCOUNT_TYPES = [("percentage", "Percentage"), ("fixed", "Fixed amount")]
 
+# Approval is two-stage: pending_approval is awaiting the first sign-off,
+# pending_second_approval the second. "approved" means both are in and the
+# batch can be generated, so nothing downstream of approval had to change.
 BATCH_STATUSES = [
     ("draft", "Draft"),
-    ("pending_approval", "Pending Approval"),
+    ("pending_approval", "Pending First Approval"),
+    ("pending_second_approval", "Pending Second Approval"),
     ("approved", "Approved"),
     ("rejected", "Rejected"),
     ("generating", "Generating"),
@@ -257,11 +269,18 @@ class PortalBatch(Timestamped):
         help_text="Optional batch-specific artwork that overrides the selected template artwork",
     )
 
-    status = models.CharField(max_length=20, choices=BATCH_STATUSES, default="draft")
+    # 23 chars: "pending_second_approval" is the longest status value.
+    status = models.CharField(max_length=24, choices=BATCH_STATUSES, default="draft")
     combined_pdf_url = models.URLField(blank=True, help_text="Print-ready, all vouchers in one PDF")
     generation_error = models.TextField(blank=True)
 
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="voucher_batches")
+    # Two sign-offs. approved_by/approved_at keep their original meaning - the
+    # final approval, the one that lets the batch generate - so reports, admin
+    # and anything else reading them did not have to change when the first
+    # stage was added in front.
+    first_approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    first_approved_at = models.DateTimeField(null=True, blank=True)
     approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     approved_at = models.DateTimeField(null=True, blank=True)
     rejection_reason = models.CharField(max_length=240, blank=True)

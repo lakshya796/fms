@@ -192,12 +192,27 @@ split by the approval workflow below:
   chosen prefix and template — as `status=draft`. **No numbers are allocated,
   no `PortalVoucher` rows exist yet.**
 - `POST batches/{id}/submit/` → `pending_approval`, notifies approvers.
-- `POST batches/{id}/approve/` → `approved`, notifies the requester. Self-
-  approval is blocked for everyone except Administrators (§10: "should not
-  approve their own request unless explicitly permitted" — Administrator is
-  that permission).
-- `POST batches/{id}/reject/` (reason required) → `rejected`, notifies the
-  requester with the reason. A rejected batch can be resubmitted directly
+- `POST batches/{id}/approve/` — **two sign-offs are required**, and this one
+  endpoint gives whichever is next; the server decides from the batch's
+  current status rather than the caller naming a stage:
+  `pending_approval` → `pending_second_approval` → `approved`.
+  Only the second sign-off makes a batch generatable.
+  Two rules gate it:
+  - Self-approval is blocked for everyone except Administrators (§10: "should
+    not approve their own request unless explicitly permitted" — Administrator
+    is that permission).
+  - The second sign-off must come from someone other than whoever gave the
+    first — two levels are only worth having if two people give them. The same
+    Administrator carve-out applies, so a single-administrator deployment is
+    not deadlocked.
+
+  Both are enforced in `services/workflow.py`, not the view, so they hold
+  however the transition is reached.
+- `POST batches/{id}/reject/` (reason required) → `rejected`, from **either**
+  pending state, notifies the requester with the reason. Rejecting discards
+  the first sign-off, so a resubmitted batch collects both again rather than
+  resuming halfway through a chain that approved a different version of it.
+  A rejected batch can be resubmitted directly
   (`submit` again) rather than needing a true edit-and-resave step — there's
   no field-level edit endpoint yet, so "editing and resubmitting" (§10) is
   simplified to "resubmit the same batch," documented here rather than left
@@ -304,11 +319,28 @@ login):
   Requester gets create/issue/download; Approver gets approve/download/report;
   Report Viewer gets report only. See `models.ROLE_ACTIONS`.
 - **Department scope** (`PortalUserAccess.departments`, a M2M) decides which
-  departments' batches and vouchers a login can see and act on at all.
-  Administrator/Report Viewer with nothing assigned see every department (the
-  common case for those roles); Requester/Approver with nothing assigned see
-  **nothing** — an explicit grant is required, a locked-down default rather
-  than an accidentally-open one.
+  departments' batches and vouchers a login can see and act on at all. **A
+  user can be mapped to any number of departments** and sees the union of
+  them. Administrator/Report Viewer with nothing assigned see every department
+  (the common case for those roles); Requester/Approver with nothing assigned
+  see **nothing** — an explicit grant is required, a locked-down default
+  rather than an accidentally-open one.
+- **Cross-user visibility** (`PortalUserAccess.can_view_others_vouchers`)
+  decides whether, *inside* those departments, a login sees everyone's batches
+  and vouchers or only the ones it raised itself. Off by default. It never
+  widens beyond the department scope — the two filters compose, they do not
+  override each other.
+
+  Roles whose actions include `approve`, `report` or `admin` always see across
+  users regardless of the flag (`CROSS_USER_ACTIONS` in `services/access.py`):
+  an approver who could only see their own requests would have nothing to
+  approve. The admin UI shows the checkbox forced on for those roles rather
+  than letting someone set a value that would be quietly ignored.
+
+  Both filters are applied by one helper (`_scope` in `views.py`) used by the
+  batch, voucher and reports querysets, so a new list endpoint cannot
+  accidentally skip one. They apply to retrieval as well as listing — a batch
+  hidden from the list is a 404 by id, not merely absent from a page.
 
 Django staff/superusers get implicit Administrator access with no department
 restriction, so the bootstrap `fleetadmin` (or any dev login with
@@ -337,7 +369,10 @@ duplicating the permission table client-side.
 
 **In-app only** — there's no SMTP configured on this deployment. `POST
 batches/{id}/submit/` notifies every approver/administrator scoped to the
-batch's department; `approve`/`reject` notify the batch's requester.
+batch's department. The first `approve` notifies the requester *and* the other
+approvers, since the batch now needs one of them; the second notifies the
+requester and the first approver. `reject` notifies the requester. Nobody is
+ever notified about their own action.
 `GET notifications/` (scoped to the caller), `POST notifications/{id}/read/`,
 `POST notifications/read-all/`. Wiring in real email later only needs an
 email backend and a call from `services/workflow.py`'s `_notify()` — nothing
