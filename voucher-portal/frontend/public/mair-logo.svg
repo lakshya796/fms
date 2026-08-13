@@ -1,0 +1,19 @@
+<!-- PLACEHOLDER brand mark, drawn to sit correctly in the portal's header and
+     sign-in card. Replace this file with the official MAIR logo (same filename,
+     any SVG/PNG) and every screen picks it up - nothing else references the
+     artwork. Keep a roughly 3.4:1 aspect ratio so the header height holds. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 100" role="img" aria-label="MAIR">
+  <g fill="#0A4A3A">
+    <!-- Ring with a radiating upper-left quadrant, echoing the MAIR mark. -->
+    <path d="M50 6a44 44 0 1 1 0 88 44 44 0 0 1 0-88Zm0 22a22 22 0 1 0 0 44 22 22 0 0 0 0-44Z"/>
+    <g>
+      <rect x="46" y="0" width="8" height="20" rx="2"/>
+      <rect x="46" y="0" width="8" height="20" rx="2" transform="rotate(-20 50 50)"/>
+      <rect x="46" y="0" width="8" height="20" rx="2" transform="rotate(-40 50 50)"/>
+      <rect x="46" y="0" width="8" height="20" rx="2" transform="rotate(-60 50 50)"/>
+      <rect x="46" y="0" width="8" height="20" rx="2" transform="rotate(-80 50 50)"/>
+    </g>
+    <text x="112" y="72" font-family="Inter, Helvetica, Arial, sans-serif"
+          font-size="54" font-weight="800" letter-spacing="1">MĀIR</text>
+  </g>
+</svg>
