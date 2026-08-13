@@ -50,9 +50,11 @@ def grant(user, role, departments=None):
     return access
 
 
-def approved_batch(dept, vtype, prefix, template, requester, approver, **overrides):
-    """A batch already through submit + approve, ready for generate() - the
-    state most issuing/reporting tests actually want to start from."""
+def approved_batch(dept, vtype, prefix, template, requester, approver, second_approver=None, **overrides):
+    """A batch already through submit and *both* approvals, ready for
+    generate() - the state most issuing/reporting tests actually want to start
+    from. The two sign-offs have to come from different people, so a second
+    approver is conjured when the caller has no opinion about who gives it."""
     valid_from, valid_to = dates()
     data = {
         "name": "Diwali gift vouchers", "department": dept, "voucher_type": vtype, "description": "",
@@ -64,6 +66,7 @@ def approved_batch(dept, vtype, prefix, template, requester, approver, **overrid
     batch = create_draft_batch(data, requester)
     workflow.submit(batch, requester)
     workflow.approve(batch, approver)
+    workflow.approve(batch, second_approver or User.objects.create_user(f"second-{batch.pk}", password="x"))
     return batch
 
 
@@ -263,6 +266,7 @@ class PreviewAndGenerationTests(TestCase):
         # And generation still uses the snapshot, not the edited live prefix.
         workflow.submit(batch, self.user)
         workflow.approve(batch, User.objects.create_user("approver2", password="x"))
+        workflow.approve(batch, User.objects.create_user("approver3", password="x"))
         generate_vouchers(batch)
         self.assertEqual(batch.vouchers.first().number[:3], "EMP")
         self.assertEqual(len(batch.vouchers.first().number), 3 + 4)  # unchanged 4-digit width, not the edited 6
@@ -277,6 +281,7 @@ class ApprovalWorkflowTests(TestCase):
         self.dept, self.vtype, self.prefix, self.template = make_reference_data()
         self.requester = User.objects.create_user("requester", password="x")
         self.approver = User.objects.create_user("approver", password="x")
+        self.second_approver = User.objects.create_user("second-approver", password="x")
 
     def _draft(self, **overrides):
         valid_from, valid_to = dates()
@@ -293,11 +298,84 @@ class ApprovalWorkflowTests(TestCase):
         batch = self._draft()
         workflow.submit(batch, self.requester)
         self.assertEqual(batch.status, "pending_approval")
+
         workflow.approve(batch, self.approver)
+        self.assertEqual(batch.status, "pending_second_approval")
+        self.assertEqual(batch.first_approved_by, self.approver)
+        self.assertIsNone(batch.approved_by)
+
+        workflow.approve(batch, self.second_approver)
         self.assertEqual(batch.status, "approved")
-        self.assertEqual(batch.approved_by, self.approver)
+        self.assertEqual(batch.first_approved_by, self.approver)
+        self.assertEqual(batch.approved_by, self.second_approver)
+
         workflow.generate(batch, self.requester)
         self.assertEqual(batch.status, "generating")
+
+    def test_one_approval_is_not_enough_to_generate(self):
+        batch = self._draft()
+        workflow.submit(batch, self.requester)
+        workflow.approve(batch, self.approver)
+        with self.assertRaises(workflow.WorkflowError):
+            workflow.generate(batch, self.requester)
+
+    def test_second_approval_must_come_from_a_different_person(self):
+        batch = self._draft()
+        workflow.submit(batch, self.requester)
+        workflow.approve(batch, self.approver)
+        with self.assertRaises(workflow.WorkflowError):
+            workflow.approve(batch, self.approver)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, "pending_second_approval")
+
+    def test_administrator_may_give_both_approvals(self):
+        """The same carve-out that lets an administrator approve their own
+        request: without it a single-administrator deployment could never
+        approve anything."""
+        admin = User.objects.create_user("admin-both", password="x")
+        grant(admin, "administrator", [self.dept])
+        batch = self._draft()
+        workflow.submit(batch, self.requester)
+        workflow.approve(batch, admin)
+        workflow.approve(batch, admin)
+        self.assertEqual(batch.status, "approved")
+        self.assertEqual(batch.first_approved_by, admin)
+        self.assertEqual(batch.approved_by, admin)
+
+    def test_reject_at_second_stage_discards_the_first_approval(self):
+        batch = self._draft()
+        workflow.submit(batch, self.requester)
+        workflow.approve(batch, self.approver)
+        workflow.reject(batch, self.second_approver, "Wrong department budget.")
+        self.assertEqual(batch.status, "rejected")
+        self.assertIsNone(batch.first_approved_by)
+        self.assertIsNone(batch.first_approved_at)
+
+    def test_resubmitting_restarts_the_approval_chain(self):
+        """A resubmitted batch must collect both sign-offs again - carrying the
+        first one forward would let one approval push a changed batch through."""
+        batch = self._draft()
+        workflow.submit(batch, self.requester)
+        workflow.approve(batch, self.approver)
+        workflow.reject(batch, self.second_approver, "Not this time.")
+        workflow.submit(batch, self.requester)
+        self.assertEqual(batch.status, "pending_approval")
+        self.assertIsNone(batch.first_approved_by)
+        workflow.approve(batch, self.approver)
+        self.assertEqual(batch.status, "pending_second_approval")
+
+    def test_first_approval_notifies_requester_and_other_approvers(self):
+        grant(self.second_approver, "approver", [self.dept])
+        batch = self._draft()
+        workflow.submit(batch, self.requester)
+        workflow.approve(batch, self.approver)
+        self.assertTrue(Notification.objects.filter(
+            user=self.requester, batch=batch, kind="first_approved").exists())
+        self.assertTrue(Notification.objects.filter(
+            user=self.second_approver, batch=batch, kind="first_approved").exists())
+        # The person who just approved is not told about their own action.
+        self.assertFalse(Notification.objects.filter(
+            user=self.approver, batch=batch, kind="first_approved").exists())
 
     def test_cannot_generate_before_approval(self):
         batch = self._draft()
@@ -320,11 +398,13 @@ class ApprovalWorkflowTests(TestCase):
         note = Notification.objects.get(user=self.requester, batch=batch, kind="rejected")
         self.assertIn("Budget exceeded", note.message)
 
-    def test_approve_notifies_requester(self):
+    def test_final_approval_notifies_requester_and_first_approver(self):
         batch = self._draft()
         workflow.submit(batch, self.requester)
         workflow.approve(batch, self.approver)
+        workflow.approve(batch, self.second_approver)
         self.assertTrue(Notification.objects.filter(user=self.requester, batch=batch, kind="approved").exists())
+        self.assertTrue(Notification.objects.filter(user=self.approver, batch=batch, kind="approved").exists())
 
     def test_submit_notifies_approvers_in_department(self):
         grant(self.approver, "approver", [self.dept])
@@ -340,12 +420,13 @@ class ApprovalWorkflowTests(TestCase):
         self.assertEqual(batch.status, "pending_approval")
         self.assertEqual(batch.rejection_reason, "")  # cleared on resubmit
 
-    def test_cannot_approve_twice(self):
+    def test_cannot_approve_an_already_approved_batch(self):
         batch = self._draft()
         workflow.submit(batch, self.requester)
         workflow.approve(batch, self.approver)
+        workflow.approve(batch, self.second_approver)
         with self.assertRaises(workflow.WorkflowError):
-            workflow.approve(batch, self.approver)
+            workflow.approve(batch, User.objects.create_user("third", password="x"))
 
     def test_cancel_batch_from_various_states(self):
         batch = self._draft()
@@ -534,6 +615,7 @@ class PortalApiWorkflowTests(TestCase):
         self.dept, self.vtype, self.prefix, self.template = make_reference_data()
         self.requester = User.objects.create_user("requester", password="x", is_staff=True)
         self.approver = User.objects.create_user("approver", password="x", is_staff=True)
+        self.second_approver = User.objects.create_user("second-approver", password="x", is_staff=True)
         self.client = APIClient()
         self.client.force_authenticate(self.requester)
 
@@ -608,7 +690,15 @@ class PortalApiWorkflowTests(TestCase):
         approver_client.force_authenticate(self.approver)
         approve = approver_client.post(f"/api/v1/voucher-portal/batches/{batch_id}/approve/", {}, format="json")
         self.assertEqual(approve.status_code, 200, approve.data)
-        self.assertEqual(approve.data["status"], "approved")
+        self.assertEqual(approve.data["status"], "pending_second_approval")
+        self.assertEqual(approve.data["first_approved_by_username"], "approver")
+
+        second_client = APIClient()
+        second_client.force_authenticate(self.second_approver)
+        second = second_client.post(f"/api/v1/voucher-portal/batches/{batch_id}/approve/", {}, format="json")
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertEqual(second.data["status"], "approved")
+        self.assertEqual(second.data["approved_by_username"], "second-approver")
 
         generate = self.client.post(f"/api/v1/voucher-portal/batches/{batch_id}/generate/")
         self.assertEqual(generate.status_code, 200, generate.data)
@@ -675,7 +765,9 @@ class NotificationApiTests(TestCase):
         client = APIClient()
         client.force_authenticate(self.requester)
         response = client.get("/api/v1/voucher-portal/notifications/")
-        self.assertEqual(response.data["count"], 1)
+        # One per approval stage: the batch cleared first approval, then the second.
+        self.assertEqual(response.data["count"], 2)
+        self.assertEqual({row["kind"] for row in response.data["results"]}, {"first_approved", "approved"})
         note_id = response.data["results"][0]["id"]
         self.assertIsNone(response.data["results"][0]["read_at"])
 
@@ -928,6 +1020,120 @@ class PortalUserAccessApiTests(TestCase):
         response = client.post("/api/v1/voucher-portal/access/",
                                {"user": "new_requester", "role": "requester"}, format="json")
         self.assertEqual(response.status_code, 403)
+
+
+class VoucherVisibilityTests(TestCase):
+    """Two filters decide what a login sees, and they compose: the departments
+    it is mapped to, then - inside those - whether it sees everyone's work or
+    only its own. A user can be mapped to any number of departments."""
+
+    def setUp(self):
+        self.hr, self.hr_type, self.hr_prefix, self.template = make_reference_data()
+        self.mkt = Department.objects.create(code="MKT", name="Marketing")
+        self.mkt_type = VoucherType.objects.create(code="MKTV", name="Marketing Voucher", department=self.mkt)
+        self.mkt_prefix = VoucherPrefix.objects.create(prefix="MKT", label="Marketing", department=self.mkt,
+                                                       voucher_type=self.mkt_type, sequence_length=4)
+        self.fin = Department.objects.create(code="FIN", name="Finance")
+
+        self.alice = User.objects.create_user("alice", password="x")
+        self.bob = User.objects.create_user("bob", password="x")
+        self.approver = User.objects.create_user("vis-approver", password="x")
+
+        # One batch each, both in HR, plus one in Marketing raised by Alice.
+        self.alice_hr = self._batch(self.alice, self.hr, self.hr_type, self.hr_prefix, "Alice HR")
+        self.bob_hr = self._batch(self.bob, self.hr, self.hr_type, self.hr_prefix, "Bob HR")
+        self.alice_mkt = self._batch(self.alice, self.mkt, self.mkt_type, self.mkt_prefix, "Alice MKT")
+
+    def _batch(self, owner, dept, vtype, prefix, name):
+        batch = approved_batch(dept, vtype, prefix, self.template, owner, self.approver, quantity=2, name=name)
+        generate_vouchers(batch)
+        return batch
+
+    def _names(self, user):
+        client = APIClient()
+        client.force_authenticate(user)
+        response = client.get("/api/v1/voucher-portal/batches/?page_size=100")
+        self.assertEqual(response.status_code, 200, response.data)
+        return sorted(row["name"] for row in response.data["results"])
+
+    def _voucher_count(self, user):
+        client = APIClient()
+        client.force_authenticate(user)
+        return client.get("/api/v1/voucher-portal/vouchers/?page_size=100").data["count"]
+
+    def test_requester_without_the_flag_sees_only_their_own(self):
+        grant(self.alice, "requester", [self.hr])
+        self.assertEqual(self._names(self.alice), ["Alice HR"])
+        self.assertEqual(self._voucher_count(self.alice), 2)
+
+    def test_requester_with_the_flag_sees_the_whole_department(self):
+        access = grant(self.alice, "requester", [self.hr])
+        access.can_view_others_vouchers = True
+        access.save()
+        self.assertEqual(self._names(self.alice), ["Alice HR", "Bob HR"])
+        self.assertEqual(self._voucher_count(self.alice), 4)
+
+    def test_a_user_can_be_mapped_to_several_departments(self):
+        access = grant(self.alice, "requester", [self.hr, self.mkt])
+        access.can_view_others_vouchers = True
+        access.save()
+        self.assertEqual(self._names(self.alice), ["Alice HR", "Alice MKT", "Bob HR"])
+
+    def test_the_flag_never_widens_beyond_the_mapped_departments(self):
+        """Cross-user visibility is scoped by department, not instead of it -
+        Alice sees all of HR but still nothing of Marketing."""
+        access = grant(self.bob, "requester", [self.hr])
+        access.can_view_others_vouchers = True
+        access.save()
+        self.assertEqual(self._names(self.bob), ["Alice HR", "Bob HR"])
+
+    def test_unmapped_department_is_invisible_either_way(self):
+        grant(self.alice, "requester", [self.fin])
+        self.assertEqual(self._names(self.alice), [])
+
+    def test_approvers_always_see_across_users(self):
+        """Without this an approver would have nothing to approve, so the flag
+        is not consulted for roles whose job is other people's work."""
+        grant(self.approver, "approver", [self.hr])
+        self.assertFalse(self.approver.voucher_access.can_view_others_vouchers)
+        self.assertEqual(self._names(self.approver), ["Alice HR", "Bob HR"])
+
+    def test_report_viewer_always_sees_across_users(self):
+        viewer = User.objects.create_user("viewer", password="x")
+        grant(viewer, "report_viewer", [self.hr])
+        client = APIClient()
+        client.force_authenticate(viewer)
+        response = client.get("/api/v1/voucher-portal/reports/summary/")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["total"], 4)  # both HR batches, 2 vouchers each
+
+    def test_own_only_requester_cannot_open_someone_elses_batch(self):
+        """The list is filtered, and so is retrieval - otherwise the id alone
+        would be enough to read a batch the list deliberately hid."""
+        grant(self.alice, "requester", [self.hr])
+        client = APIClient()
+        client.force_authenticate(self.alice)
+        self.assertEqual(client.get(f"/api/v1/voucher-portal/batches/{self.bob_hr.id}/").status_code, 404)
+        self.assertEqual(client.get(f"/api/v1/voucher-portal/batches/{self.alice_hr.id}/").status_code, 200)
+
+    def test_me_endpoint_reports_the_visibility_flag(self):
+        grant(self.alice, "requester", [self.hr])
+        client = APIClient()
+        client.force_authenticate(self.alice)
+        self.assertFalse(client.get("/api/v1/voucher-portal/access/me/").data["sees_others_vouchers"])
+
+    def test_admin_can_grant_the_flag_over_the_api(self):
+        admin = User.objects.create_user("vis-admin", password="x", is_staff=True)
+        client = APIClient()
+        client.force_authenticate(admin)
+        response = client.post("/api/v1/voucher-portal/access/", {
+            "user": "bob", "role": "requester", "department_ids": [self.hr.id, self.mkt.id],
+            "can_view_others_vouchers": True,
+        }, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        access = PortalUserAccess.objects.get(user=self.bob)
+        self.assertTrue(access.can_view_others_vouchers)
+        self.assertEqual({d.code for d in access.departments.all()}, {"HR", "MKT"})
 
 
 def text_element(**overrides):

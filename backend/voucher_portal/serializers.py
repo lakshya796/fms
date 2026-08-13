@@ -140,6 +140,7 @@ class PortalBatchSerializer(serializers.ModelSerializer):
     department_name = serializers.CharField(source="department.name", read_only=True)
     voucher_type_name = serializers.CharField(source="voucher_type.name", read_only=True)
     created_by_username = serializers.CharField(source="created_by.username", read_only=True, default="")
+    first_approved_by_username = serializers.CharField(source="first_approved_by.username", read_only=True, default="")
     approved_by_username = serializers.CharField(source="approved_by.username", read_only=True, default="")
     generated_count = serializers.SerializerMethodField()
     issued_count = serializers.SerializerMethodField()
@@ -151,11 +152,12 @@ class PortalBatchSerializer(serializers.ModelSerializer):
             "quantity", "discount_type", "percentage_value", "max_discount_value", "fixed_value", "currency",
             "display_value", "valid_from", "valid_to", "restrictions", "terms", "prefix", "prefix_snapshot",
             "template", "status", "combined_pdf_url", "generation_error", "created_by_username",
+            "first_approved_by_username", "first_approved_at",
             "approved_by_username", "approved_at", "rejection_reason", "cancelled_at",
             "generated_count", "issued_count", "created_at",
         ]
         read_only_fields = ["prefix_snapshot", "status", "combined_pdf_url", "generation_error",
-                           "approved_at", "rejection_reason", "cancelled_at"]
+                           "first_approved_at", "approved_at", "rejection_reason", "cancelled_at"]
 
     def get_generated_count(self, batch):
         return batch.vouchers.count()
@@ -265,7 +267,8 @@ class PortalUserAccessSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PortalUserAccess
-        fields = ["id", "user", "username", "role", "department_ids", "department_names", "is_active", "created_at"]
+        fields = ["id", "user", "username", "role", "department_ids", "department_names",
+                  "can_view_others_vouchers", "is_active", "created_at"]
 
     def get_department_names(self, obj):
         return list(obj.departments.values_list("name", flat=True))
