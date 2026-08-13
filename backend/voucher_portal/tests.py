@@ -18,7 +18,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from . import storage
-from .geometry import (BLANK_GEOMETRY, LEGACY_ADCOOP_GEOMETRY, VARIABLE_KEYS, VARIABLES,
+from .geometry import (BLANK_GEOMETRY, LEGACY_COUPON_GEOMETRY, VARIABLE_KEYS, VARIABLES,
                        blank_geometry, to_elements)
 from .pdf import _draw_box, build_batch_pdf, build_context, build_voucher_pdf
 from .models import (Department, Notification, PortalBatch, PortalUserAccess, PortalVoucher, StatusChange, VoucherPrefix,
@@ -771,7 +771,7 @@ class ArtworkUploadTests(TestCase):
         self.assertEqual(response.status_code, 201, response.data)
         template = VoucherTemplate.objects.get(pk=response.data["id"])
         # A new template is an empty card carrying only the mandatory barcode -
-        # no ADCOOP coupon fields to delete before designing anything.
+        # no prefilled coupon fields to delete before designing anything.
         self.assertEqual(template.field_geometry, BLANK_GEOMETRY)
         self.assertEqual([e["type"] for e in template.field_geometry["elements"]], ["barcode"])
 
@@ -1282,14 +1282,14 @@ class CardRenderingTests(TestCase):
         """Batches generated before the designer existed carry a version 2
         snapshot on the row itself; those have to keep printing."""
         batch = self._generated_batch()
-        batch.template_snapshot = {**batch.template_snapshot, **copy.deepcopy(LEGACY_ADCOOP_GEOMETRY)}
+        batch.template_snapshot = {**batch.template_snapshot, **copy.deepcopy(LEGACY_COUPON_GEOMETRY)}
         self.assertTrue(build_voucher_pdf(batch, batch.vouchers.first()).startswith(b"%PDF"))
 
     def test_legacy_conversion_keeps_positions_and_paint_order(self):
-        converted = to_elements(LEGACY_ADCOOP_GEOMETRY)
+        converted = to_elements(LEGACY_COUPON_GEOMETRY)
         self.assertEqual(converted["version"], 3)
         by_id = {element["id"]: element for element in converted["elements"]}
-        legacy = {field["key"]: field for field in LEGACY_ADCOOP_GEOMETRY["fields"]}
+        legacy = {field["key"]: field for field in LEGACY_COUPON_GEOMETRY["fields"]}
         for key, field in legacy.items():
             self.assertEqual((by_id[key]["x"], by_id[key]["y"]), (field["x"], field["y"]))
         # the panel stays underneath and the barcode on top, as version 2 drew them
@@ -1303,7 +1303,7 @@ class CardRenderingTests(TestCase):
         self.assertEqual(by_id["valid_date"]["source"], "valid_to")
 
     def test_serializer_exposes_the_converted_layout(self):
-        self.template.field_geometry = copy.deepcopy(LEGACY_ADCOOP_GEOMETRY)
+        self.template.field_geometry = copy.deepcopy(LEGACY_COUPON_GEOMETRY)
         self.template.save()
         client = APIClient()
         client.force_authenticate(self.requester)

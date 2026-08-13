@@ -1,4 +1,4 @@
-"""Renders one gift voucher as a PDF, following the layout of the supplied ADCOOP
+"""Renders one gift voucher as a PDF, following the layout of the supplied MAIR
 template: logo, "GIFT VOUCHER" heading, a label/value table, a barcode of the
 voucher number, and a terms line.
 """
@@ -12,12 +12,15 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
 from reportlab.pdfgen import canvas
 
-LOGO_PATH = Path(__file__).parent / "assets" / "adcoop_logo.png"
-PURPLE = HexColor("#4E327D")
-LIME = HexColor("#E2E151")
-INK = HexColor("#231B36")
-MUTED = HexColor("#6B6480")
-LINE = HexColor("#DCD7E8")
+LOGO_PATH = Path(__file__).parent / "assets" / "mair_logo.png"
+# The MAIR palette, matching the tokens app/globals.css themes the web pages
+# with. ACCENT is the one brand colour; the rest are derived to sit against it.
+ACCENT = HexColor("#0A4A3A")
+LIME = HexColor("#CDE7DC")
+INK = HexColor("#12211C")
+MUTED = HexColor("#5C6F67")
+LINE = HexColor("#DCE7E1")
+TINT = HexColor("#EEF5F1")   # zebra stripe behind alternating table rows
 
 PAGE_W, PAGE_H = letter
 MARGIN = 0.6 * inch
@@ -35,14 +38,14 @@ def build_voucher_pdf(voucher) -> bytes:
 
     # --- Logo banner
     logo_w = 3.6 * inch
-    logo_h = logo_w * (401 / 764)
+    logo_h = logo_w * (300 / 1020)   # mair_logo.png is 1020x300; keep it undistorted
     if LOGO_PATH.exists():
         c.drawImage(str(LOGO_PATH), MARGIN + (content_w - logo_w) / 2, y - logo_h,
                    width=logo_w, height=logo_h, mask="auto")
     y -= logo_h + 0.35 * inch
 
     # --- Heading
-    c.setFillColor(PURPLE)
+    c.setFillColor(ACCENT)
     c.setFont("Helvetica-Bold", 26)
     c.drawCentredString(PAGE_W / 2, y, "GIFT VOUCHER")
     y -= 0.15 * inch
@@ -69,7 +72,7 @@ def build_voucher_pdf(voucher) -> bytes:
         row_top = table_top - index * row_h
         row_bottom = row_top - row_h
         if index % 2 == 1:
-            c.setFillColor(HexColor("#F6F4FA"))
+            c.setFillColor(TINT)
             c.rect(MARGIN, row_bottom, content_w, row_h, stroke=0, fill=1)
         c.setFillColor(MUTED)
         c.setFont("Helvetica", 10)
@@ -101,7 +104,7 @@ def build_voucher_pdf(voucher) -> bytes:
     y -= 0.28 * inch
     c.setFillColor(MUTED)
     c.setFont("Helvetica", 8.5)
-    terms = ("Terms & Conditions: This voucher is redeemable at participating ADCOOP stores "
+    terms = ("Terms & Conditions: This voucher is redeemable at participating MAIR stores "
             "and cannot be exchanged for cash. Valid only within the dates shown above.")
     text = c.beginText(MARGIN, y)
     text.setFont("Helvetica", 8.5)
@@ -121,7 +124,7 @@ def build_voucher_pdf(voucher) -> bytes:
 
     c.setFont("Helvetica", 7.5)
     c.setFillColor(MUTED)
-    c.drawCentredString(PAGE_W / 2, MARGIN / 2, f"Generated {timezone.localdate().strftime('%d-%b-%Y')} · ADCOOP Gift Vouchers")
+    c.drawCentredString(PAGE_W / 2, MARGIN / 2, f"Generated {timezone.localdate().strftime('%d-%b-%Y')} · MAIR Gift Vouchers")
 
     c.showPage()
     c.save()

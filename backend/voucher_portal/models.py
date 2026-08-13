@@ -1,4 +1,4 @@
-"""ADCOOP Voucher Portal - Phase 1.
+"""MAIR Voucher Portal - Phase 1.
 
 An authenticated extension of the public gift voucher desk (see `vouchers/`), which
 stays exactly as it is: public, fixed-value, phone-only issuing. This app is a
@@ -27,7 +27,7 @@ from .geometry import BLANK_GEOMETRY
 def default_field_geometry():
     """A fresh copy every time. A new template starts as an empty card carrying
     only the mandatory barcode - everything else is the designer's to add. It
-    used to start with the fifteen measured ADCOOP coupon fields, which meant
+    used to start with the fifteen measured coupon fields, which meant
     every design began by deleting someone else's layout."""
     return copy.deepcopy(BLANK_GEOMETRY)
 

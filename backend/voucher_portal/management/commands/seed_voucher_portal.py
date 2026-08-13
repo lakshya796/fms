@@ -1,6 +1,6 @@
 """Seeds Department, VoucherType and VoucherPrefix from the requirements
 brief's own examples (HR/Marketing, Employee/Marketing/Gift Voucher,
-EMP/MKT/ADCOOP), plus one empty card to design on. Idempotent - safe to
+EMP/MKT/MAIR), plus one empty card to design on. Idempotent - safe to
 re-run, matching every other seed command in this project."""
 from django.core.management.base import BaseCommand
 
@@ -30,7 +30,7 @@ class Command(BaseCommand):
         for prefix, label, dept_code, type_code in [
             ("EMP", "Employee vouchers", "HR", "EMP"),
             ("MKT", "Marketing vouchers", "MKT", "MKT"),
-            ("ADCOOP", "ADCOOP gift vouchers", "MKT", "GIFT"),
+            ("MAIR", "MAIR gift vouchers", "MKT", "GIFT"),
         ]:
             VoucherPrefix.objects.get_or_create(prefix=prefix, defaults={
                 "label": label, "department": departments[dept_code], "voucher_type": types[type_code],
@@ -38,7 +38,7 @@ class Command(BaseCommand):
             })
 
         # An empty card, not a pre-built layout: what goes on a voucher is the
-        # designer's decision. The ADCOOP coupon is still one click away, as a
+        # designer's decision. The classic coupon is still one click away, as a
         # starter inside the designer itself.
         template, created = VoucherTemplate.objects.get_or_create(
             name="Voucher card",

@@ -38,7 +38,7 @@ class Command(BaseCommand):
             })
 
         # An empty card, not a pre-built layout: what goes on a voucher is the
-        # designer's decision. The classic coupon layout is one click away, as a
+        # designer's decision. The classic coupon is still one click away, as a
         # starter inside the designer itself.
         template, created = VoucherTemplate.objects.get_or_create(
             name="Voucher card",

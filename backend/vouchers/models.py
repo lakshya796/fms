@@ -1,4 +1,4 @@
-"""ADCOOP gift voucher batches.
+"""MAIR gift voucher batches.
 
 This is a standalone module - a retail voucher desk, not part of the fleet/transport
 domain the rest of this project models. It shares the same Django project purely for

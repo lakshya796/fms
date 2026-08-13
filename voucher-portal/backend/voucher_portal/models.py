@@ -1,8 +1,12 @@
-"""MAIR Voucher Portal.
+"""MAIR Voucher Portal - Phase 1.
 
-Percentage or fixed discounts, department/type-scoped prefixes with
-server-allocated sequences, user-designed card templates, and a
-generated-vs-issued voucher lifecycle.
+An authenticated extension of the public gift voucher desk (see `vouchers/`), which
+stays exactly as it is: public, fixed-value, phone-only issuing. This app is a
+separate, richer model: percentage or fixed discounts, department/type-scoped
+prefixes with server-allocated sequences, configurable artwork templates, and a
+generated-vs-issued voucher lifecycle. It shares nothing with `vouchers` - no
+shared tables, no shared foreign keys - so the two can run side by side without
+either one's migrations touching the other's data.
 
 Every batch snapshots the settings it was generated with (discount, validity,
 terms, prefix width, template geometry) onto its own row. Editing a Department,
@@ -23,7 +27,7 @@ from .geometry import BLANK_GEOMETRY
 def default_field_geometry():
     """A fresh copy every time. A new template starts as an empty card carrying
     only the mandatory barcode - everything else is the designer's to add. It
-    used to start with the fifteen measured ADCOOP coupon fields, which meant
+    used to start with the fifteen measured coupon fields, which meant
     every design began by deleting someone else's layout."""
     return copy.deepcopy(BLANK_GEOMETRY)
 

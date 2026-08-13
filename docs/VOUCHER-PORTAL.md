@@ -1,8 +1,8 @@
-# Voucher Portal (ADCOOP) — Phases 1 & 2, and Phase 3 minus integrations
+# Voucher Portal (MAIR) — Phases 1 & 2, and Phase 3 minus integrations
 
 An authenticated extension of the public gift voucher desk (`vouchers/`, see
 [docs/GIFT-VOUCHERS.md](GIFT-VOUCHERS.md)), built to the requirements brief and the
-attached ADCOOP discount coupon template. It is a **separate Django app**
+attached discount coupon template. It is a **separate Django app**
 (`voucher_portal`) with its own models — nothing here shares a table or a
 foreign key with `vouchers`, so the two run side by side and neither's
 migrations touch the other's data.
@@ -60,7 +60,7 @@ python manage.py seed_voucher_portal
 ```
 
 Departments (HR, Marketing), voucher types (Employee/Marketing/Gift Voucher),
-prefixes (EMP, MKT, ADCOOP, 4-digit sequences) — after that they are managed
+prefixes (EMP, MKT, MAIR, 4-digit sequences) — after that they are managed
 from the portal's own Setup screen (or `/admin/`); nothing about them is
 hard-coded elsewhere.
 
@@ -102,7 +102,7 @@ variable resolved at print time), `box`, `line` and `barcode`.
 
 **Nothing is prefilled.** A new template is an empty card carrying only the
 mandatory barcode (`geometry.blank_geometry()`, which is `VoucherTemplate.
-field_geometry`'s model default). The old fixed ADCOOP field set is still
+field_geometry`'s model default). The old fixed coupon field set is still
 available, but only as an opt-in *starter* in the designer that drops those
 fields in as ordinary, editable elements.
 
@@ -131,7 +131,7 @@ Artwork upload rules (`voucher_portal/validators.py`):
 | Rule | Value |
 | --- | --- |
 | Required aspect ratio | the template's own card ratio (± 2%), 2.74 : 1 by default |
-| Width | 1500–4000 px (1987px = the ADCOOP coupon's native size at 300 DPI) |
+| Width | 1500–4000 px (1987px = the classic coupon's native size at 300 DPI) |
 | Formats | JPEG, PNG, RGB |
 | Max size | 5 MB |
 
@@ -410,7 +410,7 @@ empty and the user builds it:
   number prints under the barcode. Any element can be set to *only show when*
   a chosen variable has a value (`hide_if_empty`), which is how a
   "Restrictions:" label disappears on a batch with no restrictions.
-- **Starters** — "Blank card" and "ADCOOP coupon", both of which drop in as
+- **Starters** — "Blank card" and "Classic coupon layout", both of which drop in as
   ordinary editable elements. Opt-in only.
 - `GET templates/field-catalogue/` is the single source of truth for what the
   designer may offer: element types, bindable variables (with the sample

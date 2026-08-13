@@ -21,7 +21,7 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 from rest_framework.response import Response
 
-from .geometry import (ALIGNMENTS, COUPON_PRESETS, ELEMENT_TYPES, FONTS, LEGACY_ADCOOP_GEOMETRY,
+from .geometry import (ALIGNMENTS, COUPON_PRESETS, ELEMENT_TYPES, FONTS, LEGACY_COUPON_GEOMETRY,
                        LEGACY_FIELD_CATALOGUE, PALETTE, VARIABLES, blank_geometry, starter_layouts)
 from .models import Department, Notification, PortalBatch, PortalUserAccess, PortalVoucher, VoucherPrefix, \
     VoucherTemplate, VoucherType
@@ -145,7 +145,7 @@ class VoucherTemplateViewSet(AdminWriteMixin, viewsets.ModelViewSet):
             # (on the old fixed-field document, which still validates and still
             # renders) instead of breaking it mid-rollout.
             "fields": LEGACY_FIELD_CATALOGUE,
-            "defaults": LEGACY_ADCOOP_GEOMETRY,
+            "defaults": LEGACY_COUPON_GEOMETRY,
         })
 
     @action(detail=True, methods=["get", "post"])

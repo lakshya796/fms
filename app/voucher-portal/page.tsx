@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fmsRequest, fmsRequestRaw, login, logout, UNAUTHORISED_EVENT } from "../lib/fms-api";
 
-// Authenticated ADCOOP Voucher Portal. Unlike /vouchers (deliberately public),
+// Authenticated MAIR Voucher Portal. Unlike /vouchers (deliberately public),
 // every call here goes through fmsRequest/fmsRequestRaw with the same
 // fms_token session the rest of the console uses, and every screen is gated
 // by the caller's role + department scope (see /access/me/).
@@ -160,8 +160,8 @@ export default function VoucherPortal() {
   if (!authenticated) {
     return <main className="login-page">
       <section className="login-card">
-        {/* Swap public/mair-logo.svg for the official asset - the header below
-            and this card are the only two places the artwork is referenced. */}
+        {/* Swap public/mair-logo.svg for the official asset - this card, the
+            header below and /vouchers are the only places it is referenced. */}
         <div className="brand login-brand"><img src="/mair-logo.svg" alt="MAIR" /></div>
         <p className="eyebrow">VOUCHER PORTAL</p>
         <h1>Sign in</h1>
@@ -810,7 +810,7 @@ const SERIES = [
 ] as const;
 
 // Charts are SVG, so they cannot read the CSS custom properties the rest of the
-// portal is themed with - these mirror the .mair tokens by hand.
+// portal is themed with - these mirror the :root brand tokens by hand.
 const CHART_INK = "#12211C";
 const CHART_MUTED = "#5C6F67";
 const CHART_GRID = "#DCE7E1";
@@ -2085,7 +2085,7 @@ function TemplatesScreen({ canAdmin, intent, onIntentDone }: {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [showNew, setShowNew] = useState(false);
-  const [form, setForm] = useState({ name: "", preset: "adcoop" });
+  const [form, setForm] = useState({ name: "", preset: "classic" });
   const [file, setFile] = useState<File | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
@@ -2153,7 +2153,7 @@ function TemplatesScreen({ canAdmin, intent, onIntentDone }: {
       }
       if (file) body.append("artwork", file);
       const created = await fmsRequest<Template>("voucher-portal/templates/", { method: "POST", body });
-      setShowNew(false); setForm({ name: "", preset: "adcoop" }); setFile(null);
+      setShowNew(false); setForm({ name: "", preset: "classic" }); setFile(null);
       await load();
       setEditing(created);  // straight into the designer - that's what they came for
     } catch (error: any) { setCreateError(parseApiError(error)); }

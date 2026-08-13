@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { fmsRequest } from "../lib/fms-api";
 
-// ADCOOP retail gift voucher desk. Every endpoint under vouchers/ is AllowAny -
+// MAIR retail gift voucher desk. Every endpoint under vouchers/ is AllowAny -
 // there is deliberately no login here, so this page never touches sessionStorage
 // or the fms_token flow that the rest of the console relies on.
 const API_BASE = process.env.NEXT_PUBLIC_FMS_API_URL || "https://api-test.phloz.app/fms";
@@ -119,7 +119,7 @@ export default function GiftVoucherDesk() {
 
   return <main className="voucher-page">
     <header className="voucher-topbar">
-      <img src="/adcoop-logo.png" alt="ADCOOP" className="voucher-logo" />
+      <img src="/mair-logo.svg" alt="MAIR" className="voucher-logo" />
       <div>
         <p className="voucher-eyebrow">RETAIL OPERATIONS</p>
         <h1>Gift Voucher Desk</h1>
@@ -206,7 +206,7 @@ export default function GiftVoucherDesk() {
       </div>}
     </section>
 
-    <small className="voucher-footer">ADCOOP Retail — Gift Voucher Desk. This page requires no login; keep its link private to your store team.</small>
+    <small className="voucher-footer">MAIR Retail — Gift Voucher Desk. This page requires no login; keep its link private to your store team.</small>
   </main>;
 }
 

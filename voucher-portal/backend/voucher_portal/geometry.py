@@ -3,7 +3,7 @@
 **Version 3** is a free-form element list: nothing is prefilled except the one
 mandatory barcode, and everything a design shows - headline, validity line,
 terms, panels, rules - is an element the user added themselves. That is the
-whole point of the change from version 2, where a fixed catalogue of ADCOOP
+whole point of the change from version 2, where a fixed catalogue of
 coupon fields was always present and could only be nudged around.
 
     {
@@ -80,7 +80,7 @@ DEFAULT_COUPON_HEIGHT = 178.0
 
 # Card shapes offered in the designer. Points, landscape.
 COUPON_PRESETS = [
-    {"key": "adcoop", "label": "Classic coupon (169 x 63 mm)", "w": DEFAULT_COUPON_WIDTH, "h": DEFAULT_COUPON_HEIGHT},
+    {"key": "classic", "label": "Classic coupon (169 x 63 mm)", "w": DEFAULT_COUPON_WIDTH, "h": DEFAULT_COUPON_HEIGHT},
     {"key": "card", "label": "Credit-card size (85.6 x 54 mm)", "w": 242.6, "h": 153.0},
     {"key": "a6", "label": "A6 landscape", "w": 419.5, "h": 297.6},
     {"key": "half_a5", "label": "Wide ticket (200 x 70 mm)", "w": 567.0, "h": 198.4},
@@ -123,7 +123,7 @@ def blank_geometry(coupon_width=DEFAULT_COUPON_WIDTH, coupon_height=DEFAULT_COUP
     """An empty card carrying only the mandatory barcode.
 
     A new template starts with nothing on it on purpose: the previous default
-    dropped fifteen ADCOOP-specific fields onto every design, which then had to
+    dropped fifteen coupon-specific fields onto every design, which then had to
     be hunted down and switched off one at a time."""
     width = float(coupon_width or DEFAULT_COUPON_WIDTH)
     height = float(coupon_height or DEFAULT_COUPON_HEIGHT)
@@ -179,11 +179,11 @@ LEGACY_FIELD_CATALOGUE = [
 
 KNOWN_FIELD_KEYS = frozenset(field["key"] for field in LEGACY_FIELD_CATALOGUE)
 
-# The measured ADCOOP coupon layout. No longer the default for a new template -
+# The measured classic coupon layout. No longer the default for a new template -
 # it is offered in the designer as a starter you can drop in and then edit, and
 # it is what `to_elements()` reads when an old template or an already-generated
 # batch snapshot comes through.
-LEGACY_ADCOOP_GEOMETRY = {
+LEGACY_COUPON_GEOMETRY = {
     "version": 2,
     "artwork": {"x": 0, "y": 0, "w": 479.52, "h": 178},
     "fields": [
@@ -350,8 +350,8 @@ def to_elements(geometry):
 def starter_layouts(coupon_width=DEFAULT_COUPON_WIDTH, coupon_height=DEFAULT_COUPON_HEIGHT):
     """Optional one-click starting points. Nothing here is applied unless the
     user picks it - a new template is still born empty."""
-    adcoop = to_elements(LEGACY_ADCOOP_GEOMETRY)
-    for element in adcoop["elements"]:
+    classic = to_elements(LEGACY_COUPON_GEOMETRY)
+    for element in classic["elements"]:
         # New design work, unlike a reprint, shouldn't carry a bare
         # "Coupon Restrictions :" label on a batch that has no restrictions.
         if element["id"] == "restrictions_label":
@@ -360,7 +360,7 @@ def starter_layouts(coupon_width=DEFAULT_COUPON_WIDTH, coupon_height=DEFAULT_COU
         {"key": "blank", "label": "Blank card",
          "description": "Just the barcode. Add everything else yourself.",
          "geometry": blank_geometry(coupon_width, coupon_height)},
-        {"key": "adcoop", "label": "Classic coupon layout",
+        {"key": "classic", "label": "Classic coupon layout",
          "description": "The measured classic discount coupon, as editable elements.",
-         "geometry": adcoop},
+         "geometry": classic},
     ]
