@@ -1,0 +1,18 @@
+# Local secrets — .env.example is the tracked template.
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+db.sqlite3
+
+# Collected/uploaded at runtime, never committed: staticfiles is rebuilt by
+# collectstatic, media holds uploaded card artwork.
+backend/staticfiles/
+backend/media/
+
+# Node / Next
+node_modules/
+.next/
+*.tsbuildinfo
