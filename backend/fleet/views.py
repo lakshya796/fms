@@ -249,7 +249,7 @@ from .serializers import (VendorSerializer, ServiceAreaSerializer, ZoneSerialize
                           TrackingActivitySerializer, ProofOfDeliverySerializer, PublicOrderTrackingSerializer,
                           FuelEntrySerializer, TripExpenseSerializer, IssueSerializer, ComplianceDocumentSerializer,
                           MaintenanceScheduleSerializer, VehicleHireSerializer, QuoteRequestSerializer, ProjectionRequestSerializer)
-from .billing import BillingError, build_invoice_from_order, project_lane
+from .billing import BillingError, build_invoice_from_order, order_pod_state, project_lane
 from .vendor_billing import HireBillingError, confirmation_email, raise_vendor_bill, vendor_payable
 from .allocation import recommend_vehicles
 from accounting.services import PostingError, post_customer_invoice
@@ -582,6 +582,50 @@ class OrderViewSet(FilterableViewSet):
         if breakdown is None:
             raise ValidationError("Link a rate card to this order before repricing.")
         return Response({"order": self.get_serializer(order).data, "breakdown": breakdown})
+
+    @action(detail=False, methods=["get"])
+    def billable(self, request):
+        """Delivered consignments with no invoice yet, priced from their rate card.
+
+        The Invoices board offered a create form that took freight, GST and the
+        total as typed numbers against a *trip*, with no link to a consignment -
+        so an invoice raised there could not reach a rate card at all. This is
+        the list that form picks from instead, which is what makes the amount
+        come from `price_from_rate_card` rather than from whoever is typing.
+
+        Orders that cannot be billed yet are still returned, carrying the reason,
+        so the desk can see what is waiting on an ePOD rather than wondering why
+        a delivered consignment is missing.
+        """
+        orders = (self.get_queryset().filter(status="completed", invoices__isnull=True)
+                  .select_related("customer", "service_rate", "pickup", "dropoff")
+                  .prefetch_related("proofs").order_by("-completed_at"))
+        rows = []
+        for order in orders:
+            # save=False: this is a preview, and listing a page of orders must not
+            # rewrite their stored freight as a side effect.
+            breakdown = order.price_from_rate_card(save=False)
+            blocked = ""
+            if order.pod_required and not order_pod_state(order)[1]:
+                blocked = "ePOD not verified yet"
+            elif not order.total_amount:
+                blocked = "No rate card priced against this consignment"
+            rows.append({
+                "id": order.pk, "number": order.number, "customer_name": order.customer.name,
+                "route": f"{order.pickup.city} → {order.dropoff.city}",
+                "completed_at": order.completed_at, "distance_km": float(order.distance_km or 0),
+                "weight_kg": float(order.weight_kg or 0),
+                "rate_card": order.service_rate.name if order.service_rate else "",
+                "freight_amount": float(order.freight_amount or 0),
+                "tax_amount": float(order.tax_amount or 0),
+                "total_amount": float(order.total_amount or 0),
+                "breakdown": breakdown, "blocked_reason": blocked,
+            })
+        # What can be billed now comes first; what is waiting on an ePOD is
+        # still worth seeing, but not at the top of the desk's list.
+        rows.sort(key=lambda row: (bool(row["blocked_reason"]), row["number"]))
+        return Response({"count": len(rows), "orders": rows,
+                         "billable_now": sum(1 for row in rows if not row["blocked_reason"])})
 
     @action(detail=True, methods=["post"])
     @transaction.atomic

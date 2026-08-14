@@ -66,3 +66,12 @@ SESSION_COOKIE_SECURE=True; CSRF_COOKIE_SECURE=True
 # without this a fully green run still exits non-zero under CI.
 TEST_RUNNER="phloz_fms.test_runner.BackgroundAwareRunner"
 REST_FRAMEWORK={"DEFAULT_AUTHENTICATION_CLASSES":["rest_framework.authentication.TokenAuthentication","rest_framework.authentication.SessionAuthentication"],"DEFAULT_PERMISSION_CLASSES":["rest_framework.permissions.IsAuthenticated"],"DEFAULT_PAGINATION_CLASS":"fleet.pagination.StandardPagination","PAGE_SIZE":50}
+# Geotrackers telematics feed (fleet/geotrackers.py). Credentials belong in the
+# environment so the vendor can rotate them without a code change and a
+# redeploy. Set GEOTRACKERS_USERNAME/PASSWORD, or GEOTRACKERS_BASIC_AUTH with a
+# pre-encoded value; unset, the feed falls back to the credential the module
+# shipped with.
+GEOTRACKERS_URL=os.getenv("GEOTRACKERS_URL","")
+GEOTRACKERS_USERNAME=os.getenv("GEOTRACKERS_USERNAME","")
+GEOTRACKERS_PASSWORD=os.getenv("GEOTRACKERS_PASSWORD","")
+GEOTRACKERS_BASIC_AUTH=os.getenv("GEOTRACKERS_BASIC_AUTH","")
