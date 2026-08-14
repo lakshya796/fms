@@ -115,7 +115,7 @@ const modules: Record<string, { eyebrow: string; title: string; action: string; 
   Invoices: {
     eyebrow: "BILLING & COLLECTIONS", title: "Customer invoices", action: "+ Generate invoice", actionType: "invoice",
     stats: [["Unbilled trips", "₹3.2L", "7 PODs received"], ["Outstanding", "₹12.8L", "₹5.6L overdue"], ["Collected this month", "₹18.6L", "92% of target"]],
-    blurb: "Raised from the consignment, so freight and GST always match the rate card. Bill a delivered order from its drawer on the Orders board.",
+    blurb: "Raised from the consignment, so freight and GST always match the rate card. Generate one here, or from an order's drawer on the Orders board.",
     columns: ["Invoice", "Customer", "Against", "Due date", "Amount", "Payment status"],
   }
 };
@@ -693,16 +693,129 @@ function RecordForm({ spec, record, onClose, onSaved }: { spec: FormSpec; record
   </form>;
 }
 
+// Billing starts from a delivered consignment, never from typed figures. The
+// freight, GST and total shown here are what `price_from_rate_card` produced on
+// the server, and the same call recomputes them when the invoice is raised - so
+// an invoice cannot disagree with the rate card it came from.
+function InvoiceFromOrderForm({ onClose, onSaved }: { onClose: () => void; onSaved: (reference: string) => void }) {
+  const [orders, setOrders] = useState<any[]>([]);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [query, setQuery] = useState("");
+  const [extra, setExtra] = useState("0");
+  const [dueDays, setDueDays] = useState("15");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    fmsRequest<any>("orders/billable/")
+      .then(payload => setOrders(payload.orders || []))
+      .catch(e => setError(e instanceof Error ? e.message.slice(0, 160) : "Could not load billable consignments"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const needle = query.trim().toLowerCase();
+  const shown = orders.filter(order =>
+    !needle || `${order.number} ${order.customer_name} ${order.route}`.toLowerCase().includes(needle));
+  const selected = orders.find(order => order.id === selectedId) || null;
+  const breakdown = selected?.breakdown;
+  const total = Number(selected?.total_amount || 0) + Number(extra || 0);
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!selected) return;
+    setBusy(true); setError("");
+    try {
+      const payload = await fmsRequest<any>(`orders/${selected.id}/invoice/`, {
+        method: "POST",
+        body: JSON.stringify({ additional_charges: Number(extra || 0), due_days: Number(dueDays || 0) }),
+      });
+      onSaved(payload.invoice?.number || payload.number || "Invoice raised");
+    } catch (e) {
+      setError(e instanceof Error ? e.message.slice(0, 220) : "Could not raise the invoice");
+    } finally { setBusy(false); }
+  };
+
+  return <form className="action-form" onSubmit={submit}>
+    {error && <div className="login-error">{error}</div>}
+
+    <p className="eyebrow">DELIVERED CONSIGNMENT</p>
+    <input value={query} onChange={event => setQuery(event.target.value)}
+           placeholder="Search consignment, customer or lane…" aria-label="Search consignments" />
+
+    <div className="shipment-rows" style={{ maxHeight: 280, overflowY: "auto", margin: "8px 0 4px" }}>
+      {shown.map(order => <div key={order.id}
+        className={"shipment-row" + (order.id === selectedId ? " active" : "")}
+        style={order.blocked_reason ? { opacity: 0.55, cursor: "not-allowed" } : undefined}
+        onClick={() => !order.blocked_reason && setSelectedId(order.id)}>
+        <div style={{ minWidth: 0 }}>
+          <strong>{order.number}</strong>
+          <small>{order.customer_name} · {order.route}{order.rate_card ? ` · ${order.rate_card}` : ""}</small>
+        </div>
+        <div className="shipment-row-meta">
+          {order.blocked_reason
+            ? <span className="status cancelled">{order.blocked_reason}</span>
+            : <strong>{rupees(order.total_amount)}</strong>}
+        </div>
+      </div>)}
+      {!loading && !shown.length && <div className="data-state">
+        {orders.length ? "No consignment matches that search." : "No delivered consignment is waiting to be billed."}
+      </div>}
+      {loading && <div className="data-state">Loading billable consignments…</div>}
+    </div>
+
+    {selected && <>
+      {breakdown ? <div className="tracking-grid">
+        <div><span>Freight</span><strong>{rupees(breakdown.freight)}</strong></div>
+        <div><span>Fuel surcharge</span><strong>{rupees(breakdown.fuel_surcharge)}</strong></div>
+        <div><span>Handling</span><strong>{rupees(breakdown.handling_charges)}</strong></div>
+        <div><span>Taxable value</span><strong>{rupees(breakdown.taxable_value)}</strong></div>
+        <div><span>GST {breakdown.gst_percent}%</span>
+             <strong>{breakdown.reverse_charge ? "RCM — payable by consignee" : rupees(breakdown.gst_amount)}</strong></div>
+        <div><span>Distance · weight</span>
+             <strong>{Number(selected.distance_km).toFixed(0)} km · {Number(selected.weight_kg).toLocaleString("en-IN")} kg</strong></div>
+      </div> : <p className="pod-note warn">This consignment has no rate card, so the amount below is whatever freight was recorded against it.</p>}
+
+      <div className="form-grid">
+        <label>Additional charges (₹)
+          <input type="number" step="any" value={extra} onChange={event => setExtra(event.target.value)} /></label>
+        <label>Payment due in (days)
+          <input type="number" min="0" value={dueDays} onChange={event => setDueDays(event.target.value)} /></label>
+      </div>
+
+      <div className="margin-strip">
+        <div><span>Rate card total</span><strong>{rupees(selected.total_amount)}</strong></div>
+        <div><span>Additional</span><strong>{rupees(extra)}</strong></div>
+        <div><span>Invoice total</span><strong className="good">{rupees(total)}</strong></div>
+      </div>
+    </>}
+
+    <div className="record-actions">
+      <button type="button" className="secondary" onClick={onClose}>Cancel</button>
+      <button className="primary" disabled={busy || !selected}>
+        {busy ? "Raising…" : "Raise invoice"}
+      </button>
+    </div>
+  </form>;
+}
+
 function ActionPanel({ type, onClose, onCreated }: { type: string; onClose: () => void; onCreated: () => void }) {
   const [complete, setComplete] = useState(false);
   const [reference, setReference] = useState("");
+  // Billing is the one action that cannot be a plain record form: an invoice has
+  // to be raised against a consignment so it prices itself from the rate card.
+  const billing = type === "invoice";
   const spec = recordForms[type];
-  if (!spec) return null;
+  if (!billing && !spec) return null;
+  const eyebrow = billing ? "FREIGHT BILLING" : spec.eyebrow;
+  const title = billing ? "Bill a delivered consignment" : spec.title;
+  const saved = (newReference: string) => { setReference(newReference); setComplete(true); onCreated(); };
 
   return <div className="modal-backdrop" onMouseDown={onClose}><section className="action-panel" onMouseDown={event => event.stopPropagation()}>
-    <div className="panel-head"><div><p className="eyebrow">{spec.eyebrow}</p><h2>{spec.title}</h2></div><button className="panel-close" onClick={onClose}>×</button></div>
+    <div className="panel-head"><div><p className="eyebrow">{eyebrow}</p><h2>{title}</h2></div><button className="panel-close" onClick={onClose}>×</button></div>
     {complete ? <div className="success-state"><span>✓</span><h3>{reference}</h3><p>Saved to the live fleet database. The module list has been refreshed.</p><div className="success-actions"><button className="secondary" onClick={onClose}>Close</button><button className="primary" onClick={() => { setComplete(false); setReference(""); }}>Add another</button></div></div>
-      : <RecordForm spec={spec} onClose={onClose} onSaved={newReference => { setReference(newReference); setComplete(true); onCreated(); }} />}
+      : billing ? <InvoiceFromOrderForm onClose={onClose} onSaved={saved} />
+      : <RecordForm spec={spec} onClose={onClose} onSaved={saved} />}
   </section></div>;
 }
 
@@ -3253,7 +3366,7 @@ export default function Home() {
           <div className="top-actions"><button className="icon-button" aria-label="Search">⌕</button><button className="icon-button notification" aria-label="Notifications">♢</button><button className="primary" onClick={() => setAction("lr")}>＋ New LR booking</button></div>
         </header>
 
-        {active === "Overview" ? <div className="page-grid"><section className="quick-actions"><div><p className="eyebrow">QUICK ACTIONS</p><h2>Run daily fleet operations</h2></div><button onClick={() => setAction("lr")}><span>▤</span><b>Generate LR</b><small>Book consignment</small></button><button onClick={() => setAction("trip")}><span>▦</span><b>Create trip sheet</b><small>Allocate vehicle & driver</small></button><button onClick={() => setAction("invoice")}><span>₹</span><b>Generate invoice</b><small>Bill a completed trip</small></button><button onClick={() => setActive("Tracking")}><span>⌖</span><b>Track vehicles</b><small>View live GPS map</small></button><button onClick={() => setAction("order")}><span>◈</span><b>Book order</b><small>FleetOps consignment</small></button><button onClick={() => setAction("fuel")}><span>⛽</span><b>Log diesel</b><small>Fuel & mileage entry</small></button></section>
+        {active === "Overview" ? <div className="page-grid"><section className="quick-actions"><div><p className="eyebrow">QUICK ACTIONS</p><h2>Run daily fleet operations</h2></div><button onClick={() => setAction("lr")}><span>▤</span><b>Generate LR</b><small>Book consignment</small></button><button onClick={() => setAction("trip")}><span>▦</span><b>Create trip sheet</b><small>Allocate vehicle & driver</small></button><button onClick={() => setAction("invoice")}><span>₹</span><b>Generate invoice</b><small>Bill a delivered consignment</small></button><button onClick={() => setActive("Tracking")}><span>⌖</span><b>Track vehicles</b><small>View live GPS map</small></button><button onClick={() => setAction("order")}><span>◈</span><b>Book order</b><small>FleetOps consignment</small></button><button onClick={() => setAction("fuel")}><span>⛽</span><b>Log diesel</b><small>Fuel & mileage entry</small></button></section>
           <section className="hero-card">
             <div><span className="live-pill"><i /> LIVE FLEET</span><h2>{dashboard?.vehicles_on_trip ?? "—"} of {dashboard?.vehicles ?? "—"} vehicles<br />are on the road</h2><p>{dashboard ? Math.round((dashboard.vehicles_on_trip / Math.max(dashboard.vehicles, 1)) * 100) : "—"}% fleet utilisation · {dashboard?.active_trips ?? "—"} active trips</p><button className="text-button" onClick={() => show("Live operations opened")}>View live operations <span>→</span></button></div>
             <div className="fleet-visual" aria-label="Fleet utilisation 78 percent"><div className="ring"><strong>{dashboard ? Math.round((dashboard.vehicles_on_trip / Math.max(dashboard.vehicles, 1)) * 100) : "—"}%</strong><span>utilised</span></div><div className="route-line"><span className="pin one" /><span className="truck">▰</span><span className="pin two" /></div></div>

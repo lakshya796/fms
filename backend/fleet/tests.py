@@ -1195,3 +1195,73 @@ class GeotrackersCredentialTests(TestCase):
             self.assertEqual(geotrackers.dashboard_url(), "https://gps.internal/dashboard")
         with self.settings(GEOTRACKERS_URL=""):
             self.assertEqual(geotrackers.dashboard_url(), geotrackers.DEFAULT_DASHBOARD_URL)
+
+
+class BillableOrdersTests(BaseFleetOpsTest):
+    """The Invoices board picks from this list, so it has to be honest about
+    what can be billed and why anything cannot."""
+
+    def _delivered_order(self, number, **extra):
+        # pod_required defaults to True on Order, which would make every case
+        # here report the ePOD reason; the tests that care about it opt in.
+        extra.setdefault("pod_required", False)
+        order = Order.objects.create(
+            number=number, customer=self.customer, pickup=self.pickup, dropoff=self.dropoff,
+            weight_kg=12400, distance_km=150, service_rate=self.rate, status="completed",
+            completed_at=timezone.now(), **extra)
+        order.price_from_rate_card()
+        return order
+
+    def test_a_delivered_order_is_listed_with_its_rate_card_amount(self):
+        order = self._delivered_order("ORD-BILL-1")
+        response = self.client.get("/api/v1/orders/billable/")
+        self.assertEqual(response.status_code, 200, response.data)
+        row = next(r for r in response.data["orders"] if r["id"] == order.pk)
+        self.assertEqual(row["blocked_reason"], "")
+        self.assertEqual(row["rate_card"], self.rate.name)
+        # 2500 base + 150 km x 48 = 9700 freight, +3.5% surcharge +3300 handling, 5% GST
+        self.assertEqual(row["total_amount"], 14006.48)
+        self.assertEqual(row["breakdown"]["freight"], 9700.0)
+
+    def test_an_order_awaiting_its_epod_is_listed_with_the_reason(self):
+        self._delivered_order("ORD-BILL-2", pod_required=True)   # the model default
+        response = self.client.get("/api/v1/orders/billable/")
+        row = next(r for r in response.data["orders"] if r["number"] == "ORD-BILL-2")
+        self.assertEqual(row["blocked_reason"], "ePOD not verified yet")
+
+    def test_an_order_with_no_rate_card_says_so_rather_than_showing_zero(self):
+        Order.objects.create(number="ORD-BILL-3", customer=self.customer, pickup=self.pickup,
+                             dropoff=self.dropoff, weight_kg=100, status="completed",
+                             completed_at=timezone.now(), pod_required=False)
+        response = self.client.get("/api/v1/orders/billable/")
+        row = next(r for r in response.data["orders"] if r["number"] == "ORD-BILL-3")
+        self.assertEqual(row["blocked_reason"], "No rate card priced against this consignment")
+
+    def test_an_already_invoiced_order_drops_off_the_list(self):
+        order = self._delivered_order("ORD-BILL-4")
+        self.client.post(f"/api/v1/orders/{order.pk}/invoice/", {}, format="json")
+        response = self.client.get("/api/v1/orders/billable/")
+        self.assertNotIn("ORD-BILL-4", [r["number"] for r in response.data["orders"]])
+
+    def test_listing_does_not_rewrite_the_stored_freight(self):
+        # The preview reprices in memory; a GET must not mutate the order.
+        order = self._delivered_order("ORD-BILL-5")
+        Order.objects.filter(pk=order.pk).update(freight_amount=1, tax_amount=1, total_amount=1)
+        self.client.get("/api/v1/orders/billable/")
+        order.refresh_from_db()
+        self.assertEqual(order.total_amount, 1)
+
+    def test_an_undelivered_order_is_not_billable(self):
+        Order.objects.create(number="ORD-BILL-6", customer=self.customer, pickup=self.pickup,
+                             dropoff=self.dropoff, weight_kg=100, status="in_transit",
+                             service_rate=self.rate)
+        response = self.client.get("/api/v1/orders/billable/")
+        self.assertNotIn("ORD-BILL-6", [r["number"] for r in response.data["orders"]])
+
+    def test_billable_orders_sort_ahead_of_blocked_ones(self):
+        self._delivered_order("ORD-BILL-9", pod_required=True)   # blocked on ePOD
+        self._delivered_order("ORD-BILL-8")                      # billable now
+        response = self.client.get("/api/v1/orders/billable/")
+        numbers = [r["number"] for r in response.data["orders"]]
+        self.assertLess(numbers.index("ORD-BILL-8"), numbers.index("ORD-BILL-9"))
+        self.assertEqual(response.data["billable_now"], 1)
