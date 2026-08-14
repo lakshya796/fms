@@ -13,17 +13,22 @@ fixed schema. Two things vary in practice and both have to be absorbed:
   one key as far as this module is concerned.
 
 Parsing is kept free of Django and of the network so it can be tested against
-recorded payloads - see `FleetGeotrackersTests`. `fetch_dashboard()` is the
-only function that does I/O.
+recorded payloads - see `GeotrackersLiveRecordTests`. `fetch_dashboard()` is
+the only function that does I/O, and the only one that reads settings.
 """
+import base64
 import json
 import re
 import urllib.request
 from datetime import datetime, timezone as dt_timezone
 
-DASHBOARD_URL = "https://www.geotrackers.com/gt/track/v1/dashboard"
-# base64("dataiceman:dataiceman")
-BASIC_AUTH = "ZGF0YWljZW1hbjpkYXRhaWNlbWFu"
+from django.conf import settings
+
+DEFAULT_DASHBOARD_URL = "https://www.geotrackers.com/gt/track/v1/dashboard"
+# base64("dataiceman:dataiceman") - the credential this integration shipped with.
+# Only a fallback: set GEOTRACKERS_USERNAME/PASSWORD (or GEOTRACKERS_BASIC_AUTH)
+# in the environment and this is never consulted.
+DEFAULT_BASIC_AUTH = "ZGF0YWljZW1hbjpkYXRhaWNlbWFu"
 TIMEOUT_SECONDS = 15
 
 # Mainland India plus the island territories, padded slightly. Used only to
@@ -315,15 +320,38 @@ def parse(payload):
     return [ping for ping in (row_to_ping(row) for row in extract_rows(payload)) if ping["reg"]]
 
 
+def dashboard_url():
+    return getattr(settings, "GEOTRACKERS_URL", "") or DEFAULT_DASHBOARD_URL
+
+
+def basic_auth():
+    """The Authorization credential, resolved from the environment.
+
+    A telematics vendor rotates credentials on their own schedule, and doing
+    that should not need a code change and a redeploy. `GEOTRACKERS_BASIC_AUTH`
+    takes a pre-encoded value; otherwise a username and password are encoded
+    here. With neither set the credential the integration shipped with is used,
+    so an existing deployment keeps working until the environment is filled in.
+    """
+    encoded = (getattr(settings, "GEOTRACKERS_BASIC_AUTH", "") or "").strip()
+    if encoded:
+        return encoded
+    username = (getattr(settings, "GEOTRACKERS_USERNAME", "") or "").strip()
+    password = getattr(settings, "GEOTRACKERS_PASSWORD", "") or ""
+    if username or password:
+        return base64.b64encode(f"{username}:{password}".encode()).decode()
+    return DEFAULT_BASIC_AUTH
+
+
 def fetch_dashboard():
     """Returns (payload, error). Never raises - a telematics outage must not
     take the tracking console down with it.
     """
     request = urllib.request.Request(
-        DASHBOARD_URL,
+        dashboard_url(),
         data=b"{}",
         headers={
-            "Authorization": f"Basic {BASIC_AUTH}",
+            "Authorization": f"Basic {basic_auth()}",
             "Content-Type": "application/json",
             "Accept": "application/json, text/plain, */*",
             "Origin": "https://www.geotrackers.com",

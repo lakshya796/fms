@@ -1,4 +1,5 @@
 """Tests for the Fleetbase FleetOps inspired modules."""
+import base64
 import json as _json
 from datetime import timedelta
 from decimal import Decimal
@@ -1168,3 +1169,29 @@ class LiveTrackingEndpointTests(BaseFleetOpsTest):
         self.assertEqual(response.data["first_row_raw"]["vehicleNo"], "MH04JU9182")
         self.assertEqual(response.data["top_level_keys"], ["data"])
 
+
+
+class GeotrackersCredentialTests(TestCase):
+    """The vendor rotates credentials on their own schedule; that must not need
+    a code change and a redeploy."""
+
+    def test_a_username_and_password_are_encoded_into_the_header(self):
+        with self.settings(GEOTRACKERS_USERNAME="newuser", GEOTRACKERS_PASSWORD="newpass",
+                           GEOTRACKERS_BASIC_AUTH=""):
+            self.assertEqual(geotrackers.basic_auth(),
+                             base64.b64encode(b"newuser:newpass").decode())
+
+    def test_a_pre_encoded_value_is_used_verbatim(self):
+        with self.settings(GEOTRACKERS_BASIC_AUTH="QUJDOmRlZg==",
+                           GEOTRACKERS_USERNAME="ignored", GEOTRACKERS_PASSWORD="ignored"):
+            self.assertEqual(geotrackers.basic_auth(), "QUJDOmRlZg==")
+
+    def test_an_unconfigured_deployment_keeps_the_shipped_credential(self):
+        with self.settings(GEOTRACKERS_BASIC_AUTH="", GEOTRACKERS_USERNAME="", GEOTRACKERS_PASSWORD=""):
+            self.assertEqual(geotrackers.basic_auth(), geotrackers.DEFAULT_BASIC_AUTH)
+
+    def test_the_endpoint_is_overridable(self):
+        with self.settings(GEOTRACKERS_URL="https://gps.internal/dashboard"):
+            self.assertEqual(geotrackers.dashboard_url(), "https://gps.internal/dashboard")
+        with self.settings(GEOTRACKERS_URL=""):
+            self.assertEqual(geotrackers.dashboard_url(), geotrackers.DEFAULT_DASHBOARD_URL)
