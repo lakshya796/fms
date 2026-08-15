@@ -151,8 +151,41 @@ class TrackingEventViewSet(viewsets.ModelViewSet):
 class TripViewSet(viewsets.ModelViewSet):
     permission_classes = [HasModulePermission]
     required_permission = "operations.view"; required_write_permission = "operations.manage"
-    queryset = Trip.objects.select_related("vehicle", "driver").prefetch_related("lorry_receipts", "tracking_events").all().order_by("-created_at")
+    queryset = Trip.objects.select_related("vehicle", "driver").prefetch_related(
+        "lorry_receipts", "tracking_events",
+        "orders", "orders__customer", "orders__pickup", "orders__dropoff",
+    ).all().order_by("-created_at")
     serializer_class = TripSerializer
+
+    @action(detail=True, methods=["post"], url_path="add-order")
+    @transaction.atomic
+    def add_order(self, request, pk=None):
+        """Link an additional order to this trip (milk-run support)."""
+        from .models import Order as _Order
+        from rest_framework.exceptions import ValidationError as _VE
+        trip = self.get_object()
+        order_id = request.data.get("order")
+        if not order_id:
+            raise _VE("Provide an order id.")
+        try:
+            order = _Order.objects.select_related("trip").get(pk=order_id)
+        except _Order.DoesNotExist:
+            raise _VE("Order not found.")
+        if order.trip_id and order.trip_id != trip.pk:
+            raise _VE(f"Order {order.number} is already on trip {order.trip.number}. Remove it first.")
+        order.trip = trip
+        order.save(update_fields=["trip", "updated_at"])
+        return Response(self.get_serializer(self.get_object()).data)
+
+    @action(detail=True, methods=["post"], url_path="remove-order")
+    @transaction.atomic
+    def remove_order(self, request, pk=None):
+        """Unlink an order from this trip."""
+        from .models import Order as _Order
+        trip = self.get_object()
+        _Order.objects.filter(pk=request.data.get("order"), trip=trip).update(trip=None)
+        return Response(self.get_serializer(self.get_object()).data)
+
     @action(detail=True, methods=["post"], url_path="dispatch")
     @transaction.atomic
     def dispatch_trip(self, request, pk=None):
@@ -227,7 +260,155 @@ class TripViewSet(viewsets.ModelViewSet):
 class InvoiceViewSet(viewsets.ModelViewSet):
     permission_classes = [HasModulePermission]
     required_permission = "accounting.view"; required_write_permission = "accounting.manage"
-    queryset = Invoice.objects.select_related("customer", "trip").all().order_by("-created_at"); serializer_class = InvoiceSerializer
+    queryset = Invoice.objects.select_related("customer", "trip", "order", "order__pickup", "order__dropoff", "order__vehicle").all().order_by("-created_at")
+    serializer_class = InvoiceSerializer
+
+    @action(detail=True, methods=["get"])
+    def pdf(self, request, pk=None):
+        """Generate a GST-compliant tax invoice PDF for download."""
+        from io import BytesIO
+        from django.http import HttpResponse
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import mm
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.lib.enums import TA_RIGHT, TA_CENTER
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
+
+        invoice = self.get_object()
+        order = invoice.order
+        customer = invoice.customer
+
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4,
+                                rightMargin=15*mm, leftMargin=15*mm,
+                                topMargin=15*mm, bottomMargin=15*mm)
+
+        brand = colors.HexColor("#0d5f45")
+        light = colors.HexColor("#f0f4f2")
+        mid = colors.HexColor("#666666")
+
+        def ps(name, **kw): return ParagraphStyle(name, **kw)
+
+        h1 = ps("h1", fontSize=22, fontName="Helvetica-Bold", textColor=brand)
+        h2 = ps("h2", fontSize=11, fontName="Helvetica-Bold")
+        body = ps("body", fontSize=9, fontName="Helvetica")
+        small = ps("small", fontSize=8, fontName="Helvetica", textColor=mid)
+        r_body = ps("r_body", fontSize=9, fontName="Helvetica", alignment=TA_RIGHT)
+        r_bold = ps("r_bold", fontSize=10, fontName="Helvetica-Bold", alignment=TA_RIGHT, textColor=brand)
+        lbl = ps("lbl", fontSize=7, fontName="Helvetica-Bold", textColor=mid)
+
+        def money_str(value):
+            return f"{float(value or 0):,.2f}"
+
+        elems = []
+
+        # ---- Header ----
+        hdr = [
+            [Paragraph("PHLOZ FMS", h1),
+             Paragraph(f"TAX INVOICE", ps("inv", fontSize=16, fontName="Helvetica-Bold", alignment=TA_RIGHT, textColor=brand))],
+            [Paragraph("Fleet Management System", small),
+             Paragraph(f"<b>{invoice.number}</b>", ps("invno", fontSize=11, fontName="Helvetica-Bold", alignment=TA_RIGHT))],
+            [Paragraph("", body),
+             Paragraph(f"Date: {invoice.created_at.strftime('%d %b %Y')}", ps("d", fontSize=9, alignment=TA_RIGHT))],
+            [Paragraph("", body),
+             Paragraph(f"Due: {invoice.due_date.strftime('%d %b %Y')}", ps("d2", fontSize=9, alignment=TA_RIGHT, textColor=mid))],
+        ]
+        hdr_t = Table(hdr, colWidths=[100*mm, 75*mm])
+        hdr_t.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LINEBELOW", (0, -1), (-1, -1), 2, brand),
+            ("BOTTOMPADDING", (0, -1), (-1, -1), 6),
+        ]))
+        elems.append(hdr_t)
+        elems.append(Spacer(1, 5*mm))
+
+        # ---- Bill-to / Supply ----
+        bt = [
+            [Paragraph("BILL TO", lbl), Paragraph("PLACE OF SUPPLY", lbl), Paragraph("STATUS", lbl)],
+            [Paragraph(f"<b>{customer.name}</b>", h2), Paragraph(invoice.place_of_supply or "—", body),
+             Paragraph(f"<b>{invoice.status.upper()}</b>", ps("st", fontSize=9, fontName="Helvetica-Bold", textColor=brand))],
+            [Paragraph(f"GSTIN: {customer.gstin}", small),
+             Paragraph("Reverse Charge: Yes" if invoice.reverse_charge else "", small), ""],
+        ]
+        bt_t = Table(bt, colWidths=[85*mm, 65*mm, 25*mm])
+        bt_t.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("BACKGROUND", (0, 0), (-1, 0), light),
+            ("TOPPADDING", (0, 0), (-1, 0), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, 0), 3),
+            ("LINEBELOW", (0, -1), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+        ]))
+        elems.append(bt_t)
+        elems.append(Spacer(1, 4*mm))
+
+        # ---- Consignment reference ----
+        if order:
+            ref = [
+                [Paragraph("CONSIGNMENT", lbl), Paragraph("ROUTE", lbl), Paragraph("DISTANCE · WEIGHT", lbl)],
+                [Paragraph(f"<b>{order.number}</b>", h2),
+                 Paragraph(f"<b>{order.pickup.city} → {order.dropoff.city}</b>", h2),
+                 Paragraph(f"{float(order.distance_km):.0f} km · {float(order.weight_kg):,.0f} kg", body)],
+                [Paragraph(f"Tracking: {order.tracking_number}", small),
+                 Paragraph(f"Vehicle: {order.vehicle.registration_number if order.vehicle else '—'}", small),
+                 Paragraph(f"E-Way: {order.eway_bill_number or '—'}", small)],
+            ]
+            ref_t = Table(ref, colWidths=[60*mm, 75*mm, 40*mm])
+            ref_t.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("BACKGROUND", (0, 0), (-1, 0), light),
+                ("TOPPADDING", (0, 0), (-1, 0), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 3),
+                ("LINEBELOW", (0, -1), (-1, -1), 0.5, colors.HexColor("#cccccc")),
+            ]))
+            elems.append(ref_t)
+            elems.append(Spacer(1, 4*mm))
+
+        # ---- Charges ----
+        rows = [
+            [Paragraph("Particulars", ps("th", fontSize=9, fontName="Helvetica-Bold", textColor=colors.white)),
+             Paragraph("Amount (₹)", ps("th_r", fontSize=9, fontName="Helvetica-Bold", textColor=colors.white, alignment=TA_RIGHT))],
+            ["Freight", Paragraph(money_str(invoice.freight_amount), r_body)],
+        ]
+        if float(invoice.additional_charges):
+            rows.append(["Additional charges", Paragraph(money_str(invoice.additional_charges), r_body)])
+
+        taxable = float(invoice.freight_amount) + float(invoice.additional_charges)
+        rows.append([Paragraph("Taxable value", h2), Paragraph(money_str(taxable), r_bold)])
+
+        if invoice.reverse_charge:
+            rows.append([Paragraph("GST (Reverse Charge — payable by recipient)", small), Paragraph("—", r_body)])
+        else:
+            rows.append([f"GST @ {invoice.gst_percent}%", Paragraph(money_str(invoice.tax_amount), r_body)])
+
+        rows.append([Paragraph("INVOICE TOTAL", ps("total_l", fontSize=11, fontName="Helvetica-Bold")),
+                     Paragraph(f"₹ {money_str(invoice.total_amount)}", r_bold)])
+
+        charges_t = Table(rows, colWidths=[130*mm, 45*mm])
+        charges_t.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("BACKGROUND", (0, 0), (-1, 0), brand),
+            ("LINEABOVE", (0, -1), (-1, -1), 1.5, brand),
+            ("BACKGROUND", (0, -1), (-1, -1), light),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor("#fafafa")]),
+            ("PADDING", (0, 0), (-1, -1), 7),
+            ("LINEBELOW", (0, 1), (-1, -3), 0.3, colors.HexColor("#e0e0e0")),
+        ]))
+        elems.append(charges_t)
+        elems.append(Spacer(1, 6*mm))
+        elems.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#cccccc")))
+        elems.append(Spacer(1, 3*mm))
+        elems.append(Paragraph(
+            f"Payment due by {invoice.due_date.strftime('%d %B %Y')}. "
+            "This is a computer-generated document and requires no signature.",
+            small))
+
+        doc.build(elems)
+        buffer.seek(0)
+        response = HttpResponse(buffer.read(), content_type="application/pdf")
+        response["Content-Disposition"] = f'inline; filename="{invoice.number}.pdf"'
+        return response
+
 class SettlementViewSet(viewsets.ModelViewSet):
     permission_classes = [HasModulePermission]
     required_permission = "accounting.view"; required_write_permission = "accounting.manage"
@@ -533,6 +714,26 @@ class OrderViewSet(FilterableViewSet):
                   + (" · damage reported" if proof.damage_reported else ""),
                   proof.latitude, proof.longitude, order.dropoff.city)
         return Response(ProofOfDeliverySerializer(proof).data, status=http_status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="pod-document-upload")
+    def pod_document_upload(self, request, pk=None):
+        """Upload a POD document (photo or PDF). Returns a URL to pass as file_url in pod-submit."""
+        import os
+        from pathlib import Path
+        from django.conf import settings as _settings
+        order = self.get_object()
+        uploaded = request.FILES.get("document")
+        if not uploaded:
+            raise ValidationError("No file received. POST multipart/form-data with a 'document' field.")
+        ext = os.path.splitext(uploaded.name)[1].lower() or ".bin"
+        filename = f"pod-documents/{order.pk}_{uuid4().hex[:10]}{ext}"
+        dest = Path(_settings.MEDIA_ROOT) / filename
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with open(dest, "wb") as f:
+            for chunk in uploaded.chunks():
+                f.write(chunk)
+        url = request.build_absolute_uri(_settings.MEDIA_URL + filename)
+        return Response({"url": url}, status=http_status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"])
     @transaction.atomic

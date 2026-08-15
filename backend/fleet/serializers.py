@@ -33,10 +33,19 @@ class TripSerializer(serializers.ModelSerializer):
     driver_name = serializers.CharField(source="driver.name", read_only=True)
     tracking_events = TrackingEventSerializer(many=True, read_only=True)
     running_km = serializers.IntegerField(read_only=True)
+    linked_orders = serializers.SerializerMethodField()
     class Meta:
         model = Trip; fields = "__all__"
         # A trip sheet is often opened before consignments are attached to it.
         extra_kwargs = {"lorry_receipts": {"required": False, "allow_empty": True}}
+
+    def get_linked_orders(self, trip):
+        return [
+            {"id": o.id, "number": o.number, "status": o.status,
+             "customer_name": o.customer.name,
+             "route": f"{o.pickup.city} → {o.dropoff.city}"}
+            for o in trip.orders.select_related("customer", "pickup", "dropoff").all()
+        ]
 
 
 class TripSettlementInputSerializer(serializers.Serializer):
