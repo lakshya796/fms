@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import "leaflet/dist/leaflet.css";
 import "leaflet.markercluster/dist/MarkerCluster.css";
-import { UNAUTHORISED_EVENT, fmsRequest, login, logout } from "./lib/fms-api";
+import { UNAUTHORISED_EVENT, fmsRequest, fmsRequestRaw, login, logout } from "./lib/fms-api";
 
 const navGroups: { label: string; items: [string, string][] }[] = [
   { label: "WORKSPACE", items: [["Overview", "⌂"], ["Analytics", "◎"]] },
@@ -885,7 +885,21 @@ function ModuleView({ name, onAction, reloadKey, openAction }: { name: string; o
           <div className="record-field"><span>Created</span><strong>{stamp(selected.created_at)}</strong></div>
           <div className="record-field"><span>Last updated</span><strong>{stamp(selected.updated_at)}</strong></div>
         </div>
-        <div className="record-actions"><button className="secondary" onClick={closeDrawer}>Close</button>{editSpec && <button className="primary" onClick={() => setEditing(true)}>Edit record</button>}</div>
+        <div className="record-actions">
+          <button className="secondary" onClick={closeDrawer}>Close</button>
+          {name === "Invoices" && selected && <button className="secondary" onClick={async () => {
+            try {
+              const { fmsRequestRaw } = await import("./lib/fms-api");
+              const res = await fmsRequestRaw(`invoices/${selected.id}/pdf/`);
+              const blob = await res.blob();
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url; a.download = `${selected.number || "invoice"}.pdf`; a.click();
+              URL.revokeObjectURL(url);
+            } catch (e) { onAction(e instanceof Error ? e.message.slice(0, 120) : "PDF download failed", "warn"); }
+          }}>Download PDF</button>}
+          {editSpec && <button className="primary" onClick={() => setEditing(true)}>Edit record</button>}
+        </div>
       </>}
     </aside></div>}
   </div>;
@@ -1245,6 +1259,10 @@ function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string;
   const [dashboard, setDashboard] = useState<any>(null);
   const [tripDetail, setTripDetail] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  // Milk-run: orders available to link to the open trip
+  const [linkOrders, setLinkOrders] = useState<any[]>([]);
+  const [linkOrderId, setLinkOrderId] = useState("");
+  const [linking, setLinking] = useState(false);
   const endpoint = name === "Dispatch" ? "trips/" : name === "Drivers" ? "drivers/" : name === "Maintenance" ? "maintenance/" : "analytics/fleet/";
   const load = () => {
     setLoading(true);
@@ -1272,6 +1290,44 @@ function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string;
       load();
     } catch (e) { onAction(e instanceof Error ? e.message.slice(0, 90) : "Action failed", "warn"); }
   };
+  // When a trip is opened, fetch orders not on any trip yet so the operator can
+  // add them as milk-run legs. Completed and cancelled orders are excluded.
+  const openTripDetail = async (trip: any) => {
+    setTripDetail(trip); setLinkOrderId("");
+    try {
+      const payload = await fmsRequest<any>(wholeSet("orders/") + "&status=dispatched,in_transit,assigned,created");
+      const all: any[] = asList(payload);
+      setLinkOrders(all.filter(o => !o.trip || o.trip === trip.id));
+    } catch { setLinkOrders([]); }
+  };
+  const refreshTripDetail = async (trip: any) => {
+    try {
+      const updated = await fmsRequest<any>(`trips/${trip.id}/`);
+      setTripDetail(updated);
+      setRecords(prev => prev.map(r => r.id === updated.id ? updated : r));
+    } catch { /* ignore */ }
+  };
+  const addOrderToTrip = async () => {
+    if (!tripDetail || !linkOrderId) return;
+    setLinking(true);
+    try {
+      const updated = await fmsRequest<any>(`trips/${tripDetail.id}/add-order/`, { method: "POST", body: JSON.stringify({ order: Number(linkOrderId) }) });
+      onAction("Order linked to trip");
+      setTripDetail(updated); setLinkOrderId("");
+      const linked = updated.linked_orders?.map((o: any) => o.id) || [];
+      setLinkOrders(prev => prev.filter(o => !linked.includes(o.id)));
+    } catch (e) { onAction(e instanceof Error ? e.message.slice(0, 120) : "Could not link order", "warn"); }
+    finally { setLinking(false); }
+  };
+  const removeOrderFromTrip = async (orderId: number) => {
+    if (!tripDetail) return;
+    try {
+      const updated = await fmsRequest<any>(`trips/${tripDetail.id}/remove-order/`, { method: "POST", body: JSON.stringify({ order: orderId }) });
+      onAction("Order unlinked from trip");
+      setTripDetail(updated);
+    } catch (e) { onAction(e instanceof Error ? e.message.slice(0, 120) : "Could not unlink order", "warn"); }
+  };
+
   const board = useDragBoard({
     "planned>dispatched": trip => tripAction(trip, "dispatch"),
     "dispatched>in_transit": trip => setTripStatus(trip, "in_transit"),
@@ -1281,8 +1337,10 @@ function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string;
   if (name === "Dispatch") return <div className="module-page"><div className="module-title"><div><p className="eyebrow">FLEET-OPS DISPATCH</p><h2>Dispatch command board</h2><p>Drag a trip between columns to progress it, or click one to open the trip sheet.</p></div><button className="primary module-action" onClick={() => openAction("trip")}>＋ Create trip</button></div>
     <div className="dispatch-board">{["planned","dispatched","in_transit","closed"].map(status => <section {...board.columnProps(status)} key={status}>
       <header><strong>{status.replaceAll("_"," ")}</strong><span>{records.filter(r => r.status === status).length}</span></header>
-      {records.filter(r => r.status === status).map(trip => <article key={trip.id} {...board.cardProps(trip, setTripDetail)}>
-        <b>{trip.number}</b><p>{trip.origin} → {trip.destination}</p><small>{trip.vehicle_number} · {trip.driver_name}</small>
+      {records.filter(r => r.status === status).map(trip => <article key={trip.id} {...board.cardProps(trip, openTripDetail)}>
+        <b>{trip.number}</b><p>{trip.origin} → {trip.destination}</p>
+        <small>{trip.vehicle_number} · {trip.driver_name}</small>
+        {(trip.linked_orders || []).length > 0 && <small style={{ color: "var(--brand)" }}>{(trip.linked_orders || []).length} order{(trip.linked_orders || []).length > 1 ? "s" : ""} linked</small>}
         <div onClick={event => event.stopPropagation()}>
           {status === "planned" && <button onClick={() => tripAction(trip,"dispatch")}>Dispatch</button>}
           {status === "dispatched" && <button onClick={() => setTripStatus(trip,"in_transit")}>In transit</button>}
@@ -1303,6 +1361,35 @@ function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string;
       sections={[{ label: "GPS EVENTS", rows: (tripDetail.tracking_events || []).slice(0, 8).map((event: any) => ({
         key: String(event.id), primary: event.description || event.event_type,
         secondary: `${event.speed_kph} km/h`, meta: new Date(event.recorded_at).toLocaleString("en-IN") })) }]}>
+      {/* --- Milk-run: linked orders --- */}
+      <div className="allocate-box">
+        <p className="eyebrow">LINKED ORDERS (MILK RUN)</p>
+        {(tripDetail.linked_orders || []).length === 0
+          ? <p className="pod-note">No orders linked yet. Add below to run multiple consignments on this trip.</p>
+          : <div className="shipment-rows" style={{ maxHeight: 180, overflowY: "auto", marginBottom: 8 }}>
+            {(tripDetail.linked_orders || []).map((o: any) => <div key={o.id} className="shipment-row">
+              <div style={{ minWidth: 0 }}>
+                <strong>{o.number}</strong>
+                <small>{o.customer_name} · {o.route}</small>
+              </div>
+              <div className="shipment-row-meta">
+                <span className={"status " + o.status}>{o.status}</span>
+                <button type="button" className="secondary" style={{ marginLeft: 8, padding: "2px 8px", fontSize: 12 }}
+                  onClick={() => removeOrderFromTrip(o.id)}>Remove</button>
+              </div>
+            </div>)}
+          </div>}
+        {linkOrders.length > 0 && <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <select value={linkOrderId} onChange={event => setLinkOrderId(event.target.value)}
+                  style={{ flex: 1 }} aria-label="Order to link">
+            <option value="">Select an order to add…</option>
+            {linkOrders.filter(o => !(tripDetail.linked_orders || []).some((lo: any) => lo.id === o.id))
+              .map((o: any) => <option key={o.id} value={o.id}>{o.number} · {o.customer_name} ({o.status})</option>)}
+          </select>
+          <button className="primary" disabled={!linkOrderId || linking} onClick={addOrderToTrip}
+                  style={{ whiteSpace: "nowrap" }}>{linking ? "Linking…" : "Add to trip"}</button>
+        </div>}
+      </div>
       <TripSettlementPanel trip={tripDetail} onAction={onAction} onSaved={updated => { setTripDetail(updated); load(); }} />
       <div className="record-actions" style={{ marginTop: 18 }}>
         <button className="secondary" onClick={() => setTripDetail(null)}>Close</button>
@@ -2160,6 +2247,8 @@ function EpodView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify
   const [reason, setReason] = useState("");
   const [lostReason, setLostReason] = useState("");
   const [courierOnly, setCourierOnly] = useState(false);
+  const [uploadUrl, setUploadUrl] = useState("");
+  const [uploading, setUploading] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -2188,14 +2277,30 @@ function EpodView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify
   };
 
   const issue = (proof: any) => call(`orders/${proof.order}/pod-request/`, {}, "Delivery OTP issued");
+
+  const uploadDocument = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || !selected) return;
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("document", file);
+      const result = await fmsRequest<any>(`orders/${selected.order}/pod-document-upload/`, { method: "POST", body: formData });
+      setUploadUrl(result.url || "");
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 120) : "Upload failed", "warn");
+    } finally { setUploading(false); }
+  };
+
   const capture = async (event: React.FormEvent) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget as HTMLFormElement);
     await call(`orders/${selected.order}/pod-submit/`, {
       receiver_name: String(form.get("receiver_name") || ""), otp: String(form.get("otp") || ""),
-      file_url: String(form.get("file_url") || ""), remarks: String(form.get("remarks") || ""),
+      file_url: uploadUrl || String(form.get("file_url") || ""), remarks: String(form.get("remarks") || ""),
       shortage_kg: Number(form.get("shortage_kg") || 0), damage_reported: form.get("damage_reported") === "on",
     }, "ePOD captured");
+    setUploadUrl("");
   };
 
   const sendByCourier = async (event: React.FormEvent) => {
@@ -2277,11 +2382,20 @@ function EpodView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify
           <label>Received by<input name="receiver_name" defaultValue={selected.receiver_name} required /></label>
           <label>OTP quoted<input name="otp" defaultValue="" maxLength={6} /></label>
           <label>Shortage (kg)<input name="shortage_kg" type="number" step="any" defaultValue="0" /></label>
-          <label>Signed POD link<input name="file_url" type="url" placeholder="https://…" /></label>
+          <label>Upload document
+            {uploadUrl
+              ? <span className="pod-upload-done">
+                  <a href={uploadUrl} target="_blank" rel="noreferrer">Document uploaded ✓</a>
+                  <button type="button" className="secondary" style={{ marginLeft: 8, padding: "2px 8px", fontSize: 11 }}
+                          onClick={() => setUploadUrl("")}>Remove</button>
+                </span>
+              : <input type="file" accept="image/*,application/pdf" onChange={uploadDocument} disabled={uploading} />}
+            {uploading && <small style={{ display: "block", color: "var(--muted)" }}>Uploading…</small>}
+          </label>
         </div>
         <label>Remarks<input name="remarks" defaultValue="" /></label>
         <label className="checkbox-row"><input type="checkbox" name="damage_reported" /> Damage reported at the drop</label>
-        <button className="primary full-button" disabled={busy}>Save ePOD</button>
+        <button className="primary full-button" disabled={busy || uploading}>Save ePOD</button>
       </form>}
 
       {selected.status === "submitted" && <div className="allocate-box">

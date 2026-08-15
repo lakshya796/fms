@@ -1265,3 +1265,127 @@ class BillableOrdersTests(BaseFleetOpsTest):
         numbers = [r["number"] for r in response.data["orders"]]
         self.assertLess(numbers.index("ORD-BILL-8"), numbers.index("ORD-BILL-9"))
         self.assertEqual(response.data["billable_now"], 1)
+
+
+class TripViewSetTest(BaseFleetOpsTest):
+    """Milk-run: one trip can carry multiple orders."""
+
+    def _make_trip(self):
+        r = self.client.post("/api/v1/trips/", {
+            "number": "TRP-MLK-01", "vehicle": self.vehicle.id, "driver": self.driver.id,
+            "origin": "Bhiwandi", "destination": "Chakan", "planned_departure": "2026-08-01T08:00:00Z",
+        }, format="json")
+        self.assertEqual(r.status_code, 201, r.data)
+        return Trip.objects.get(pk=r.data["id"])
+
+    def _make_order(self, number):
+        order = Order.objects.create(
+            number=number, customer=self.customer, pickup=self.pickup, dropoff=self.dropoff,
+            weight_kg=5000, status="created")
+        return order
+
+    def test_add_order_links_it_to_the_trip(self):
+        trip = self._make_trip()
+        order = self._make_order("ORD-MLK-01")
+        r = self.client.post(f"/api/v1/trips/{trip.id}/add-order/", {"order": order.id}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        linked = [o["id"] for o in r.data["linked_orders"]]
+        self.assertIn(order.id, linked)
+        order.refresh_from_db()
+        self.assertEqual(order.trip_id, trip.id)
+
+    def test_multiple_orders_on_one_trip(self):
+        trip = self._make_trip()
+        o1 = self._make_order("ORD-MLK-02")
+        o2 = self._make_order("ORD-MLK-03")
+        self.client.post(f"/api/v1/trips/{trip.id}/add-order/", {"order": o1.id}, format="json")
+        r = self.client.post(f"/api/v1/trips/{trip.id}/add-order/", {"order": o2.id}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(len(r.data["linked_orders"]), 2)
+
+    def test_add_order_already_on_another_trip_is_rejected(self):
+        trip1 = self._make_trip()
+        r2 = self.client.post("/api/v1/trips/", {
+            "number": "TRP-MLK-02", "vehicle": self.vehicle.id, "driver": self.driver.id,
+            "origin": "Bhiwandi", "destination": "Chakan", "planned_departure": "2026-08-02T08:00:00Z",
+        }, format="json")
+        trip2 = Trip.objects.get(pk=r2.data["id"])
+        order = self._make_order("ORD-MLK-04")
+        order.trip = trip1; order.save(update_fields=["trip"])
+        r = self.client.post(f"/api/v1/trips/{trip2.id}/add-order/", {"order": order.id}, format="json")
+        self.assertEqual(r.status_code, 400)
+
+    def test_remove_order_unlinks_it(self):
+        trip = self._make_trip()
+        order = self._make_order("ORD-MLK-05")
+        self.client.post(f"/api/v1/trips/{trip.id}/add-order/", {"order": order.id}, format="json")
+        r = self.client.post(f"/api/v1/trips/{trip.id}/remove-order/", {"order": order.id}, format="json")
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(r.data["linked_orders"], [])
+        order.refresh_from_db()
+        self.assertIsNone(order.trip_id)
+
+    def test_serializer_exposes_linked_orders(self):
+        trip = self._make_trip()
+        order = self._make_order("ORD-MLK-06")
+        order.trip = trip; order.save(update_fields=["trip"])
+        r = self.client.get(f"/api/v1/trips/{trip.id}/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(r.data["linked_orders"]), 1)
+        self.assertEqual(r.data["linked_orders"][0]["number"], "ORD-MLK-06")
+
+
+class OrderViewSetTest(BaseFleetOpsTest):
+    """ePOD document upload endpoint."""
+
+    def _make_order(self):
+        return Order.objects.create(
+            number="ORD-POD-01", customer=self.customer, pickup=self.pickup, dropoff=self.dropoff,
+            weight_kg=5000, status="in_transit")
+
+    def test_upload_returns_a_url(self):
+        from io import BytesIO
+        from django.test import override_settings
+        import tempfile, os
+        order = self._make_order()
+        content = b"%PDF-1.4 fake pdf content"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with override_settings(MEDIA_ROOT=tmpdir, MEDIA_URL="/media/"):
+                r = self.client.post(
+                    f"/api/v1/orders/{order.id}/pod-document-upload/",
+                    {"document": BytesIO(content)},
+                    format="multipart",
+                )
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertIn("url", r.data)
+        self.assertIn("pod-documents", r.data["url"])
+
+    def test_upload_without_file_is_rejected(self):
+        order = self._make_order()
+        r = self.client.post(f"/api/v1/orders/{order.id}/pod-document-upload/", {}, format="json")
+        self.assertEqual(r.status_code, 400)
+
+
+class InvoiceViewSetTest(AutomaticInvoiceTests):
+    """PDF generation for customer invoices."""
+
+    def test_pdf_endpoint_returns_pdf_content(self):
+        order = self.create_order()
+        self.deliver(order)
+        inv_r = self.client.post(f"/api/v1/orders/{order.id}/invoice/", {}, format="json")
+        self.assertEqual(inv_r.status_code, 201, inv_r.data)
+        invoice_id = inv_r.data["invoice"]["id"]
+        r = self.client.get(f"/api/v1/invoices/{invoice_id}/pdf/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r["Content-Type"], "application/pdf")
+        self.assertTrue(r.content.startswith(b"%PDF"))
+
+    def test_pdf_content_disposition_contains_invoice_number(self):
+        order = self.create_order()
+        self.deliver(order)
+        inv_r = self.client.post(f"/api/v1/orders/{order.id}/invoice/", {}, format="json")
+        invoice_id = inv_r.data["invoice"]["id"]
+        invoice_number = inv_r.data["invoice"]["number"]
+        r = self.client.get(f"/api/v1/invoices/{invoice_id}/pdf/")
+        self.assertIn(invoice_number, r.get("Content-Disposition", ""))
+        self.assertGreater(len(r.content), 1024)  # a meaningful PDF is at least 1 KB
