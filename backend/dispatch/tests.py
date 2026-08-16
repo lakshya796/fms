@@ -175,7 +175,12 @@ class SolveAndCommitTests(BaseDispatchTest):
         self.vehicle.refresh_from_db()
         self.assertEqual(self.vehicle.status, "allocated")
 
-    def test_commit_blocks_a_route_with_no_driver_assigned(self):
+    def test_commit_blocks_a_route_with_no_driver_available_to_assign(self):
+        # No driver in "available" status - build_plan_vehicles auto-assigns
+        # one where it can (docs/DISPATCH-PLANNER-V2.md §8.3), so this is what
+        # a genuinely driverless route looks like now.
+        self.driver.status = "on_trip"
+        self.driver.save()
         self.make_order("ORD-DP-3", self.dropA, 2000)
         inputs.collect_tasks(self.plan)
         inputs.build_plan_vehicles(self.plan)
@@ -1354,3 +1359,239 @@ class PlanViewTests(BaseDispatchTest):
         response = self.client.get(f"/api/v1/dispatch/plans/{self.plan.id}/map/")
         colours = {route["colour"] for route in response.data["routes"]}
         self.assertEqual(len(colours), len(response.data["routes"]))   # every route gets its own colour
+
+
+class PinnedVehicleTests(BaseDispatchTest):
+    """Phase 6 of docs/DISPATCH-PLANNER-V2.md: a dispatcher's pin is honoured
+    by the next solve instead of being just a suggestion."""
+
+    def _plan_vehicle(self, **overrides):
+        defaults = dict(plan=self.plan, vehicle=self.vehicle, source="own",
+                        start_latitude=self.vehicle.current_latitude, start_longitude=self.vehicle.current_longitude,
+                        available_from=timezone.now(), capacity_kg=8000, capacity_cbm=40, temperature_class="dry",
+                        cost_per_km=Decimal("30"), cost_per_hour=Decimal("0"), fixed_cost=Decimal("300"),
+                        max_stops=20, max_route_km=800, max_duty_minutes=600)
+        defaults.update(overrides)
+        return PlanVehicle.objects.create(**defaults)
+
+    def _task(self, dropoff, weight_kg, **overrides):
+        defaults = dict(plan=self.plan, pickup=self.pickup, dropoff=dropoff, weight_kg=weight_kg,
+                        revenue_estimate=Decimal("5000"), outsource_estimate=Decimal("6000"))
+        defaults.update(overrides)
+        return DispatchTask.objects.create(**defaults)
+
+    def test_pinned_task_stays_on_its_vehicle_even_when_the_market_is_nominally_cheaper(self):
+        pv = self._plan_vehicle()
+        task = self._task(self.dropA, 2000, outsource_estimate=Decimal("1"), pinned_vehicle=self.vehicle)
+        routes, outsourced, skipped = greedy.solve([pv], [task])
+        self.assertEqual(outsourced, [])
+        self.assertTrue(routes[0].used)
+
+    def test_pin_to_a_vehicle_not_in_the_plan_is_outsourced_rather_than_ignored(self):
+        other_vehicle = Vehicle.objects.create(registration_number="MH 20 XX 1111", vehicle_type="20 ft SXL", capacity_kg=8000)
+        pv = self._plan_vehicle()
+        task = self._task(self.dropA, 2000, pinned_vehicle=other_vehicle)
+        routes, outsourced, skipped = greedy.solve([pv], [task])
+        self.assertEqual(len(outsourced), 1)
+        self.assertFalse(routes[0].used)
+
+    def test_conflicting_pins_in_the_same_cluster_are_outsourced(self):
+        other_vehicle = Vehicle.objects.create(registration_number="MH 20 XX 2222", vehicle_type="20 ft SXL",
+                                               capacity_kg=8000, current_latitude=Decimal("18.590000"),
+                                               current_longitude=Decimal("73.730000"))
+        pv1 = self._plan_vehicle()
+        pv2 = self._plan_vehicle(vehicle=other_vehicle, start_latitude=other_vehicle.current_latitude,
+                                 start_longitude=other_vehicle.current_longitude)
+        t1 = self._task(self.dropA, 1000, pinned_vehicle=self.vehicle)
+        t2 = self._task(self.dropA, 1000, pinned_vehicle=other_vehicle)   # shares t1's pickup -> same cluster
+        routes, outsourced, skipped = greedy.solve([pv1, pv2], [t1, t2])
+        self.assertEqual(len(outsourced), 1)
+        self.assertIn("conflicting", outsourced[0][1])
+
+
+class DriverAssignmentTests(BaseDispatchTest):
+    """Phase 6: build_plan_vehicles assigns a driver per vehicle instead of
+    leaving every route driverless by construction (docs/DISPATCH-PLANNER-V2.md §8.3)."""
+
+    def test_build_plan_vehicles_assigns_an_available_driver(self):
+        plan_vehicles = inputs.build_plan_vehicles(self.plan)
+        self.assertEqual(plan_vehicles[0].driver_id, self.driver.id)
+
+    def test_build_plan_vehicles_does_not_double_book_a_driver(self):
+        Vehicle.objects.create(registration_number="MH 12 QR 7777", vehicle_type="20 ft SXL", capacity_kg=8000,
+                               current_latitude=self.vehicle.current_latitude, current_longitude=self.vehicle.current_longitude)
+        plan_vehicles = inputs.build_plan_vehicles(self.plan)
+        driver_ids = [pv.driver_id for pv in plan_vehicles if pv.driver_id]
+        self.assertEqual(len(driver_ids), len(set(driver_ids)))
+
+    def test_build_plan_vehicles_skips_a_driver_with_an_expired_licence(self):
+        self.driver.licence_expiry = timezone.localdate() - timedelta(days=1)
+        self.driver.save()
+        plan_vehicles = inputs.build_plan_vehicles(self.plan)
+        self.assertIsNone(plan_vehicles[0].driver_id)
+
+    def test_build_plan_vehicles_skips_a_driver_who_is_not_available(self):
+        self.driver.status = "on_trip"
+        self.driver.save()
+        plan_vehicles = inputs.build_plan_vehicles(self.plan)
+        self.assertIsNone(plan_vehicles[0].driver_id)
+
+
+class ManualOverrideTests(BaseDispatchTest):
+    """Phase 6: move/reorder/pin/unroute-task, with an immediate re-cost of
+    every route touched."""
+
+    def _two_route_plan(self):
+        second_vehicle = Vehicle.objects.create(registration_number="MH 12 QR 8888", vehicle_type="20 ft SXL", capacity_kg=8000,
+                                                volume_cbm=40, current_latitude=Decimal("18.590000"), current_longitude=Decimal("73.730000"))
+        Order.objects.create(number="ORD-MO-1", customer=self.customer, pickup=self.pickup, dropoff=self.dropA,
+                             weight_kg=2000, status="created")
+        order2 = Order.objects.create(number="ORD-MO-2", customer=self.customer, pickup=self.dropB, dropoff=self.dropA,
+                                      weight_kg=2000, status="created")
+        inputs.collect_tasks(self.plan)
+        # Pin order2's task onto the second vehicle so the two orders land on
+        # two distinct routes deterministically, rather than depending on
+        # which arrangement the cost comparison happens to favour.
+        DispatchTask.objects.filter(plan=self.plan, order=order2).update(pinned_vehicle=second_vehicle)
+        inputs.build_plan_vehicles(self.plan)
+        self.plan.status = "ready"
+        self.plan.save()
+        solve_plan(self.plan)
+        self.plan.refresh_from_db()
+        return list(self.plan.routes.order_by("sequence"))
+
+    def test_move_task_endpoint_moves_a_task_and_recosts_both_routes(self):
+        routes = self._two_route_plan()
+        self.assertEqual(len(routes), 2)
+        from_route, to_route = routes[0], routes[1]
+        task = from_route.stops.filter(stop_type="drop").first().task
+        original_to_route_stop_count = to_route.stops.count()
+
+        response = self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/move-task/",
+                                    {"task": task.id, "to_route": to_route.id}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+
+        to_route.refresh_from_db()
+        self.assertEqual(to_route.stops.count(), original_to_route_stop_count + 2)   # its own pickup + drop
+        self.assertTrue(to_route.stops.filter(task=task, stop_type="drop").exists())
+        self.assertFalse(PlannedStop.objects.filter(route=from_route, task=task).exists())
+        task.refresh_from_db()
+        self.assertEqual(task.status, "planned")
+
+    def test_unroute_task_endpoint_frees_the_task_and_recosts_its_route(self):
+        routes = self._two_route_plan()
+        route = routes[0]
+        task = route.stops.filter(stop_type="drop").first().task
+        original_cost = route.estimated_cost
+
+        response = self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/unroute-task/",
+                                    {"task": task.id}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        task.refresh_from_db()
+        self.assertEqual(task.status, "pending")
+        self.assertFalse(PlannedStop.objects.filter(route=route, task=task).exists())
+        route.refresh_from_db()
+        self.assertNotEqual(route.estimated_cost, original_cost)
+
+    def test_reorder_route_endpoint_changes_sequence_and_recosts(self):
+        routes = self._two_route_plan()
+        route = routes[0]
+        stop_ids = list(route.stops.order_by("sequence").values_list("id", flat=True))
+        reversed_ids = list(reversed(stop_ids))
+
+        response = self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/reorder-route/",
+                                    {"route": route.id, "stop_ids": reversed_ids}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        new_order = list(PlannedStop.objects.filter(route=route).order_by("sequence").values_list("id", flat=True))
+        self.assertEqual(new_order, reversed_ids)
+
+    def test_reorder_route_rejects_a_stop_id_list_that_does_not_match(self):
+        routes = self._two_route_plan()
+        response = self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/reorder-route/",
+                                    {"route": routes[0].id, "stop_ids": [999999]}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_pin_task_endpoint_sets_and_clears_the_pin(self):
+        self.make_order("ORD-MO-PIN", self.dropA, 2000)
+        inputs.collect_tasks(self.plan)
+        task = DispatchTask.objects.get(plan=self.plan)
+
+        response = self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/pin-task/",
+                                    {"task": task.id, "vehicle": self.vehicle.id}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        task.refresh_from_db()
+        self.assertEqual(task.pinned_vehicle_id, self.vehicle.id)
+
+        response = self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/pin-task/", {"task": task.id}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        task.refresh_from_db()
+        self.assertIsNone(task.pinned_vehicle_id)
+
+    def test_move_task_rejects_a_task_from_a_different_plan(self):
+        other_plan = DispatchPlan.objects.create(plan_date=timezone.localdate())
+        other_task = DispatchTask.objects.create(plan=other_plan, pickup=self.pickup, dropoff=self.dropA, weight_kg=1000)
+        routes = self._two_route_plan()
+        response = self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/move-task/",
+                                    {"task": other_task.id, "to_route": routes[0].id}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+
+class ScenarioComparisonTests(BaseDispatchTest):
+    """Phase 6: solve the same demand under several strategies, compare, and
+    adopt the winner - see docs/DISPATCH-PLANNER-V2.md §8.2."""
+
+    def test_compare_endpoint_creates_one_scenario_per_strategy(self):
+        self.make_order("ORD-SC-1", self.dropA, 2000)
+        self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/collect/")
+        response = self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/compare/",
+                                    {"strategies": ["least_cost", "own_fleet_first"]}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(response.data["scenarios"]), 2)
+        self.assertEqual({s["strategy"] for s in response.data["scenarios"]}, {"least_cost", "own_fleet_first"})
+        self.assertEqual(DispatchPlan.objects.filter(parent_plan=self.plan, is_scenario=True).count(), 2)
+
+    def test_compare_rejects_an_unknown_strategy(self):
+        response = self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/compare/",
+                                    {"strategies": ["warp_speed"]}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_adopt_transplants_the_scenarios_routes_onto_the_parent(self):
+        self.make_order("ORD-SC-2", self.dropA, 2000)
+        self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/collect/")
+        compare_response = self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/compare/",
+                                            {"strategies": ["balanced"]}, format="json")
+        scenario_id = compare_response.data["scenarios"][0]["id"]
+
+        response = self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/adopt/", {"scenario": scenario_id}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.plan.refresh_from_db()
+        self.assertEqual(self.plan.status, "solved")
+        self.assertEqual(self.plan.routes.count(), 1)
+        self.assertEqual(PlannedRoute.objects.filter(plan_id=scenario_id).count(), 0)
+        self.assertEqual(DispatchPlan.objects.get(pk=scenario_id).status, "superseded")
+
+    def test_adopt_marks_every_other_scenario_superseded(self):
+        self.make_order("ORD-SC-3", self.dropA, 2000)
+        self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/collect/")
+        compare_response = self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/compare/",
+                                            {"strategies": ["balanced", "least_cost"]}, format="json")
+        winner_id = compare_response.data["scenarios"][0]["id"]
+        loser_id = compare_response.data["scenarios"][1]["id"]
+
+        self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/adopt/", {"scenario": winner_id}, format="json")
+        self.assertEqual(DispatchPlan.objects.get(pk=loser_id).status, "superseded")
+
+    def test_adopt_rejects_a_scenario_that_does_not_belong_to_this_plan(self):
+        other_plan = DispatchPlan.objects.create(plan_date=timezone.localdate())
+        foreign_scenario = DispatchPlan.objects.create(plan_date=timezone.localdate(), parent_plan=other_plan, is_scenario=True)
+        response = self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/adopt/",
+                                    {"scenario": foreign_scenario.id}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_adopt_is_blocked_once_the_plan_is_committed(self):
+        self.plan.status = "committed"
+        self.plan.save()
+        scenario = DispatchPlan.objects.create(plan_date=timezone.localdate(), parent_plan=self.plan, is_scenario=True)
+        response = self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/adopt/",
+                                    {"scenario": scenario.id}, format="json")
+        self.assertEqual(response.status_code, 400)

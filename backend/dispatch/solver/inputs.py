@@ -22,9 +22,10 @@ import re
 from datetime import datetime, time, timedelta
 from decimal import Decimal
 
+from django.db.models import Q
 from django.utils import timezone
 
-from fleet.models import ComplianceDocument, Indent, Order, Vehicle, money
+from fleet.models import ComplianceDocument, Driver, Indent, Order, Vehicle, money
 
 from . import costing, matrix
 
@@ -95,6 +96,16 @@ def readiness(plan):
 
 
 def build_plan_vehicles(plan):
+    """Snapshots eligible vehicles as `PlanVehicle` rows, each with a driver
+    already assigned where one is available - a route the solver builds is
+    otherwise driverless by construction and blocks at commit for a reason
+    that is not really a reason (docs/DISPATCH-PLANNER-V2.md §8.3).
+
+    Scope, stated plainly: this checks status and licence expiry, and hands
+    out drivers greedily (first free one not already used in this plan) - it
+    does not rank by proximity to the vehicle's start position, and there is
+    no duty-hours-remaining field on `fleet.Driver` for this pass to check.
+    """
     from ..models import PlanVehicle
     costing.reset_cache()
     today = timezone.localdate()
@@ -104,6 +115,10 @@ def build_plan_vehicles(plan):
                               .select_related("vendor", "home_place", "current_place")
     expired_vehicle_ids = set(ComplianceDocument.objects.filter(
         vehicle__in=vehicles, expiry_date__isnull=False, expiry_date__lt=today).values_list("vehicle_id", flat=True))
+
+    available_drivers = list(Driver.objects.filter(status="available")
+                                            .filter(Q(licence_expiry__isnull=True) | Q(licence_expiry__gte=today)))
+    unassigned_driver_ids = {driver.pk: driver for driver in available_drivers}
 
     created = []
     for vehicle in vehicles:
@@ -128,8 +143,13 @@ def build_plan_vehicles(plan):
 
         basis = costing.vehicle_cost_basis(vehicle) if vehicle.ownership == "own" else costing.vendor_cost_basis(vehicle)
 
+        driver = None
+        if not excluded and unassigned_driver_ids:
+            driver_id = next(iter(unassigned_driver_ids))
+            driver = unassigned_driver_ids.pop(driver_id)
+
         created.append(PlanVehicle.objects.create(
-            plan=plan, vehicle=vehicle, source=vehicle.ownership, vendor=vehicle.vendor,
+            plan=plan, vehicle=vehicle, driver=driver, source=vehicle.ownership, vendor=vehicle.vendor,
             start_latitude=lat, start_longitude=lng, start_place=vehicle.current_place or vehicle.home_place,
             position_stale=stale, available_from=available_from, must_return_to=vehicle.home_place,
             capacity_kg=vehicle.capacity_kg, capacity_cbm=vehicle.volume_cbm, temperature_class=vehicle.temperature_class,

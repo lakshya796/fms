@@ -44,6 +44,9 @@ class DispatchPlan(Timestamped):
     solver_seconds = models.DecimalField(max_digits=8, decimal_places=2, default=0)
     solver_status = models.CharField(max_length=40, blank=True)
     parent_plan = models.ForeignKey("self", on_delete=models.SET_NULL, null=True, blank=True, related_name="replans")
+    is_scenario = models.BooleanField(default=False,
+                                      help_text="A what-if child plan from `compare` - not shown as a first-class "
+                                                "plan until `adopt` transplants its routes onto the parent")
     summary = models.JSONField(default=dict, blank=True)
     created_by = models.CharField(max_length=150, blank=True)
     committed_at = models.DateTimeField(null=True, blank=True)
@@ -103,6 +106,10 @@ class DispatchTask(Timestamped):
                                              help_text="What the spot market would charge to move this - the disjunction penalty")
     status = models.CharField(max_length=12, choices=TASK_STATUSES, default="pending")
     drop_reason = models.CharField(max_length=240, blank=True)
+    pinned_vehicle = models.ForeignKey("fleet.Vehicle", on_delete=models.SET_NULL, null=True, blank=True,
+                                       related_name="pinned_dispatch_tasks",
+                                       help_text="A dispatcher-forced vehicle for this task - honoured by the next "
+                                                 "solve instead of the solver's own choice (docs/DISPATCH-PLANNER-V2.md §8.1)")
 
     class Meta:
         ordering = ["plan_id", "id"]
@@ -212,7 +219,8 @@ class PlannedStop(Timestamped):
 PLAN_EVENT_TYPES = [("created", "Created"), ("collected", "Demand collected"), ("solved", "Solved"),
                     ("task_dropped", "Task dropped"), ("manual_move", "Manual move"),
                     ("hire_requested", "Hire requested"), ("quote_accepted", "Quote accepted"),
-                    ("committed", "Committed"), ("route_committed", "Route committed"), ("replanned", "Re-planned")]
+                    ("committed", "Committed"), ("route_committed", "Route committed"), ("replanned", "Re-planned"),
+                    ("scenario_compared", "Scenario compared"), ("scenario_adopted", "Scenario adopted")]
 
 
 class PlanEvent(Timestamped):

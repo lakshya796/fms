@@ -18,7 +18,7 @@ from .models import CarrierOffer, DispatchPlan, DispatchTask, HireRequirement, P
 from .serializers import (CarrierOfferSerializer, DispatchPlanDetailSerializer, DispatchPlanSerializer,
                           DispatchTaskSerializer, HireRequirementSerializer, PlanEventSerializer,
                           PlannedRouteSerializer, PlannedStopSerializer, PlanVehicleSerializer)
-from .solver import inputs, tracking
+from .solver import inputs, override, tracking
 from .solver.engine import solve_plan
 from .solver.replan import replan as replan_plan
 from .strategies import StrategyError, resolve_strategy, strategy_catalogue
@@ -166,6 +166,146 @@ class DispatchPlanViewSet(DispatchViewSet):
         } for task in unrouted]
 
         return Response({"routes": route_payload, "unrouted_tasks": unrouted_payload})
+
+    @action(detail=True, methods=["post"], url_path="move-task")
+    @transaction.atomic
+    def move_task(self, request, pk=None):
+        """Move a task onto a different route, appended at the end, and
+        re-cost both routes it touches. See docs/DISPATCH-PLANNER-V2.md §8.1."""
+        plan = self.get_object()
+        task_id, route_id = request.data.get("task"), request.data.get("to_route")
+        if not task_id or not route_id:
+            raise ValidationError("Provide 'task' and 'to_route'.")
+        task = DispatchTask.objects.select_related("pickup", "dropoff").filter(pk=task_id, plan=plan).first()
+        to_route = PlannedRoute.objects.select_related("plan_vehicle__vehicle").filter(pk=route_id, plan=plan).first()
+        if task is None or to_route is None:
+            raise ValidationError("That task or route does not belong to this plan.")
+        override.move_task(plan, task, to_route)
+        plan.log("manual_move", f"Task {task.pk} moved onto route #{to_route.sequence}",
+                 {"task": task.pk, "route": to_route.pk})
+        return Response(DispatchPlanDetailSerializer(plan).data)
+
+    @action(detail=True, methods=["post"], url_path="reorder-route")
+    @transaction.atomic
+    def reorder_route(self, request, pk=None):
+        """Resequence one route's stops to the given order and re-cost it."""
+        plan = self.get_object()
+        route_id, stop_ids = request.data.get("route"), request.data.get("stop_ids")
+        if not route_id or not stop_ids:
+            raise ValidationError("Provide 'route' and a non-empty 'stop_ids' list.")
+        route = PlannedRoute.objects.select_related("plan_vehicle__vehicle").filter(pk=route_id, plan=plan).first()
+        if route is None:
+            raise ValidationError("That route does not belong to this plan.")
+        try:
+            override.reorder_route(route, stop_ids)
+        except ValueError as error:
+            raise ValidationError(str(error)) from error
+        plan.log("manual_move", f"Route #{route.sequence} reordered", {"route": route.pk})
+        return Response(DispatchPlanDetailSerializer(plan).data)
+
+    @action(detail=True, methods=["post"], url_path="pin-task")
+    def pin_task(self, request, pk=None):
+        """Force `task` onto `vehicle` on the plan's next solve - or clear the
+        pin when `vehicle` is omitted. Nothing already routed changes until
+        the plan is solved again; `greedy.solve` is what honours the pin."""
+        plan = self.get_object()
+        task_id = request.data.get("task")
+        if not task_id:
+            raise ValidationError("Provide 'task'.")
+        task = DispatchTask.objects.filter(pk=task_id, plan=plan).first()
+        if task is None:
+            raise ValidationError("That task does not belong to this plan.")
+        vehicle_id = request.data.get("vehicle") or None
+        task.pinned_vehicle_id = vehicle_id
+        task.save(update_fields=["pinned_vehicle", "updated_at"])
+        plan.log("manual_move", f"Task {task.pk} pinned to vehicle {vehicle_id}" if vehicle_id
+                 else f"Task {task.pk} unpinned", {"task": task.pk, "vehicle": vehicle_id})
+        return Response(DispatchTaskSerializer(task).data)
+
+    @action(detail=True, methods=["post"], url_path="unroute-task")
+    @transaction.atomic
+    def unroute_task(self, request, pk=None):
+        """Take a task off its route entirely, freeing it for the next solve
+        or another manual placement."""
+        plan = self.get_object()
+        task_id = request.data.get("task")
+        if not task_id:
+            raise ValidationError("Provide 'task'.")
+        task = DispatchTask.objects.filter(pk=task_id, plan=plan).first()
+        if task is None:
+            raise ValidationError("That task does not belong to this plan.")
+        override.unroute_task(plan, task)
+        plan.log("manual_move", f"Task {task.pk} taken off its route", {"task": task.pk})
+        return Response(DispatchPlanDetailSerializer(plan).data)
+
+    @action(detail=True, methods=["post"])
+    @transaction.atomic
+    def compare(self, request, pk=None):
+        """Solve the same demand under each named strategy as a scenario
+        child plan, and return a comparison table - see
+        docs/DISPATCH-PLANNER-V2.md §8.2. Never touches the parent plan;
+        `adopt` is the only thing that does."""
+        plan = self.get_object()
+        names = request.data.get("strategies") or []
+        if not names:
+            raise ValidationError("Provide a non-empty 'strategies' list of preset names.")
+        scenarios = []
+        for name in names:
+            try:
+                strategy = resolve_strategy({"strategy": name})
+            except StrategyError as error:
+                raise ValidationError(str(error)) from error
+            child = DispatchPlan.objects.create(
+                branch=plan.branch, plan_date=plan.plan_date, horizon_hours=plan.horizon_hours,
+                parent_plan=plan, is_scenario=True, created_by=request.user.get_username())
+            inputs.collect_tasks(child, filters=plan.collection_filters)
+            inputs.build_plan_vehicles(child)
+            child.status = "ready"
+            child.save(update_fields=["status", "updated_at"])
+            solve_plan(child, strategy)
+            child.refresh_from_db()
+            scenarios.append(child)
+        plan.log("scenario_compared", f"Compared {len(scenarios)} strategy scenario(s)",
+                 {"scenarios": [s.pk for s in scenarios]})
+        return Response({"scenarios": [
+            {"id": s.pk, "code": s.code, "strategy": s.objective.get("preset"), "summary": s.summary}
+            for s in scenarios
+        ]})
+
+    @action(detail=True, methods=["post"])
+    @transaction.atomic
+    def adopt(self, request, pk=None):
+        """Transplant a `compare` scenario's routes, tasks and hire
+        requirements onto this plan - reassigning ownership rather than
+        copying rows, since a copy would leave PlannedStop pointing at a
+        DispatchTask that belongs to a different plan."""
+        _require_commit_permission(request)
+        plan = self.get_object()
+        scenario_id = request.data.get("scenario")
+        if not scenario_id:
+            raise ValidationError("Provide a scenario id.")
+        scenario = DispatchPlan.objects.filter(pk=scenario_id, parent_plan=plan, is_scenario=True).first()
+        if scenario is None:
+            raise ValidationError("That scenario does not belong to this plan.")
+        if plan.status == "committed":
+            raise ValidationError("This plan is already committed.")
+
+        PlannedRoute.objects.filter(plan=plan).delete()
+        HireRequirement.objects.filter(plan=plan, status="open").delete()
+        DispatchTask.objects.filter(plan=plan).delete()
+
+        DispatchTask.objects.filter(plan=scenario).update(plan=plan)
+        PlannedRoute.objects.filter(plan=scenario).update(plan=plan)
+        HireRequirement.objects.filter(plan=scenario).update(plan=plan)
+
+        plan.objective = scenario.objective
+        plan.summary = scenario.summary
+        plan.status = "solved"
+        plan.save(update_fields=["objective", "summary", "status", "updated_at"])
+        DispatchPlan.objects.filter(pk=scenario.pk).update(status="superseded")
+        DispatchPlan.objects.filter(parent_plan=plan, is_scenario=True).exclude(pk=scenario.pk).update(status="superseded")
+        plan.log("scenario_adopted", f"Adopted {scenario.code} ({scenario.objective.get('preset')})", {"scenario": scenario.pk})
+        return Response(DispatchPlanDetailSerializer(plan).data)
 
     @action(detail=True, methods=["get"], url_path="replan-status")
     def replan_status(self, request, pk=None):

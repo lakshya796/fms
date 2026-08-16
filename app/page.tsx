@@ -1969,6 +1969,62 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
     return av > bv ? routeSort.dir : av < bv ? -routeSort.dir : 0;
   });
 
+  const moveTask = async (taskId: number, toRouteId: string) => {
+    if (!selected || !toRouteId) return;
+    setBusy(true);
+    try {
+      await fmsRequest<any>(`dispatch/plans/${selected.id}/move-task/`, { method: "POST", body: JSON.stringify({ task: taskId, to_route: Number(toRouteId) }) });
+      onAction("Task moved to another route");
+      await refreshSelected();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 160) : "Could not move task", "warn");
+    } finally { setBusy(false); }
+  };
+
+  const unrouteTask = async (taskId: number) => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      await fmsRequest<any>(`dispatch/plans/${selected.id}/unroute-task/`, { method: "POST", body: JSON.stringify({ task: taskId }) });
+      onAction("Task taken off its route - available for the next solve");
+      await refreshSelected();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 160) : "Could not unroute task", "warn");
+    } finally { setBusy(false); }
+  };
+
+  const [compareNames, setCompareNames] = useState<string[]>([]);
+  const [scenarios, setScenarios] = useState<any[] | null>(null);
+
+  const toggleCompareName = (name: string) =>
+    setCompareNames(prev => prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]);
+
+  const runCompare = async () => {
+    if (!selected || compareNames.length < 2) return;
+    setBusy(true);
+    try {
+      const payload = await fmsRequest<any>(`dispatch/plans/${selected.id}/compare/`, { method: "POST", body: JSON.stringify({ strategies: compareNames }) });
+      setScenarios(payload.scenarios);
+      onAction(`${payload.scenarios.length} scenario(s) solved for comparison`);
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 200) : "Compare failed", "warn");
+    } finally { setBusy(false); }
+  };
+
+  const adoptScenario = async (scenarioId: number) => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      await fmsRequest<any>(`dispatch/plans/${selected.id}/adopt/`, { method: "POST", body: JSON.stringify({ scenario: scenarioId }) });
+      onAction("Scenario adopted - its routes now belong to this plan");
+      setScenarios(null);
+      await refreshSelected();
+      load();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 200) : "Adopt failed", "warn");
+    } finally { setBusy(false); }
+  };
+
   const assignDriver = async (routeId: number, driverId: string) => {
     if (!driverId) return;
     setBusy(true);
@@ -2107,6 +2163,33 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
         <button className="primary" disabled={busy} onClick={runSolve}>
           Run plan — {strategies.find(s => s.name === strategyName)?.label || "Balanced"}
         </button>
+
+        <div className="compare-panel">
+          <p className="eyebrow">COMPARE STRATEGIES</p>
+          <div className="compare-chips">
+            {strategies.map(s => <label key={s.name} className="compare-chip">
+              <input type="checkbox" checked={compareNames.includes(s.name)} onChange={() => toggleCompareName(s.name)} />
+              <span>{s.label}</span>
+            </label>)}
+          </div>
+          <button className="secondary" disabled={busy || compareNames.length < 2} onClick={runCompare}>
+            Solve {compareNames.length || ""} ways and compare
+          </button>
+
+          {!!scenarios?.length && <div className="table-wrap" style={{ marginTop: 10 }}>
+            <table>
+              <thead><tr><th>Strategy</th><th>Fill rate</th><th>Margin</th><th>Own vs hire</th><th>On-time</th><th></th></tr></thead>
+              <tbody>{scenarios.map(s => <tr key={s.id}>
+                <td>{strategies.find(x => x.name === s.strategy)?.label || s.strategy}</td>
+                <td>{s.summary?.fill_rate_percent}%</td>
+                <td className={Number(s.summary?.total_margin) >= 0 ? "good" : "bad"}>{rupees(s.summary?.total_margin)}</td>
+                <td>{s.summary?.own_vs_hire_percent != null ? `${s.summary.own_vs_hire_percent}% own` : "—"}</td>
+                <td>{s.summary?.projected_on_time_percent != null ? `${s.summary.projected_on_time_percent}%` : "—"}</td>
+                <td><button className="row-action" disabled={busy} onClick={() => adoptScenario(s.id)}>Adopt</button></td>
+              </tr>)}</tbody>
+            </table>
+          </div>}
+        </div>
       </div>}
 
       {!!Object.keys(summary).length && <div className="record-section">
@@ -2201,8 +2284,18 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
             </div>)}
           </div>
 
-          <div style={{ marginTop: 10 }}>
-            {(route.stops || []).map((stop: any) => <span key={stop.id} style={{ marginRight: 8, fontSize: 12 }}>{stop.stop_type === "pickup" ? "▲" : "▼"} {stop.place_name} ({stop.load_after_kg}kg)</span>)}
+          <div className="stop-override-list" style={{ marginTop: 10 }}>
+            {(route.stops || []).map((stop: any) => <div key={stop.id} className="stop-override-row">
+              <span>{stop.stop_type === "pickup" ? "▲" : "▼"} {stop.place_name} ({stop.load_after_kg}kg){stop.order_number ? ` · ${stop.order_number}` : ""}</span>
+              {stop.stop_type === "drop" && stop.task_id && !route.committed_trip && <span className="stop-override-actions">
+                <select defaultValue="" onChange={event => { moveTask(stop.task_id, event.target.value); event.target.value = ""; }}>
+                  <option value="">Move to…</option>
+                  {(selected.routes || []).filter((r: any) => r.id !== route.id).map((r: any) =>
+                    <option key={r.id} value={r.id}>{r.plan_vehicle_detail?.registration_number || "Route #" + r.sequence}</option>)}
+                </select>
+                <button className="row-action" disabled={busy} onClick={() => unrouteTask(stop.task_id)}>Unroute</button>
+              </span>}
+            </div>)}
           </div>
           {!route.plan_vehicle_detail?.driver && !route.committed_trip && <div className="assign-row" style={{ marginTop: 6 }}>
             <select onChange={event => assignDriver(route.id, event.target.value)} defaultValue="">

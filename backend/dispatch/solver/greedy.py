@@ -68,6 +68,10 @@ class Cluster:
         self.revenue_estimate = sum((t.revenue_estimate for t in tasks), Decimal("0"))
         self.must_go = any(t.priority == "must_go" for t in tasks)
         self.needs_cooling = any(t.temperature_class != "dry" for t in tasks)
+        # A dispatcher's manual pin (docs/DISPATCH-PLANNER-V2.md §8.1) - every
+        # pinned task in the cluster has to agree on the vehicle, or the pin
+        # cannot be honoured at all.
+        self.pinned_vehicle_ids = {t.pinned_vehicle_id for t in tasks if t.pinned_vehicle_id}
 
 
 def build_clusters(tasks):
@@ -236,8 +240,23 @@ def solve(plan_vehicles, tasks, strategy=None):
 
     outsourced = []
     for cluster in clusters:
+        if len(cluster.pinned_vehicle_ids) > 1:
+            # Two tasks sharing this pickup are pinned to different vehicles -
+            # no single route can honour both, so neither pin can be kept.
+            if not allow_partial:
+                raise RuntimeError(
+                    f"The load from {cluster.pickup.name} has conflicting vehicle pins, "
+                    f"and allow_partial_service is False.")
+            outsourced.append((cluster, "conflicting vehicle pins"))
+            continue
+
+        eligible_routes = routes
+        if cluster.pinned_vehicle_ids:
+            pinned_id = next(iter(cluster.pinned_vehicle_ids))
+            eligible_routes = [r for r in routes if r.plan_vehicle.vehicle_id == pinned_id]
+
         best_route, best_eval, best_reason = None, None, None
-        for route in routes:
+        for route in eligible_routes:
             evaluation, reason = _evaluate_cluster(route, cluster, strategy)
             if evaluation is None:
                 best_reason = best_reason or reason
@@ -250,11 +269,13 @@ def solve(plan_vehicles, tasks, strategy=None):
                 raise RuntimeError(
                     f"No eligible vehicle for the load from {cluster.pickup.name} "
                     f"({best_reason or 'no eligible vehicle'}), and allow_partial_service is False.")
-            outsourced.append((cluster, best_reason or "no eligible vehicle"))
+            outsourced.append((cluster, best_reason or (
+                "pinned vehicle is not in this plan or cannot take the load" if cluster.pinned_vehicle_ids
+                else "no eligible vehicle")))
             continue
 
         threshold = cluster.outsource_estimate * outsource_bias
-        if cluster.must_go or not threshold or best_eval["cost"] <= threshold:
+        if cluster.must_go or cluster.pinned_vehicle_ids or not threshold or best_eval["cost"] <= threshold:
             _apply(best_route, cluster, best_eval)
         else:
             if not allow_partial:
