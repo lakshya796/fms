@@ -16,6 +16,7 @@ from django.utils import timezone
 
 from . import inputs
 from .engine import solve_plan
+from ..strategies import resolve_strategy
 
 
 @transaction.atomic
@@ -72,6 +73,8 @@ def replan(parent, *, created_by=""):
 
     child.status = "ready"
     child.save(update_fields=["status", "updated_at"])
-    solve_plan(child)
+    # The re-plan keeps the parent's strategy - a dispatcher who chose
+    # own_fleet_first should not have that silently reset to balanced.
+    solve_plan(child, resolve_strategy(parent.objective))
     child.refresh_from_db()
     return child

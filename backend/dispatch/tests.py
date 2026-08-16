@@ -6,6 +6,7 @@ own-vs-outsource), and API-level tests for the collect -> solve -> commit round
 trip that actually lands orders on trips.
 """
 import sys
+from datetime import timedelta
 from decimal import Decimal
 from importlib.util import find_spec
 from unittest import mock, skipUnless
@@ -22,6 +23,7 @@ from .models import CarrierOffer, DispatchPlan, DispatchTask, HireRequirement, P
 from .solver import greedy, inputs, matrix, tracking
 from .solver.engine import solve_plan
 from .solver.replan import replan as replan_plan
+from .strategies import resolve_strategy
 
 
 class BaseDispatchTest(TestCase):
@@ -709,3 +711,280 @@ class OrToolsSolverTests(BaseDispatchTest):
         self.assertIn("tasks", parameters)
         self.assertIn("time_limit_seconds", parameters)
         self.assertIn("horizon_hours", parameters)
+
+    @skipUnless(HAS_ORTOOLS, "ortools is an optional dependency and is not installed")
+    def test_ortools_solver_accepts_a_strategy_keyword(self):
+        # A real SolveWithParameters() call is heavy native code and, per the
+        # class docstring above, deliberately not exercised end-to-end here -
+        # this checks the same wiring greedy.solve already has: the entry
+        # point takes a strategy and does not require one.
+        import inspect
+
+        from dispatch.solver import ortools_solver
+
+        parameters = inspect.signature(ortools_solver.solve).parameters
+        self.assertIn("strategy", parameters)
+        self.assertIsNone(parameters["strategy"].default)
+
+    def test_engine_resolves_a_strategy_before_dispatching_to_either_solver(self):
+        # Cheaper than a real OR-Tools solve: confirm engine.solve_plan hands a
+        # resolved Strategy to whichever solver it calls, by intercepting the
+        # greedy fallback path (ortools imports but is asked to fall back).
+        from dispatch.strategies import Strategy
+
+        self.make_order("ORD-DP-OT-ENGINE", self.dropA, 2000)
+        inputs.collect_tasks(self.plan)
+        inputs.build_plan_vehicles(self.plan)
+        self.plan.status = "ready"
+        self.plan.solver = "ortools"
+        self.plan.save()
+
+        captured = {}
+        real_greedy_solve = greedy.solve
+
+        def spy(plan_vehicles, tasks, strategy=None):
+            captured["strategy"] = strategy
+            return real_greedy_solve(plan_vehicles, tasks, strategy)
+
+        with mock.patch.dict(sys.modules, {"dispatch.solver.ortools_solver": None}), \
+             mock.patch("dispatch.solver.engine.greedy_solve", spy):
+            solve_plan(self.plan, resolve_strategy({"strategy": "own_fleet_first"}))
+
+        self.assertIsInstance(captured["strategy"], Strategy)
+        self.assertEqual(captured["strategy"].preset, "own_fleet_first")
+
+
+class StrategyTests(BaseDispatchTest):
+    """Phase 1 of docs/DISPATCH-PLANNER-V2.md: named planning strategies with
+    tunable weights, threaded through the greedy solver and the solve API."""
+
+    def _plan_vehicle(self, **overrides):
+        defaults = dict(plan=self.plan, vehicle=self.vehicle, source="own",
+                        start_latitude=self.vehicle.current_latitude, start_longitude=self.vehicle.current_longitude,
+                        available_from=timezone.now(), capacity_kg=8000, capacity_cbm=40, temperature_class="dry",
+                        cost_per_km=Decimal("30"), cost_per_hour=Decimal("0"), fixed_cost=Decimal("300"),
+                        max_stops=20, max_route_km=800, max_duty_minutes=600)
+        defaults.update(overrides)
+        return PlanVehicle.objects.create(**defaults)
+
+    def _task(self, dropoff, weight_kg, **overrides):
+        defaults = dict(plan=self.plan, pickup=self.pickup, dropoff=dropoff, weight_kg=weight_kg,
+                        revenue_estimate=Decimal("5000"), outsource_estimate=Decimal("6000"))
+        defaults.update(overrides)
+        return DispatchTask.objects.create(**defaults)
+
+    # -- resolve_strategy -----------------------------------------------
+
+    def test_resolving_no_payload_yields_the_balanced_preset(self):
+        from dispatch.strategies import DEFAULT_WEIGHTS, resolve_strategy
+        strategy = resolve_strategy(None)
+        self.assertEqual(strategy.preset, "balanced")
+        self.assertEqual(strategy.weights, DEFAULT_WEIGHTS)
+
+    def test_resolving_a_preset_expands_its_weight_deltas(self):
+        from dispatch.strategies import resolve_strategy
+        strategy = resolve_strategy({"strategy": "max_utilisation"})
+        self.assertEqual(strategy.weights["outsource_bias"], 3.0)
+        self.assertEqual(strategy.weights["utilisation_bonus"], 40.0)
+        self.assertEqual(strategy.weights["fixed_cost"], 2.0)
+        self.assertEqual(strategy.weights["distance_cost"], 1.0)     # untouched default
+
+    def test_weight_overrides_merge_onto_the_preset_rather_than_replacing_it(self):
+        from dispatch.strategies import resolve_strategy
+        strategy = resolve_strategy({"strategy": "max_utilisation", "weights": {"outsource_bias": 2.5}})
+        self.assertEqual(strategy.weights["outsource_bias"], 2.5)         # overridden
+        self.assertEqual(strategy.weights["utilisation_bonus"], 40.0)     # preset default retained
+
+    def test_unknown_preset_name_raises(self):
+        from dispatch.strategies import StrategyError, resolve_strategy
+        with self.assertRaises(StrategyError):
+            resolve_strategy({"strategy": "warp_speed"})
+
+    def test_unknown_weight_key_raises(self):
+        from dispatch.strategies import StrategyError, resolve_strategy
+        with self.assertRaises(StrategyError):
+            resolve_strategy({"weights": {"not_a_real_weight": 1}})
+
+    def test_invalid_time_windows_value_raises(self):
+        from dispatch.strategies import StrategyError, resolve_strategy
+        with self.assertRaises(StrategyError):
+            resolve_strategy({"constraints": {"time_windows": "flexible"}})
+
+    def test_strategy_catalogue_lists_every_preset_with_its_full_vector(self):
+        from dispatch.strategies import STRATEGY_PRESETS, strategy_catalogue
+        rows = strategy_catalogue()
+        self.assertEqual({row["name"] for row in rows}, set(STRATEGY_PRESETS))
+        max_util = next(row for row in rows if row["name"] == "max_utilisation")
+        self.assertEqual(max_util["weights"]["outsource_bias"], 3.0)
+
+    # -- greedy solver is strategy-aware ----------------------------------
+
+    def test_outsource_bias_changes_the_own_vs_market_decision(self):
+        """The same load: cheaper to buy under balanced, kept in-house under
+        own_fleet_first - the headline behaviour docs/DISPATCH-PLANNER-V2.md §1.1
+        says does not exist today."""
+        from dispatch.strategies import Strategy, resolve_strategy
+
+        # Learn what this cluster costs to run in-house (force it there with an
+        # outsource estimate no real number could beat).
+        probe_pv = self._plan_vehicle()
+        probe_task = self._task(self.dropA, 2000, outsource_estimate=Decimal("999999"))
+        routes, outsourced, skipped = greedy.solve([probe_pv], [probe_task], Strategy())
+        self.assertEqual(outsourced, [])
+        in_house_cost = routes[0].cost
+
+        # Priced just under that in-house cost, "balanced" buys it on the market...
+        balanced_pv = self._plan_vehicle()
+        cheap_task = self._task(self.dropA, 2000, outsource_estimate=in_house_cost - Decimal("1"))
+        routes, outsourced, skipped = greedy.solve([balanced_pv], [cheap_task], Strategy())
+        self.assertEqual(len(outsourced), 1)
+        self.assertFalse(routes[0].used)
+
+        # ...but own_fleet_first keeps it in-house even though the market is
+        # nominally cheaper - the outsource_bias multiplier and fleet discount win.
+        own_first_pv = self._plan_vehicle()
+        same_priced_task = self._task(self.dropA, 2000, outsource_estimate=in_house_cost - Decimal("1"))
+        routes, outsourced, skipped = greedy.solve([own_first_pv], [same_priced_task],
+                                                    resolve_strategy({"strategy": "own_fleet_first"}))
+        self.assertEqual(outsourced, [])
+        self.assertTrue(routes[0].used)
+
+    def test_max_utilisation_fills_one_route_before_starting_a_second(self):
+        """Two clusters, two vehicles, identical geometry - only the fixed-cost
+        weight differs between presets, and that alone flips the routing
+        decision from two routes to one (docs/DISPATCH-PLANNER-V2.md §9)."""
+        from dispatch.strategies import Strategy, resolve_strategy
+
+        p1 = Place.objects.create(name="Strategy P1", code="DPL-SP1", city="P1", service_area=self.area,
+                                  latitude=Decimal("17.000000"), longitude=Decimal("73.000000"))
+        d1 = Place.objects.create(name="Strategy D1", code="DPL-SD1", city="D1", service_area=self.area,
+                                  latitude=Decimal("19.000000"), longitude=Decimal("73.500000"))
+        p2 = Place.objects.create(name="Strategy P2", code="DPL-SP2", city="P2", service_area=self.area,
+                                  latitude=Decimal("19.100000"), longitude=Decimal("73.500000"))
+        d2 = Place.objects.create(name="Strategy D2", code="DPL-SD2", city="D2", service_area=self.area,
+                                  latitude=Decimal("19.100000"), longitude=Decimal("74.000000"))
+
+        def make_pv(start_place):
+            return self._plan_vehicle(start_latitude=start_place.latitude, start_longitude=start_place.longitude)
+
+        def make_task(pickup, dropoff, revenue):
+            return DispatchTask.objects.create(plan=self.plan, pickup=pickup, dropoff=dropoff,
+                                               weight_kg=Decimal("4000"), revenue_estimate=Decimal(str(revenue)),
+                                               outsource_estimate=Decimal("999999"))
+
+        # C1 outweighs C2 on revenue, so it is always evaluated first - both
+        # vehicles start unused, and V1 (at P1) wins it outright regardless of
+        # strategy since V2 (at P2) is ~230km away from P1.
+        t1 = make_task(p1, d1, 10000)
+        t2 = make_task(p2, d2, 100)
+
+        routes, outsourced, skipped = greedy.solve([make_pv(p1), make_pv(p2)], [t1, t2], Strategy())
+        self.assertEqual(outsourced, [])
+        used = [r for r in routes if r.used]
+        self.assertEqual(len(used), 2, "balanced spreads the two clusters across both vehicles")
+
+        strategy = resolve_strategy({"strategy": "max_utilisation"})
+        routes2, outsourced2, skipped2 = greedy.solve([make_pv(p1), make_pv(p2)], [t1, t2], strategy)
+        self.assertEqual(outsourced2, [])
+        used2 = [r for r in routes2 if r.used]
+        self.assertEqual(len(used2), 1, "max_utilisation folds C2 onto V1's route instead of starting V2")
+        self.assertEqual(len(used2[0].stops), 4)
+
+    def test_hard_time_windows_drop_a_task_that_soft_only_penalises(self):
+        from dispatch.strategies import Strategy, resolve_strategy
+
+        soft_pv = self._plan_vehicle()
+        soft_task = self._task(self.dropA, 2000, drop_window_end=timezone.now() - timedelta(days=1))
+        routes, outsourced, skipped = greedy.solve([soft_pv], [soft_task], Strategy())
+        self.assertEqual(outsourced, [])
+        self.assertTrue(routes[0].used)     # served late, penalised, not dropped
+
+        hard_pv = self._plan_vehicle()
+        hard_task = self._task(self.dropA, 2000, drop_window_end=timezone.now() - timedelta(days=1))
+        strategy = resolve_strategy({"constraints": {"time_windows": "hard"}})
+        routes2, outsourced2, skipped2 = greedy.solve([hard_pv], [hard_task], strategy)
+        self.assertEqual(len(outsourced2), 1)
+        self.assertFalse(routes2[0].used)
+
+    def test_allow_partial_service_false_fails_a_load_that_would_be_outsourced(self):
+        from dispatch.strategies import resolve_strategy
+        pv = self._plan_vehicle(capacity_kg=100)   # too small - the load can only be bought on the market
+        task = self._task(self.dropA, 2000, outsource_estimate=Decimal("500"))
+        strategy = resolve_strategy({"constraints": {"allow_partial_service": False}})
+        with self.assertRaises(RuntimeError):
+            greedy.solve([pv], [task], strategy)
+
+    def test_check_constraints_reports_a_breach_without_touching_the_summary(self):
+        from dispatch.strategies import check_constraints, resolve_strategy
+        strategy = resolve_strategy({"constraints": {"max_outsource_percent": 10}})
+        summary = {"total_tasks": 10, "outsourced": 5}
+        breaches = check_constraints(strategy, summary)
+        self.assertEqual(len(breaches), 1)
+        self.assertIn("50.0%", breaches[0])
+
+    # -- API --------------------------------------------------------------
+
+    def test_strategies_endpoint_lists_every_preset(self):
+        from dispatch.strategies import STRATEGY_PRESETS
+        response = self.client.get("/api/v1/dispatch/strategies/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual({row["name"] for row in response.data}, set(STRATEGY_PRESETS))
+
+    def test_solve_endpoint_rejects_an_unknown_strategy(self):
+        self.make_order("ORD-DP-STRAT-BAD", self.dropA, 2000)
+        self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/collect/")
+        response = self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/solve/",
+                                    {"strategy": "warp_speed"}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_solve_endpoint_persists_the_chosen_strategy_on_the_plan(self):
+        self.make_order("ORD-DP-STRAT-OK", self.dropA, 2000)
+        self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/collect/")
+        response = self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/solve/",
+                                    {"strategy": "max_utilisation"}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["objective"]["preset"], "max_utilisation")
+        self.assertEqual(response.data["summary"]["strategy"], "max_utilisation")
+
+    def test_solve_endpoint_marks_the_plan_failed_when_a_hard_constraint_blocks_it(self):
+        self.vehicle.capacity_kg = 100
+        self.vehicle.save()
+        self.make_order("ORD-DP-STRAT-FAIL", self.dropA, 2000)
+        self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/collect/")
+        response = self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/solve/",
+                                    {"constraints": {"allow_partial_service": False}}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.plan.refresh_from_db()
+        self.assertEqual(self.plan.status, "failed")
+
+    def test_max_outsource_percent_is_reported_not_enforced(self):
+        from dispatch.strategies import resolve_strategy
+        self.vehicle.capacity_kg = 100
+        self.vehicle.save()
+        self.make_order("ORD-DP-STRAT-BREACH", self.dropA, 2000)
+        inputs.collect_tasks(self.plan)
+        inputs.build_plan_vehicles(self.plan)
+        self.plan.status = "ready"
+        self.plan.save()
+        solve_plan(self.plan, resolve_strategy({"constraints": {"max_outsource_percent": 10}}))
+        self.plan.refresh_from_db()
+        self.assertEqual(self.plan.status, "solved")
+        self.assertTrue(self.plan.summary["constraint_breaches"])
+
+    def test_replan_keeps_the_parents_strategy(self):
+        from dispatch.strategies import resolve_strategy
+        order = self.make_order("ORD-DP-STRAT-REPLAN", self.dropA, 2000)
+        inputs.collect_tasks(self.plan)
+        inputs.build_plan_vehicles(self.plan)
+        self.plan.status = "ready"
+        self.plan.save()
+        solve_plan(self.plan, resolve_strategy({"strategy": "own_fleet_first"}))
+        self.plan.refresh_from_db()
+        route = self.plan.routes.first()
+        route.plan_vehicle.driver = self.driver
+        route.plan_vehicle.save()
+        self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/commit/")
+
+        self.plan.refresh_from_db()
+        child = replan_plan(self.plan, created_by="dispatcher")
+        self.assertEqual(child.objective["preset"], "own_fleet_first")

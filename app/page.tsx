@@ -1848,6 +1848,11 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
   const [drivers, setDrivers] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
   const [newDate, setNewDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [strategies, setStrategies] = useState<any[]>([]);
+  const [strategyName, setStrategyName] = useState("balanced");
+  const [weightOverrides, setWeightOverrides] = useState<Record<string, number>>({});
+  const [constraintOverrides, setConstraintOverrides] = useState<Record<string, any>>({});
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -1855,6 +1860,7 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
   };
   useEffect(load, []);
   useEffect(() => { fmsRequest<any>(wholeSet("drivers/")).then(payload => setDrivers(asList(payload))).catch(() => undefined); }, []);
+  useEffect(() => { fmsRequest<any>("dispatch/strategies/").then(payload => setStrategies(asList(payload))).catch(() => undefined); }, []);
 
   const openPlan = async (id: number) => {
     const payload = await fmsRequest<any>(`dispatch/plans/${id}/`);
@@ -1885,6 +1891,28 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
       load();
     } catch (e) {
       onAction(e instanceof Error ? e.message.slice(0, 200) : "Action failed", "warn");
+    } finally { setBusy(false); }
+  };
+
+  const pickStrategy = (name: string) => {
+    setStrategyName(name);
+    setWeightOverrides({});
+    setConstraintOverrides({});
+  };
+
+  const runSolve = async () => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      const body: Record<string, unknown> = { strategy: strategyName };
+      if (Object.keys(weightOverrides).length) body.weights = weightOverrides;
+      if (Object.keys(constraintOverrides).length) body.constraints = constraintOverrides;
+      const payload = await fmsRequest<any>(`dispatch/plans/${selected.id}/solve/`, { method: "POST", body: JSON.stringify(body) });
+      onAction(payload.solver_status || "Solved");
+      await refreshSelected();
+      load();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 200) : "Solve failed", "warn");
     } finally { setBusy(false); }
   };
 
@@ -1930,12 +1958,63 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
 
       <div className="record-actions">
         <button className="secondary" disabled={busy || ["committed", "superseded"].includes(selected.status)} onClick={() => runStep("collect", p => `${p.task_count} task(s), ${p.vehicle_count} vehicle(s) collected`)}>Collect demand</button>
-        <button className="secondary" disabled={busy || ["committed", "superseded"].includes(selected.status)} onClick={() => runStep("solve", p => p.solver_status || "Solved")}>Solve</button>
         <button className="primary" disabled={busy || selected.status !== "solved"} onClick={() => runStep("commit", p => `${p.committed_routes?.length || 0} route(s) committed`)}>Commit plan</button>
       </div>
 
+      {!["committed", "superseded"].includes(selected.status) && <div className="record-section strategy-panel">
+        <p className="eyebrow">RUN PLAN</p>
+        <div className="strategy-cards">
+          {(strategies.length ? strategies : [{ name: "balanced", label: "Balanced", description: "Loading strategies…" }]).map(s => (
+            <button key={s.name} type="button" className={"strategy-card" + (strategyName === s.name ? " active" : "")} onClick={() => pickStrategy(s.name)}>
+              <strong>{s.label}</strong>
+              <span>{s.description}</span>
+            </button>
+          ))}
+        </div>
+        <button className="link-toggle" type="button" onClick={() => setShowAdvanced(!showAdvanced)}>
+          {showAdvanced ? "▾ Hide advanced weights" : "▸ Advanced weights & constraints"}
+        </button>
+        {showAdvanced && <div className="strategy-advanced">
+          <div className="strategy-weight-grid">
+            {Object.entries(strategies.find(s => s.name === strategyName)?.weights || {}).map(([key, value]) => (
+              <label key={key}>
+                <span>{key.replace(/_/g, " ")}</span>
+                <input type="number" step="0.1" value={weightOverrides[key] ?? (value as number)}
+                       onChange={event => setWeightOverrides(prev => ({ ...prev, [key]: Number(event.target.value) }))} />
+              </label>
+            ))}
+          </div>
+          <div className="strategy-constraint-grid">
+            <label><span>Max outsource %</span>
+              <input type="number" placeholder="no limit" value={constraintOverrides.max_outsource_percent ?? ""}
+                     onChange={event => setConstraintOverrides(prev => ({ ...prev, max_outsource_percent: event.target.value === "" ? null : Number(event.target.value) }))} />
+            </label>
+            <label><span>Min utilisation %</span>
+              <input type="number" placeholder="no minimum" value={constraintOverrides.min_utilisation_percent ?? ""}
+                     onChange={event => setConstraintOverrides(prev => ({ ...prev, min_utilisation_percent: event.target.value === "" ? null : Number(event.target.value) }))} />
+            </label>
+            <label><span>Delivery windows</span>
+              <select value={constraintOverrides.time_windows ?? (strategies.find(s => s.name === strategyName)?.constraints?.time_windows || "soft")}
+                      onChange={event => setConstraintOverrides(prev => ({ ...prev, time_windows: event.target.value }))}>
+                <option value="soft">Soft — penalise a late arrival</option>
+                <option value="hard">Hard — never plan a late arrival</option>
+              </select>
+            </label>
+            <label className="checkbox-field">
+              <input type="checkbox" checked={constraintOverrides.allow_partial_service ?? true}
+                     onChange={event => setConstraintOverrides(prev => ({ ...prev, allow_partial_service: event.target.checked }))} />
+              <span>Allow partial service — outsource or drop what does not fit rather than fail the solve</span>
+            </label>
+          </div>
+        </div>}
+        <button className="primary" disabled={busy} onClick={runSolve}>
+          Run plan — {strategies.find(s => s.name === strategyName)?.label || "Balanced"}
+        </button>
+      </div>}
+
       {!!Object.keys(summary).length && <div className="record-section">
         <p className="eyebrow">PLAN SUMMARY</p>
+        {summary.strategy && <p className="strategy-chip">Solved with <strong>{strategies.find(s => s.name === summary.strategy)?.label || summary.strategy}</strong></p>}
         <div className="tracking-grid">
           <div><span>Total tasks</span><strong>{summary.total_tasks}</strong></div>
           <div><span>Served (own fleet)</span><strong>{summary.served_own_fleet}</strong></div>
@@ -1948,6 +2027,9 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
           <div><span>Cost</span><strong>{rupees(summary.total_cost)}</strong></div>
           <div><span>Margin</span><strong className={Number(summary.total_margin) >= 0 ? "good" : "bad"}>{rupees(summary.total_margin)}</strong></div>
         </div>
+        {!!(summary.constraint_breaches || []).length && <div className="constraint-breaches">
+          {summary.constraint_breaches.map((breach: string, index: number) => <p key={index} className="breach-line">⚠ {breach}</p>)}
+        </div>}
       </div>}
 
       {!!(selected.routes || []).length && <div className="record-section">

@@ -3,8 +3,9 @@ from uuid import uuid4
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import viewsets
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import ValidationError
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from fleet.models import Order as FleetOrder
@@ -20,6 +21,7 @@ from .serializers import (CarrierOfferSerializer, DispatchPlanDetailSerializer, 
 from .solver import inputs, tracking
 from .solver.engine import solve_plan
 from .solver.replan import replan as replan_plan
+from .strategies import StrategyError, resolve_strategy, strategy_catalogue
 
 
 def _require_commit_permission(request):
@@ -88,11 +90,18 @@ class DispatchPlanViewSet(DispatchViewSet):
 
     @action(detail=True, methods=["post"])
     def solve(self, request, pk=None):
+        """Body may carry `strategy` (a preset name), `weights` and
+        `constraints` overrides (see strategies.py) - all optional, defaulting
+        to the "balanced" preset. See docs/DISPATCH-PLANNER-V2.md §3.3."""
         plan = self.get_object()
         if plan.status not in ("ready", "solved", "failed"):
             raise ValidationError("Collect demand before solving, or this plan is already committed.")
         try:
-            solve_plan(plan)
+            strategy = resolve_strategy(request.data)
+        except StrategyError as error:
+            raise ValidationError(str(error)) from error
+        try:
+            solve_plan(plan, strategy)
         except Exception as error:  # noqa: BLE001 - surfaced to the dispatcher, not swallowed
             plan.status = "failed"
             plan.solver_status = str(error)
@@ -482,3 +491,12 @@ class CarrierOfferViewSet(DispatchViewSet):
         solve_plan(plan)
         plan.refresh_from_db()
         return Response(DispatchPlanDetailSerializer(plan).data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def strategies_view(request):
+    """The preset catalogue with each one's fully expanded weight vector, so
+    the solve panel builds its picker from the server rather than a hardcoded
+    copy. See docs/DISPATCH-PLANNER-V2.md §3.3."""
+    return Response(strategy_catalogue())

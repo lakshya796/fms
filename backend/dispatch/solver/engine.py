@@ -1,6 +1,6 @@
 """Orchestrates one solve: build vehicles, run the greedy construction, persist
 routes/stops, group outsourced clusters into hire requirements, and summarise
-the plan. See docs/DISPATCH-PLANNING.md §5 and §6.
+the plan. See docs/DISPATCH-PLANNING.md §5 and §6, and docs/DISPATCH-PLANNER-V2.md §3.
 """
 import time as _time
 from decimal import Decimal
@@ -13,13 +13,21 @@ from fleet.models import money
 from . import inputs
 from .greedy import solve as greedy_solve
 from ..models import DispatchTask, HireRequirement, PlanEvent, PlannedRoute, PlannedStop, PlanVehicle
+from ..strategies import check_constraints, resolve_strategy
 
 
 @transaction.atomic
-def solve_plan(plan):
+def solve_plan(plan, strategy=None):
+    """`strategy` is a `strategies.Strategy`; when omitted it is resolved from
+    `plan.objective` (falling back to "balanced"), and the resolved vector is
+    always written back to `plan.objective` so the plan stays reproducible -
+    re-opening it later shows exactly what it was solved with."""
     started = _time.monotonic()
     plan.status = "solving"
-    plan.save(update_fields=["status", "updated_at"])
+    if strategy is None:
+        strategy = resolve_strategy(plan.objective)
+    plan.objective = strategy.as_dict()
+    plan.save(update_fields=["status", "objective", "updated_at"])
 
     plan_vehicles = list(PlanVehicle.objects.filter(plan=plan))
     tasks = list(DispatchTask.objects.filter(plan=plan, status="pending").select_related("pickup", "dropoff"))
@@ -30,12 +38,12 @@ def solve_plan(plan):
     if plan.solver == "ortools":
         try:
             from .ortools_solver import solve as ortools_solve
-            routes, outsourced, skipped = ortools_solve(plan_vehicles, tasks, horizon_hours=plan.horizon_hours)
+            routes, outsourced, skipped = ortools_solve(plan_vehicles, tasks, strategy=strategy, horizon_hours=plan.horizon_hours)
         except ImportError:
-            routes, outsourced, skipped = greedy_solve(plan_vehicles, tasks)
+            routes, outsourced, skipped = greedy_solve(plan_vehicles, tasks, strategy)
             plan.solver = "greedy"
     else:
-        routes, outsourced, skipped = greedy_solve(plan_vehicles, tasks)
+        routes, outsourced, skipped = greedy_solve(plan_vehicles, tasks, strategy)
 
     committed_tasks, dropped_tasks = set(), set()
     total_revenue = total_cost = Decimal("0")
@@ -117,7 +125,9 @@ def solve_plan(plan):
         "routes_used": route_count, "total_distance_km": float(sum((r.distance_km for r in routes if r.used), Decimal("0"))),
         "total_revenue": float(money(total_revenue)), "total_cost": float(money(total_cost)),
         "total_margin": float(money(total_revenue - total_cost)),
+        "strategy": strategy.preset,
     }
+    plan.summary["constraint_breaches"] = check_constraints(strategy, plan.summary)
     plan.status = "solved"
     plan.solver_seconds = elapsed
     plan.solver_status = f"{route_count} route(s), {len(dropped_tasks)} outsourced, {len(skipped)} unroutable"
