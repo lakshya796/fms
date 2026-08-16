@@ -623,6 +623,22 @@ const recordForms: Record<string, FormSpec> = {
       { name: "remarks", label: "Remarks", type: "textarea" },
     ],
   },
+  "vendor-lane-rate": {
+    eyebrow: "LANE PRICING", title: "Record a vendor's lane rate", button: "Save lane rate", endpoint: "vendor-lane-rates/",
+    reference: (_values, created) => created ? `${created.origin_city} → ${created.destination_city}` : "Lane rate",
+    fields: [
+      { name: "vendor", label: "Vendor", type: "select", source: "vendors/", required: true },
+      { name: "origin_city", label: "Origin city", required: true },
+      { name: "destination_city", label: "Destination city", required: true },
+      { name: "vehicle_type", label: "Vehicle type (blank = any)" },
+      { name: "temperature_class", label: "Temperature", type: "select", options: [["dry", "Dry"], ["chiller", "Chiller"], ["frozen", "Frozen"], ["multi", "Multi-compartment"]] },
+      { name: "rate", label: "Rate (₹)", type: "number", required: true },
+      { name: "rate_basis", label: "Rate basis", type: "select", options: [["trip", "Per trip"], ["km", "Per km"], ["day", "Per day"], ["ton", "Per ton"], ["other", "Other"]] },
+      { name: "valid_from", label: "Valid from", type: "date" },
+      { name: "valid_until", label: "Valid until", type: "date" },
+      { name: "remarks", label: "Remarks", type: "textarea" },
+    ],
+  },
 };
 
 // Edit reuses the same field spec as creation. A field's current value on the record beats
@@ -2359,7 +2375,7 @@ function HiresView({ reloadKey, onAction, openAction }: { reloadKey: number; onA
   const totalPayable = hires.reduce((sum, hire) => sum + Number(hire.agreed_rate || 0), 0);
 
   return <div className="module-page">
-    <div className="module-title"><div><p className="eyebrow">OUTSIDE-SOURCED CAPACITY</p><h2>Vendor hires</h2><p>The commercial terms agreed with a transport owner for one outside-sourced trip, and its settlement.</p></div><button className="primary module-action" onClick={() => openAction("hire")}>＋ Add hire</button></div>
+    <div className="module-title"><div><p className="eyebrow">OUTSIDE-SOURCED CAPACITY</p><h2>Vendor hires</h2><p>The commercial terms agreed with a transport owner for one outside-sourced trip, and its settlement.</p></div><div className="assign-row"><button className="secondary module-action" onClick={() => openAction("vendor-lane-rate")}>＋ Lane rate</button><button className="primary module-action" onClick={() => openAction("hire")}>＋ Add hire</button></div></div>
     <div className="module-stats">
       <div className="module-stat"><span>Total hires</span><strong>{loading ? "—" : total}</strong><small>Across all statuses</small></div>
       <div className="module-stat"><span>Open</span><strong>{loading ? "—" : pending.length}</strong><small>Not yet settled or cancelled</small></div>
@@ -3075,8 +3091,9 @@ function PlanMap({ routes, unroutedTasks, highlightRoute, onSelectRoute }: {
                              html: `<div class="plan-stop-pin unrouted">${index === 0 ? "▲" : "▼"}</div>` }),
           });
           marker.bindPopup(`<div class="gps-popup"><h4>${escapeHtml(task.order_number || "Unrouted")}</h4>
-            <dl><dt>Status</dt><dd>${escapeHtml(task.status)}</dd>${task.reason ? `<dt>Reason</dt><dd>${escapeHtml(task.reason)}</dd>` : ""}</dl></div>`,
-            { closeButton: false, minWidth: 180 });
+            <dl><dt>Status</dt><dd>${escapeHtml(task.status)}</dd>${task.reason ? `<dt>Reason</dt><dd>${escapeHtml(task.reason)}</dd>` : ""}
+            ${task.outsource_estimate != null ? `<dt>Market est.</dt><dd>₹${escapeHtml(String(task.outsource_estimate))} (${escapeHtml(task.outsource_confidence || "fallback")})</dd>` : ""}</dl></div>`,
+            { closeButton: false, minWidth: 190 });
           marker.addTo(layerGroup.current);
         });
         bounds.push(from, to);

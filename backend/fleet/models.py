@@ -1048,3 +1048,27 @@ class VehicleHire(Timestamped):
 
     def __str__(self):
         return f"Hire {self.vendor.name} for {self.order.number}"
+
+
+class VendorLaneRate(Timestamped):
+    """A vendor's negotiated contract rate for one lane - beats inferred
+    VehicleHire history in the dispatch planner's spot pricing, and narrows
+    which vendors an RFQ fans out to (docs/DISPATCH-PLANNER-V2.md §7.2)."""
+    vendor = models.ForeignKey(Vendor, on_delete=models.CASCADE, related_name="lane_rates")
+    origin_city = models.CharField(max_length=80)
+    destination_city = models.CharField(max_length=80)
+    vehicle_type = models.CharField(max_length=60, blank=True, help_text="Blank matches any vehicle type")
+    temperature_class = models.CharField(max_length=10, choices=VEHICLE_TEMPERATURE_CLASSES, default="dry")
+    rate = models.DecimalField(max_digits=12, decimal_places=2)
+    rate_basis = models.CharField(max_length=10, choices=HIRE_RATE_BASIS, default="trip")
+    valid_from = models.DateField(null=True, blank=True)
+    valid_until = models.DateField(null=True, blank=True)
+    active = models.BooleanField(default=True)
+    remarks = models.CharField(max_length=240, blank=True)
+
+    class Meta:
+        ordering = ["origin_city", "destination_city"]
+        indexes = [models.Index(fields=["origin_city", "destination_city"])]
+
+    def __str__(self):
+        return f"{self.vendor.name}: {self.origin_city} -> {self.destination_city} ({self.rate}/{self.rate_basis})"

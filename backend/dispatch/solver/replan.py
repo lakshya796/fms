@@ -30,6 +30,7 @@ def replan(parent, *, created_by=""):
 
     fresh_tasks = inputs.collect_tasks(child)
     fresh_vehicles = {pv.vehicle_id: pv for pv in inputs.build_plan_vehicles(child) if pv.vehicle_id}
+    inputs.build_spot_slot_vehicles(child)
 
     from ..models import DispatchTask
     carried = []

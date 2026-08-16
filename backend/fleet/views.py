@@ -425,11 +425,13 @@ from rest_framework.exceptions import ValidationError
 from .models import (Vendor, ServiceArea, Zone, Place, Fleet, ServiceRate, ServiceQuote, Order, Waypoint,
                      TrackingActivity, ProofOfDelivery, FuelEntry, TripExpense, Issue, ComplianceDocument,
                      MaintenanceSchedule, VehicleHire, ORDER_STATUSES, haversine_km, money)
+from .models import VendorLaneRate
 from .serializers import (VendorSerializer, ServiceAreaSerializer, ZoneSerializer, PlaceSerializer, FleetSerializer,
                           ServiceRateSerializer, ServiceQuoteSerializer, OrderSerializer, WaypointSerializer,
                           TrackingActivitySerializer, ProofOfDeliverySerializer, PublicOrderTrackingSerializer,
                           FuelEntrySerializer, TripExpenseSerializer, IssueSerializer, ComplianceDocumentSerializer,
-                          MaintenanceScheduleSerializer, VehicleHireSerializer, QuoteRequestSerializer, ProjectionRequestSerializer)
+                          MaintenanceScheduleSerializer, VehicleHireSerializer, VendorLaneRateSerializer,
+                          QuoteRequestSerializer, ProjectionRequestSerializer)
 from .billing import BillingError, build_invoice_from_order, order_pod_state, project_lane
 from .vendor_billing import HireBillingError, confirmation_email, raise_vendor_bill, vendor_payable
 from .allocation import recommend_vehicles
@@ -1051,6 +1053,16 @@ class VehicleHireViewSet(FilterableViewSet):
                                                 reference_id=hire.pk, created_by=request.user.get_username())
         return Response({"message_id": message.pk, "status": message.status, "to": message.to_address,
                          "error": message.error})
+
+
+class VendorLaneRateViewSet(FilterableViewSet):
+    """A vendor's negotiated contract rate for one lane - read by the dispatch
+    planner's lane-level spot pricing and by RFQ fan-out (docs/DISPATCH-PLANNER-V2.md §7.2)."""
+    queryset = VendorLaneRate.objects.select_related("vendor").all()
+    serializer_class = VendorLaneRateSerializer
+    required_permission = "operations.view"; required_write_permission = "operations.manage"
+    filter_fields = ["vendor", "origin_city", "destination_city", "temperature_class", "active"]
+    search_fields = ["origin_city", "destination_city", "vendor__name"]
 
 
 class WaypointViewSet(FilterableViewSet):

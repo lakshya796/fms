@@ -16,11 +16,12 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from fleet.models import Customer, Driver, Indent, Order, Place, ServiceArea, Trip, TripExpense, Vehicle, VehicleHire, Vendor
+from fleet.models import (Customer, Driver, Indent, Order, Place, ServiceArea, Trip, TripExpense, Vehicle, VehicleHire,
+                          Vendor, VendorLaneRate)
 from iam.models import Role, UserProfile
 
 from .models import CarrierOffer, DispatchPlan, DispatchTask, HireRequirement, PlannedRoute, PlannedStop, PlanVehicle
-from .solver import greedy, inputs, matrix, tracking
+from .solver import costing, greedy, inputs, matrix, tracking
 from .solver.engine import solve_plan
 from .solver.replan import replan as replan_plan
 from .strategies import resolve_strategy
@@ -1595,3 +1596,150 @@ class ScenarioComparisonTests(BaseDispatchTest):
         response = self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/adopt/",
                                     {"scenario": scenario.id}, format="json")
         self.assertEqual(response.status_code, 400)
+
+
+class LaneSpotPricingTests(BaseDispatchTest):
+    """Phase 5 of docs/DISPATCH-PLANNER-V2.md: lane-level spot pricing instead
+    of one national rate for every lane, vehicle type and season."""
+
+    def setUp(self):
+        super().setUp()
+        self.vendor = Vendor.objects.create(name="Prime Carriers", code="VEN-PRIME", vendor_type="transporter", status="active")
+        self.pickup.state = "Maharashtra"; self.pickup.save()
+        self.dropA.state = "Maharashtra"; self.dropA.save()
+
+    def _hire(self, pickup, dropoff, rate, **extra):
+        order = Order.objects.create(number=f"ORD-HIRE-{Order.objects.count() + 1}", customer=self.customer,
+                                     pickup=pickup, dropoff=dropoff, weight_kg=5000, status="completed")
+        return VehicleHire.objects.create(order=order, vendor=self.vendor, rate_basis="km",
+                                          agreed_rate=Decimal(str(rate)), status="confirmed", **extra)
+
+    def test_fallback_confidence_when_no_history_or_contract_exists(self):
+        costing.reset_cache()
+        rate, confidence = costing.spot_rate_for_lane(self.pickup, self.dropA)
+        self.assertEqual(confidence, "fallback")
+        self.assertGreater(rate, 0)
+
+    def test_lane_history_beats_the_fallback(self):
+        self._hire(self.pickup, self.dropA, 25)
+        self._hire(self.pickup, self.dropA, 35)
+        costing.reset_cache()
+        rate, confidence = costing.spot_rate_for_lane(self.pickup, self.dropA)
+        self.assertEqual(confidence, "lane")
+        self.assertEqual(rate, Decimal("30.00"))   # median of 25 and 35
+
+    def test_corridor_history_used_when_no_exact_lane_history_exists(self):
+        other_pickup = Place.objects.create(name="Nashik plant", code="DPL-NSK", city="Nashik", state="Maharashtra",
+                                            service_area=self.area, latitude=Decimal("19.997500"), longitude=Decimal("73.789700"))
+        self._hire(other_pickup, self.dropA, 28)
+        costing.reset_cache()
+        rate, confidence = costing.spot_rate_for_lane(self.pickup, self.dropA)
+        self.assertEqual(confidence, "corridor")
+        self.assertEqual(rate, Decimal("28.00"))
+
+    def test_vehicle_type_average_used_when_only_that_history_exists(self):
+        other_pickup = Place.objects.create(name="Delhi hub", code="DPL-DEL", city="Delhi", state="Delhi",
+                                            service_area=self.area, latitude=Decimal("28.644800"), longitude=Decimal("77.216700"))
+        other_dropoff = Place.objects.create(name="Jaipur DC", code="DPL-JAI", city="Jaipur", state="Rajasthan",
+                                             service_area=self.area, latitude=Decimal("26.912400"), longitude=Decimal("75.787300"))
+        self._hire(other_pickup, other_dropoff, 22, outside_vehicle_type="32 ft MXL")
+        costing.reset_cache()
+        rate, confidence = costing.spot_rate_for_lane(self.pickup, self.dropA, vehicle_type="32 ft MXL")
+        self.assertEqual(confidence, "type")
+        self.assertEqual(rate, Decimal("22.00"))
+
+    def test_contract_rate_beats_history(self):
+        self._hire(self.pickup, self.dropA, 25)
+        VendorLaneRate.objects.create(vendor=self.vendor, origin_city=self.pickup.city, destination_city=self.dropA.city,
+                                      rate=Decimal("40"), rate_basis="km", active=True)
+        costing.reset_cache()
+        rate, confidence = costing.spot_rate_for_lane(self.pickup, self.dropA)
+        self.assertEqual(confidence, "contract")
+        self.assertEqual(rate, Decimal("40.00"))
+
+    def test_an_expired_contract_rate_is_ignored(self):
+        VendorLaneRate.objects.create(vendor=self.vendor, origin_city=self.pickup.city, destination_city=self.dropA.city,
+                                      rate=Decimal("999"), rate_basis="km", active=True,
+                                      valid_until=timezone.localdate() - timedelta(days=1))
+        costing.reset_cache()
+        rate, confidence = costing.spot_rate_for_lane(self.pickup, self.dropA)
+        self.assertNotEqual(confidence, "contract")
+
+    def test_a_trip_basis_contract_rate_is_converted_using_distance(self):
+        VendorLaneRate.objects.create(vendor=self.vendor, origin_city=self.pickup.city, destination_city=self.dropA.city,
+                                      rate=Decimal("3000"), rate_basis="trip", active=True)
+        costing.reset_cache()
+        rate, confidence = costing.spot_rate_for_lane(self.pickup, self.dropA, distance_km=Decimal("100"))
+        self.assertEqual(confidence, "contract")
+        self.assertEqual(rate, Decimal("30.00"))
+
+    def test_collect_tasks_records_the_confidence_on_the_task(self):
+        self._hire(self.pickup, self.dropA, 25)
+        self.make_order("ORD-LANE-1", self.dropA, 2000)
+        tasks = inputs.collect_tasks(self.plan)
+        self.assertEqual(tasks[0].outsource_confidence, "lane")
+
+
+class SpotSlotVehicleTests(BaseDispatchTest):
+    """Phase 5: hired capacity as a routable candidate, not just a per-task
+    outsource price - a spot-slot PlanVehicle can carry a multi-drop the same
+    way an own vehicle can."""
+
+    def setUp(self):
+        super().setUp()
+        self.vendor = Vendor.objects.create(name="Prime Carriers", code="VEN-PRIME", vendor_type="transporter", status="active")
+
+    def test_no_spot_slots_without_any_matching_vendor_lane_rate(self):
+        self.make_order("ORD-SS-1", self.dropA, 2000)
+        inputs.collect_tasks(self.plan)
+        self.assertEqual(inputs.build_spot_slot_vehicles(self.plan), [])
+
+    def test_creates_a_plan_vehicle_for_a_matching_active_lane_rate(self):
+        VendorLaneRate.objects.create(vendor=self.vendor, origin_city=self.pickup.city, destination_city=self.dropA.city,
+                                      rate=Decimal("32"), rate_basis="km", active=True)
+        self.make_order("ORD-SS-2", self.dropA, 2000)
+        inputs.collect_tasks(self.plan)
+        slots = inputs.build_spot_slot_vehicles(self.plan)
+        self.assertEqual(len(slots), 1)
+        self.assertEqual(slots[0].source, "spot_slot")
+        self.assertIsNone(slots[0].vehicle_id)
+        self.assertEqual(slots[0].cost_per_km, Decimal("32.00"))
+
+    def test_ignores_a_lane_rate_for_a_pickup_city_with_no_demand_in_this_plan(self):
+        VendorLaneRate.objects.create(vendor=self.vendor, origin_city="Nagpur", destination_city=self.dropA.city,
+                                      rate=Decimal("32"), rate_basis="km", active=True)
+        self.make_order("ORD-SS-3", self.dropA, 2000)
+        inputs.collect_tasks(self.plan)
+        self.assertEqual(inputs.build_spot_slot_vehicles(self.plan), [])
+
+    def test_ignores_an_inactive_rate(self):
+        VendorLaneRate.objects.create(vendor=self.vendor, origin_city=self.pickup.city, destination_city=self.dropA.city,
+                                      rate=Decimal("32"), rate_basis="km", active=False)
+        self.make_order("ORD-SS-4", self.dropA, 2000)
+        inputs.collect_tasks(self.plan)
+        self.assertEqual(inputs.build_spot_slot_vehicles(self.plan), [])
+
+    def test_ignores_an_expired_rate(self):
+        VendorLaneRate.objects.create(vendor=self.vendor, origin_city=self.pickup.city, destination_city=self.dropA.city,
+                                      rate=Decimal("32"), rate_basis="km", active=True,
+                                      valid_until=timezone.localdate() - timedelta(days=1))
+        self.make_order("ORD-SS-5", self.dropA, 2000)
+        inputs.collect_tasks(self.plan)
+        self.assertEqual(inputs.build_spot_slot_vehicles(self.plan), [])
+
+    def test_spot_slot_vehicle_can_be_routed_by_the_solver(self):
+        self.vehicle.status = "under_maintenance"   # no own vehicle can serve this
+        self.vehicle.save()
+        VendorLaneRate.objects.create(vendor=self.vendor, origin_city=self.pickup.city, destination_city=self.dropA.city,
+                                      rate=Decimal("20"), rate_basis="km", active=True)
+        self.make_order("ORD-SS-6", self.dropA, 2000)
+        inputs.collect_tasks(self.plan)
+        inputs.build_plan_vehicles(self.plan)
+        inputs.build_spot_slot_vehicles(self.plan)
+        self.plan.status = "ready"
+        self.plan.save()
+        solve_plan(self.plan)
+        self.plan.refresh_from_db()
+        self.assertEqual(self.plan.summary["served_own_fleet"], 1)
+        route = self.plan.routes.first()
+        self.assertEqual(route.plan_vehicle.source, "spot_slot")

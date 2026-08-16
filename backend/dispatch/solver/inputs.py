@@ -158,6 +158,57 @@ def build_plan_vehicles(plan):
     return created
 
 
+SPOT_SLOT_CAPACITY_KG = Decimal("18000")
+SPOT_SLOT_CAPACITY_CBM = Decimal("60")
+
+
+def build_spot_slot_vehicles(plan):
+    """One virtual, routable `PlanVehicle` (`source="spot_slot"`, no real
+    `fleet.Vehicle` behind it) per active `VendorLaneRate` covering a pickup
+    city this plan actually has demand from.
+
+    Before this, spot capacity was only ever priced as a per-task
+    `outsource_estimate` - a hired truck could be *bought*, never *routed*,
+    so it could not carry a multi-drop the way an own vehicle can. A
+    spot-slot candidate competes in the same clustering pass as everything
+    else; it commits like any other route once a real vendor truck is
+    actually booked against it (`CarrierOfferViewSet.accept`), and is
+    blocked at commit until then, the same as a route with no vehicle
+    assigned at all. See docs/DISPATCH-PLANNER-V2.md §7.3.
+    """
+    from fleet.models import Place, VendorLaneRate
+
+    from ..models import DispatchTask, PlanVehicle
+
+    PlanVehicle.objects.filter(plan=plan, source="spot_slot").delete()
+
+    pickup_cities = set(DispatchTask.objects.filter(plan=plan).exclude(pickup__city="")
+                                            .values_list("pickup__city", flat=True))
+    if not pickup_cities:
+        return []
+
+    today = timezone.localdate()
+    rates = VendorLaneRate.objects.filter(origin_city__in=pickup_cities, active=True) \
+                                  .filter(Q(valid_from__isnull=True) | Q(valid_from__lte=today)) \
+                                  .filter(Q(valid_until__isnull=True) | Q(valid_until__gte=today)) \
+                                  .select_related("vendor")
+
+    created = []
+    for rate in rates:
+        origin_place = Place.objects.filter(city__iexact=rate.origin_city, latitude__isnull=False).first()
+        if origin_place is None:
+            continue
+        cost_per_km = rate.rate if rate.rate_basis == "km" else Decimal("0")
+        fixed_cost = rate.rate if rate.rate_basis in ("trip", "day") else Decimal("0")
+        created.append(PlanVehicle.objects.create(
+            plan=plan, vehicle=None, driver=None, source="spot_slot", vendor=rate.vendor,
+            start_latitude=origin_place.latitude, start_longitude=origin_place.longitude, start_place=origin_place,
+            available_from=timezone.now(), capacity_kg=SPOT_SLOT_CAPACITY_KG, capacity_cbm=SPOT_SLOT_CAPACITY_CBM,
+            temperature_class=rate.temperature_class, cost_per_km=cost_per_km, fixed_cost=fixed_cost,
+            max_stops=20, max_route_km=1500, max_duty_minutes=900))
+    return created
+
+
 def collect_tasks(plan, filters=None):
     """`filters` narrows the demand universe collected onto the plan - see
     docs/DISPATCH-PLANNER-V2.md §4.3. Recognised keys: `customers`,
@@ -209,7 +260,6 @@ def collect_tasks(plan, filters=None):
         if filters.get("include_indents") is False:
             indents = indents.none()
 
-    spot_rate = costing.spot_rate_per_km()
     created = []
     for kind, queryset in (("indent", indents), ("order", orders)):
         for obj in queryset:
@@ -219,7 +269,12 @@ def collect_tasks(plan, filters=None):
                 distance_km, _ = matrix.distance_and_duration(
                     (pickup.latitude, pickup.longitude), (dropoff.latitude, dropoff.longitude))
             revenue = money(getattr(obj, "total_amount", None) or getattr(obj, "expected_rate", None) or 0)
-            outsource = money((distance_km or Decimal("0")) * spot_rate)
+            # Lane-level pricing (docs/DISPATCH-PLANNER-V2.md §7.1) rather than
+            # one flat national rate for every lane, vehicle type and season.
+            vehicle_type = (getattr(obj, "vehicle_type", "") or "")
+            rate_per_km, confidence = costing.spot_rate_for_lane(
+                pickup, dropoff, distance_km=distance_km, vehicle_type=vehicle_type, temperature_class=obj.temperature_class)
+            outsource = money((distance_km or Decimal("0")) * rate_per_km)
             deadline = getattr(obj, "required_at", None) or getattr(obj, "scheduled_at", None)
             pickup_start, pickup_end = _pickup_window(pickup, deadline)
             task_type = "ftl" if getattr(obj, "order_type", "ftl") == "ftl" else "multi_drop_leg"
@@ -228,6 +283,6 @@ def collect_tasks(plan, filters=None):
                 task_type=task_type, pickup=pickup, dropoff=dropoff, weight_kg=obj.weight_kg or 0,
                 volume_cbm=getattr(obj, "volume_cbm", 0) or 0, temperature_class=obj.temperature_class,
                 temp_set_point_c=obj.temp_set_point_c, pickup_window_start=pickup_start, pickup_window_end=pickup_end,
-                revenue_estimate=revenue, outsource_estimate=outsource,
+                revenue_estimate=revenue, outsource_estimate=outsource, outsource_confidence=confidence,
                 drop_window_end=deadline, priority=_priority_from(obj)))
     return created

@@ -75,6 +75,9 @@ TASK_TYPES = [("ftl", "Full truckload"), ("multi_drop_leg", "Multi-drop leg"),
              ("pickup_only", "Pickup only"), ("delivery_only", "Delivery only"), ("reposition", "Repositioning")]
 TEMPERATURE_CLASSES = [("dry", "Dry"), ("chiller", "Chiller"), ("frozen", "Frozen")]
 TASK_PRIORITIES = [("must_go", "Must go - cannot be outsourced away"), ("normal", "Normal"), ("deferrable", "Deferrable")]
+OUTSOURCE_CONFIDENCE = [("contract", "Vendor contract rate"), ("lane", "This lane's own history"),
+                        ("corridor", "Corridor history (state to state)"), ("type", "Vendor's vehicle-type average"),
+                        ("fallback", "National fallback - no history")]
 TASK_STATUSES = [("pending", "Pending"), ("planned", "Planned"), ("outsourced", "Outsourced"),
                  ("dropped", "Dropped"), ("committed", "Committed")]
 
@@ -104,6 +107,8 @@ class DispatchTask(Timestamped):
     revenue_estimate = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     outsource_estimate = models.DecimalField(max_digits=12, decimal_places=2, default=0,
                                              help_text="What the spot market would charge to move this - the disjunction penalty")
+    outsource_confidence = models.CharField(max_length=10, choices=OUTSOURCE_CONFIDENCE, default="fallback",
+                                            help_text="How grounded outsource_estimate is - see solver.costing.spot_rate_for_lane")
     status = models.CharField(max_length=12, choices=TASK_STATUSES, default="pending")
     drop_reason = models.CharField(max_length=240, blank=True)
     pinned_vehicle = models.ForeignKey("fleet.Vehicle", on_delete=models.SET_NULL, null=True, blank=True,

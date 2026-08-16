@@ -86,10 +86,12 @@ class DispatchPlanViewSet(DispatchViewSet):
             raise ValidationError(f"A {plan.status} plan cannot collect new demand.")
         tasks = inputs.collect_tasks(plan, filters=request.data)
         vehicles = inputs.build_plan_vehicles(plan)
+        spot_slots = inputs.build_spot_slot_vehicles(plan)
         plan.status = "ready"
         plan.save(update_fields=["status", "updated_at"])
-        plan.log("collected", f"{len(tasks)} task(s), {len(vehicles)} vehicle(s)")
-        return Response({"plan": DispatchPlanSerializer(plan).data, "task_count": len(tasks), "vehicle_count": len(vehicles)})
+        plan.log("collected", f"{len(tasks)} task(s), {len(vehicles)} vehicle(s), {len(spot_slots)} spot slot(s)")
+        return Response({"plan": DispatchPlanSerializer(plan).data, "task_count": len(tasks),
+                         "vehicle_count": len(vehicles), "spot_slot_count": len(spot_slots)})
 
     @action(detail=True, methods=["post"])
     def solve(self, request, pk=None):
@@ -163,6 +165,8 @@ class DispatchPlanViewSet(DispatchViewSet):
             "dropoff_lng": float(task.dropoff.longitude) if task.dropoff.longitude is not None else None,
             "order_number": getattr(task.order, "number", "") or getattr(task.indent, "number", ""),
             "weight_kg": float(task.weight_kg),
+            "outsource_estimate": float(task.outsource_estimate),
+            "outsource_confidence": task.outsource_confidence,
         } for task in unrouted]
 
         return Response({"routes": route_payload, "unrouted_tasks": unrouted_payload})
@@ -260,6 +264,7 @@ class DispatchPlanViewSet(DispatchViewSet):
                 parent_plan=plan, is_scenario=True, created_by=request.user.get_username())
             inputs.collect_tasks(child, filters=plan.collection_filters)
             inputs.build_plan_vehicles(child)
+            inputs.build_spot_slot_vehicles(child)
             child.status = "ready"
             child.save(update_fields=["status", "updated_at"])
             solve_plan(child, strategy)
