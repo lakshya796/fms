@@ -79,7 +79,64 @@ OUTSOURCE_CONFIDENCE = [("contract", "Vendor contract rate"), ("lane", "This lan
                         ("corridor", "Corridor history (state to state)"), ("type", "Vendor's vehicle-type average"),
                         ("fallback", "National fallback - no history")]
 TASK_STATUSES = [("pending", "Pending"), ("planned", "Planned"), ("outsourced", "Outsourced"),
-                 ("dropped", "Dropped"), ("committed", "Committed")]
+                 ("dropped", "Dropped"), ("deferred", "Deferred to the next plan"),
+                 ("held_for_review", "Held for manual review"), ("committed", "Committed")]
+
+SCENARIO_TYPES = [("milk_run", "Milk run - multi-drop consolidation"), ("long_haul", "Long haul"),
+                  ("reefer", "Reefer - temperature controlled"), ("local_delivery", "Local delivery"),
+                  ("custom", "Custom")]
+SCENARIO_FALLBACK_ACTIONS = [("outsource", "Buy on the spot market"),
+                             ("relax", "Retry once under the fallback profile's own logic"),
+                             ("defer", "Defer to the next plan"), ("hold", "Hold for manual dispatcher review")]
+
+
+class ScenarioProfile(Timestamped):
+    """A named planning profile a dispatcher configures once, that the solver
+    then applies automatically to every cluster it matches - "Reefer" tightens
+    time windows and never buys on the market without a human looking first,
+    "Local Delivery" is cost-driven and always fine to outsource, "Milk Run"
+    rewards consolidating onto one truck, "Long Haul" defers rather than
+    forcing an over-duty route. See docs/SCENARIO-PROFILES.md.
+
+    Matching is independent per cluster (tasks sharing one pickup, see
+    `solver.greedy.Cluster`) within a single solve - a plan is not limited to
+    one scenario type, unlike `DispatchPlan.objective` which is the same
+    strategy for the whole plan. A profile only ever *narrows* the plan's own
+    strategy: its weight/constraint overrides are merged on top, never replace
+    it wholesale (`solver.scenarios.effective_strategy`).
+    """
+    name = models.CharField(max_length=80, unique=True)
+    scenario_type = models.CharField(max_length=20, choices=SCENARIO_TYPES, default="custom")
+    description = models.CharField(max_length=240, blank=True)
+    priority = models.PositiveIntegerField(default=100, help_text="Lower matches first when more than one profile could apply")
+    active = models.BooleanField(default=True)
+
+    # Matching criteria - a cluster matches this profile only when every
+    # criterion actually set here is satisfied; an unset criterion matches
+    # anything (see solver.scenarios._matches).
+    match_temperature_classes = models.JSONField(default=list, blank=True,
+                                                  help_text='e.g. ["chiller","frozen"] - empty matches any temperature')
+    match_min_distance_km = models.DecimalField(max_digits=8, decimal_places=1, null=True, blank=True)
+    match_max_distance_km = models.DecimalField(max_digits=8, decimal_places=1, null=True, blank=True)
+    match_min_drops = models.PositiveIntegerField(null=True, blank=True, help_text="Minimum stops sharing one pickup")
+    match_same_city_only = models.BooleanField(default=False, help_text="Only match when pickup and every drop share a city")
+
+    # Planning logic - layered on top of whatever strategy the plan itself was run with.
+    base_strategy = models.CharField(max_length=20, default="balanced",
+                                     help_text="A preset name from solver.strategies.STRATEGY_PRESETS")
+    weight_overrides = models.JSONField(default=dict, blank=True)
+    constraint_overrides = models.JSONField(default=dict, blank=True)
+
+    # What happens when nothing eligible can take a matched cluster.
+    fallback_action = models.CharField(max_length=10, choices=SCENARIO_FALLBACK_ACTIONS, default="outsource")
+    fallback_profile = models.ForeignKey("self", on_delete=models.SET_NULL, null=True, blank=True, related_name="+",
+                                         help_text='Only used when fallback_action is "relax" - the profile to retry under')
+
+    class Meta:
+        ordering = ["priority", "name"]
+
+    def __str__(self):
+        return self.name
 
 
 class DispatchTask(Timestamped):
@@ -109,12 +166,16 @@ class DispatchTask(Timestamped):
                                              help_text="What the spot market would charge to move this - the disjunction penalty")
     outsource_confidence = models.CharField(max_length=10, choices=OUTSOURCE_CONFIDENCE, default="fallback",
                                             help_text="How grounded outsource_estimate is - see solver.costing.spot_rate_for_lane")
-    status = models.CharField(max_length=12, choices=TASK_STATUSES, default="pending")
+    status = models.CharField(max_length=16, choices=TASK_STATUSES, default="pending")
     drop_reason = models.CharField(max_length=240, blank=True)
     pinned_vehicle = models.ForeignKey("fleet.Vehicle", on_delete=models.SET_NULL, null=True, blank=True,
                                        related_name="pinned_dispatch_tasks",
                                        help_text="A dispatcher-forced vehicle for this task - honoured by the next "
                                                  "solve instead of the solver's own choice (docs/DISPATCH-PLANNER-V2.md §8.1)")
+    matched_scenario = models.ForeignKey(ScenarioProfile, on_delete=models.SET_NULL, null=True, blank=True,
+                                         related_name="matched_tasks",
+                                         help_text="Which scenario profile shaped this task's planning logic, if any - "
+                                                   "set by the solver, see solver.scenarios")
 
     class Meta:
         ordering = ["plan_id", "id"]

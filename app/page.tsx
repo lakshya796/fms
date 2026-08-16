@@ -7,7 +7,7 @@ import { UNAUTHORISED_EVENT, fmsRequest, fmsRequestRaw, login, logout } from "./
 
 const navGroups: { label: string; items: [string, string][] }[] = [
   { label: "WORKSPACE", items: [["Overview", "⌂"], ["Analytics", "◎"]] },
-  { label: "TRANSPORT", items: [["Indents", "◰"], ["Dispatch", "▦"], ["Planning", "⛁"], ["Orders", "◈"], ["Hires", "⚑"], ["ePOD", "✍"], ["Tracking", "⌖"], ["Operations", "▤"]] },
+  { label: "TRANSPORT", items: [["Indents", "◰"], ["Dispatch", "▦"], ["Planning", "⛁"], ["Scenario Profiles", "⚙"], ["Orders", "◈"], ["Hires", "⚑"], ["ePOD", "✍"], ["Tracking", "⌖"], ["Operations", "▤"]] },
   { label: "COMMERCIAL", items: [["Customers", "◇"], ["Sales", "↗"], ["Rates", "⚖"], ["Invoices", "▥"]] },
   { label: "FLEET", items: [["Fleet", "▱"], ["Fleets", "▩"], ["Drivers", "♙"], ["Maintenance", "⚒"], ["Compliance", "▣"], ["Fuel", "⛽"], ["Issues", "⚠"]] },
   { label: "NETWORK", items: [["Vendors", "⌸"], ["Places", "⌂"], ["Service areas", "◫"], ["Zones", "◍"]] },
@@ -2236,6 +2236,8 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
           <div><span>Stops / route</span><strong>{summary.stops_per_route}</strong></div>
           <div><span>Avg route duration</span><strong>{summary.avg_route_duration_hours} h</strong></div>
           <div><span>By temperature</span><strong>{Object.entries(summary.tasks_by_temperature || {}).map(([k, v]) => `${k}:${v}`).join(" · ") || "—"}</strong></div>
+          <div><span>Deferred / Held for review</span><strong>{summary.deferred_count ?? 0} / {summary.held_for_review_count ?? 0}</strong></div>
+          <div><span>By scenario profile</span><strong>{Object.entries(summary.scenario_breakdown || {}).map(([k, v]) => `${k}:${v}`).join(" · ") || "—"}</strong></div>
         </div>
 
         {!!(summary.constraint_breaches || []).length && <div className="constraint-breaches">
@@ -2330,6 +2332,259 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
         </div>)}
       </div>}
     </aside></div>}
+  </div>;
+}
+
+function ScenarioProfilesView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify }) {
+  const [profiles, setProfiles] = useState<any[]>([]);
+  const [strategies, setStrategies] = useState<any[]>([]);
+  const [plans, setPlans] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [previewPlan, setPreviewPlan] = useState("");
+  const [previewResult, setPreviewResult] = useState<any>(null);
+  const [previewBusy, setPreviewBusy] = useState(false);
+
+  const load = () => { setLoading(true); fmsRequest<any>(wholeSet("dispatch/scenario-profiles/")).then(payload => setProfiles(asList(payload))).finally(() => setLoading(false)); };
+  useEffect(load, [reloadKey]);
+  useEffect(() => { fmsRequest<any>("dispatch/strategies/").then(payload => setStrategies(asList(payload))).catch(() => undefined); }, []);
+  useEffect(() => { fmsRequest<any>(wholeSet("dispatch/plans/")).then(payload => setPlans(asList(payload))).catch(() => undefined); }, [reloadKey]);
+
+  const blank = () => ({
+    name: "", scenario_type: "custom", description: "", priority: 100, active: true,
+    match_temperature_classes: [] as string[], match_min_distance_km: "", match_max_distance_km: "",
+    match_min_drops: "", match_same_city_only: false,
+    base_strategy: "balanced", weight_overrides: {} as Record<string, number>, constraint_overrides: {} as Record<string, any>,
+    fallback_action: "outsource", fallback_profile: "",
+  });
+
+  const open = (profile: any | null) => {
+    setError(""); setPreviewResult(null); setPreviewPlan("");
+    setEditing(profile ? {
+      ...profile,
+      match_min_distance_km: profile.match_min_distance_km ?? "", match_max_distance_km: profile.match_max_distance_km ?? "",
+      match_min_drops: profile.match_min_drops ?? "", fallback_profile: profile.fallback_profile ?? "",
+      weight_overrides: profile.weight_overrides || {}, constraint_overrides: profile.constraint_overrides || {},
+      match_temperature_classes: profile.match_temperature_classes || [],
+    } : blank());
+  };
+
+  const setField = (key: string, value: any) => setEditing((prev: any) => ({ ...prev, [key]: value }));
+
+  const toggleTemperature = (cls: string) => setEditing((prev: any) => ({
+    ...prev,
+    match_temperature_classes: prev.match_temperature_classes.includes(cls)
+      ? prev.match_temperature_classes.filter((c: string) => c !== cls)
+      : [...prev.match_temperature_classes, cls],
+  }));
+
+  const setWeightOverride = (key: string, value: string) => setEditing((prev: any) => {
+    const next = { ...prev.weight_overrides };
+    if (value === "") delete next[key]; else next[key] = Number(value);
+    return { ...prev, weight_overrides: next };
+  });
+
+  const setConstraintOverride = (key: string, value: any) => setEditing((prev: any) => {
+    const next = { ...prev.constraint_overrides };
+    if (value === "" || value === null) delete next[key]; else next[key] = value;
+    return { ...prev, constraint_overrides: next };
+  });
+
+  const save = async () => {
+    setBusy(true); setError("");
+    try {
+      const body = {
+        ...editing,
+        match_min_distance_km: editing.match_min_distance_km === "" ? null : Number(editing.match_min_distance_km),
+        match_max_distance_km: editing.match_max_distance_km === "" ? null : Number(editing.match_max_distance_km),
+        match_min_drops: editing.match_min_drops === "" ? null : Number(editing.match_min_drops),
+        fallback_profile: editing.fallback_action === "relax" && editing.fallback_profile ? Number(editing.fallback_profile) : null,
+      };
+      if (editing.id) {
+        await fmsRequest(`dispatch/scenario-profiles/${editing.id}/`, { method: "PATCH", body: JSON.stringify(body) });
+        onAction(`${editing.name} updated`);
+      } else {
+        await fmsRequest("dispatch/scenario-profiles/", { method: "POST", body: JSON.stringify(body) });
+        onAction(`${editing.name} created`);
+      }
+      setEditing(null);
+      load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message.slice(0, 240) : "Could not save this profile");
+    } finally { setBusy(false); }
+  };
+
+  const remove = async (profile: any) => {
+    if (!confirm(`Delete "${profile.name}"? Tasks it already shaped keep their record of it.`)) return;
+    try { await fmsRequest(`dispatch/scenario-profiles/${profile.id}/`, { method: "DELETE" }); onAction(`${profile.name} deleted`); load(); }
+    catch (e) { onAction(e instanceof Error ? e.message.slice(0, 160) : "Could not delete", "warn"); }
+  };
+
+  const runPreview = async () => {
+    if (!editing?.id || !previewPlan) return;
+    setPreviewBusy(true);
+    try {
+      const payload = await fmsRequest<any>(`dispatch/scenario-profiles/${editing.id}/preview/?plan=${previewPlan}`);
+      setPreviewResult(payload);
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 160) : "Preview failed", "warn");
+    } finally { setPreviewBusy(false); }
+  };
+
+  const matchSummary = (profile: any) => {
+    const bits: string[] = [];
+    if ((profile.match_temperature_classes || []).length) bits.push(profile.match_temperature_classes.join("/"));
+    if (profile.match_min_drops) bits.push(`≥${profile.match_min_drops} drops`);
+    if (profile.match_min_distance_km != null) bits.push(`≥${profile.match_min_distance_km}km`);
+    if (profile.match_max_distance_km != null) bits.push(`≤${profile.match_max_distance_km}km`);
+    if (profile.match_same_city_only) bits.push("same city");
+    return bits.length ? bits.join(", ") : "any load";
+  };
+
+  const basePreset = strategies.find(s => s.name === editing?.base_strategy) || strategies.find(s => s.name === "balanced") || { weights: {}, constraints: {} };
+
+  return <div className="module-page">
+    <div className="module-title">
+      <div>
+        <p className="eyebrow">DISPATCH PLANNING</p>
+        <h2>Scenario profiles</h2>
+        <p>Planning and fallback logic per operational pattern — milk run, long haul, reefer, local delivery, or a pattern of your own. The next solve matches these automatically, per pickup, narrowing whatever strategy the plan itself runs under.</p>
+      </div>
+      <button className="primary module-action" onClick={() => open(null)}>＋ New profile</button>
+    </div>
+
+    <section className="module-table-card">
+      <div className="table-wrap"><table>
+        <thead><tr><th>Name</th><th>Type</th><th>Priority</th><th>Matches</th><th>Base strategy</th><th>Fallback</th><th>Status</th><th></th></tr></thead>
+        <tbody>{profiles.map(profile => <tr key={profile.id} className="clickable" onClick={() => open(profile)}>
+          <td><strong>{profile.name}</strong>{profile.description && <small style={{ display: "block", maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis" }}>{profile.description}</small>}</td>
+          <td>{String(profile.scenario_type).replaceAll("_", " ")}</td>
+          <td>{profile.priority}</td>
+          <td>{matchSummary(profile)}</td>
+          <td>{strategies.find(s => s.name === profile.base_strategy)?.label || profile.base_strategy}</td>
+          <td>{profile.fallback_action === "relax" ? `relax → ${profile.fallback_profile_name || "—"}` : profile.fallback_action}</td>
+          <td><span className={"status " + (profile.active ? "active" : "inactive")}>{profile.active ? "active" : "inactive"}</span></td>
+          <td><button className="row-action" onClick={event => { event.stopPropagation(); remove(profile); }}>Delete</button></td>
+        </tr>)}</tbody>
+      </table></div>
+      {!loading && !profiles.length && <div className="data-state">No scenario profiles yet — every load plans under the plan's own strategy alone. Run <code>python manage.py seed_scenario_profiles</code> for starter profiles, or add one.</div>}
+    </section>
+
+    {editing && <div className="modal-backdrop" onMouseDown={() => setEditing(null)}><section className="action-panel" onMouseDown={event => event.stopPropagation()}>
+      <div className="panel-head"><div><p className="eyebrow">{editing.id ? "EDIT PROFILE" : "NEW PROFILE"}</p><h2>{editing.name || "New scenario profile"}</h2></div><button className="panel-close" onClick={() => setEditing(null)}>×</button></div>
+      <div className="action-form">
+        <div className="form-grid">
+          <label>Name<input value={editing.name} onChange={event => setField("name", event.target.value)} placeholder="e.g. Reefer" /></label>
+          <label>Type<select value={editing.scenario_type} onChange={event => setField("scenario_type", event.target.value)}>
+            <option value="milk_run">Milk run</option>
+            <option value="long_haul">Long haul</option>
+            <option value="reefer">Reefer</option>
+            <option value="local_delivery">Local delivery</option>
+            <option value="custom">Custom</option>
+          </select></label>
+          <label>Priority<input type="number" value={editing.priority} onChange={event => setField("priority", Number(event.target.value))} placeholder="100" /></label>
+          <label className="checkbox-field" style={{ marginTop: 22 }}>
+            <input type="checkbox" checked={editing.active} onChange={event => setField("active", event.target.checked)} />
+            <span>Active — matched by the next solve</span>
+          </label>
+        </div>
+        <label>Description<textarea value={editing.description} onChange={event => setField("description", event.target.value)} placeholder="What this profile is for, and why" /></label>
+
+        <p className="eyebrow" style={{ marginTop: 6 }}>MATCHING CRITERIA — every criterion set below must hold; leave blank to match anything</p>
+        <div className="form-grid">
+          <label><span>Temperature class</span>
+            <div className="chip-list">
+              {["dry", "chiller", "frozen"].map(cls => <button type="button" key={cls}
+                  className={editing.match_temperature_classes.includes(cls) ? "chip active" : "chip"}
+                  onClick={() => toggleTemperature(cls)}>{cls}</button>)}
+            </div>
+          </label>
+          <label className="checkbox-field" style={{ marginTop: 22 }}>
+            <input type="checkbox" checked={editing.match_same_city_only} onChange={event => setField("match_same_city_only", event.target.checked)} />
+            <span>Pickup and every drop share a city</span>
+          </label>
+          <label>Min drops on one pickup<input type="number" min={0} value={editing.match_min_drops} onChange={event => setField("match_min_drops", event.target.value)} placeholder="any" /></label>
+          <label>Min distance to furthest drop (km)<input type="number" min={0} value={editing.match_min_distance_km} onChange={event => setField("match_min_distance_km", event.target.value)} placeholder="any" /></label>
+          <label>Max distance to furthest drop (km)<input type="number" min={0} value={editing.match_max_distance_km} onChange={event => setField("match_max_distance_km", event.target.value)} placeholder="any" /></label>
+        </div>
+
+        <p className="eyebrow" style={{ marginTop: 6 }}>PLANNING LOGIC — only the values you set below are merged onto the plan's own strategy for a matched load; everything else still follows whatever strategy the plan is solved with</p>
+        <div className="form-grid">
+          <label>Base strategy (for reference — set the overrides below to actually change behaviour)<select value={editing.base_strategy} onChange={event => setField("base_strategy", event.target.value)}>
+            {(strategies.length ? strategies : [{ name: "balanced", label: "Balanced" }]).map(s => <option key={s.name} value={s.name}>{s.label}</option>)}
+          </select></label>
+        </div>
+        <div className="strategy-weight-grid">
+          {Object.keys(basePreset.weights || {}).map(key => <label key={key}>
+            <span>{key.replace(/_/g, " ")}</span>
+            <input type="number" step="0.1" placeholder={String((basePreset.weights as any)[key])} value={editing.weight_overrides[key] ?? ""}
+                   onChange={event => setWeightOverride(key, event.target.value)} />
+          </label>)}
+        </div>
+        <div className="strategy-constraint-grid">
+          <label><span>Max stops / route</span>
+            <input type="number" placeholder="vehicle default" value={editing.constraint_overrides.max_stops_per_route ?? ""}
+                   onChange={event => setConstraintOverride("max_stops_per_route", event.target.value === "" ? null : Number(event.target.value))} />
+          </label>
+          <label><span>Max route km</span>
+            <input type="number" placeholder="vehicle default" value={editing.constraint_overrides.max_route_km ?? ""}
+                   onChange={event => setConstraintOverride("max_route_km", event.target.value === "" ? null : Number(event.target.value))} />
+          </label>
+          <label><span>Max duty minutes</span>
+            <input type="number" placeholder="vehicle default" value={editing.constraint_overrides.max_duty_minutes ?? ""}
+                   onChange={event => setConstraintOverride("max_duty_minutes", event.target.value === "" ? null : Number(event.target.value))} />
+          </label>
+          <label><span>Delivery windows</span>
+            <select value={editing.constraint_overrides.time_windows ?? ""} onChange={event => setConstraintOverride("time_windows", event.target.value || null)}>
+              <option value="">plan default</option>
+              <option value="soft">Soft — penalise a late arrival</option>
+              <option value="hard">Hard — never plan a late arrival</option>
+            </select>
+          </label>
+        </div>
+
+        <p className="eyebrow" style={{ marginTop: 6 }}>FALLBACK — when a matched load cannot be placed on any route</p>
+        <div className="form-grid">
+          <label>Fallback action<select value={editing.fallback_action} onChange={event => setField("fallback_action", event.target.value)}>
+            <option value="outsource">Buy on the spot market</option>
+            <option value="relax">Retry once under a fallback profile</option>
+            <option value="defer">Defer to the next plan</option>
+            <option value="hold">Hold for manual review</option>
+          </select></label>
+          {editing.fallback_action === "relax" && <label>Fallback profile
+            <select value={editing.fallback_profile} onChange={event => setField("fallback_profile", event.target.value)}>
+              <option value="">Select a profile…</option>
+              {profiles.filter(p => p.id !== editing.id).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </label>}
+        </div>
+
+        {editing.id && <div className="compare-panel">
+          <p className="eyebrow">PREVIEW AGAINST A PLAN</p>
+          <div className="form-grid">
+            <label>Plan<select value={previewPlan} onChange={event => setPreviewPlan(event.target.value)}>
+              <option value="">Select a plan…</option>
+              {plans.map(plan => <option key={plan.id} value={plan.id}>{plan.code} — {plan.plan_date}</option>)}
+            </select></label>
+          </div>
+          <button className="secondary" type="button" disabled={!previewPlan || previewBusy} onClick={runPreview}>
+            {previewBusy ? "Checking…" : "Preview matching loads"}
+          </button>
+          {previewResult && <p style={{ marginTop: 10, fontSize: 11 }}>
+            Matches <strong>{previewResult.matched_clusters}</strong> load(s) on that plan's pending demand — <strong>{previewResult.matched_tasks}</strong> task(s) total.
+            {!!previewResult.sample?.length && <span> E.g. {previewResult.sample.slice(0, 3).map((s: any) => `${s.pickup} (${s.drops} drop${s.drops === 1 ? "" : "s"})`).join(", ")}.</span>}
+          </p>}
+        </div>}
+
+        {error && <div className="form-error">{error}</div>}
+        <div className="form-actions">
+          <button type="button" className="secondary" onClick={() => setEditing(null)}>Cancel</button>
+          <button className="primary" disabled={busy || !editing.name} onClick={save}>{busy ? "Saving…" : editing.id ? "Save changes" : "Create profile"}</button>
+        </div>
+      </div>
+    </section></div>}
   </div>;
 }
 
@@ -4002,7 +4257,7 @@ export default function Home() {
             <div className="section-heading"><div><p className="eyebrow">ACTIVE MOVEMENT</p><h2>Recent trips</h2></div><button className="link-button" onClick={() => show("All trips opened")}>View all trips →</button></div>
             <div className="table-wrap"><table><thead><tr><th>Trip & route</th><th>Vehicle</th><th>Driver</th><th>Status</th><th>ETA / POD</th><th>Revenue</th></tr></thead><tbody>{(dashboard?.recent_trips || []).map((t: any) => <tr key={t.id}><td><strong>{t.number}</strong><small>{t.origin} → {t.destination}</small></td><td>{t.vehicle_number}</td><td>{t.driver_name}</td><td><span className={`status ${t.status.toLowerCase().replaceAll("_","-")}`}>{t.status.replaceAll("_"," ")}</span></td><td>{t.planned_departure ? new Date(t.planned_departure).toLocaleString("en-IN") : "—"}</td><td><strong>₹{Number(t.estimated_cost || 0).toLocaleString("en-IN")}</strong></td></tr>)}</tbody></table></div>
           </section>
-        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Planning" ? <DispatchPlanningView onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Hires" ? <HiresView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Fleet" ? <FleetVehiclesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Tracking" ? <TrackingView reloadKey={dataVersion} onAction={show} /> : active === "Fleets" ? <FleetsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
+        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Planning" ? <DispatchPlanningView onAction={show} /> : active === "Scenario Profiles" ? <ScenarioProfilesView reloadKey={dataVersion} onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Hires" ? <HiresView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Fleet" ? <FleetVehiclesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Tracking" ? <TrackingView reloadKey={dataVersion} onAction={show} /> : active === "Fleets" ? <FleetsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
       </section>
       {action && <ActionPanel type={action} onClose={() => setAction("")} onCreated={() => setDataVersion(v => v + 1)} />}
       {toast && <div className={"toast " + toast.tone}>{toast.tone === "warn" ? "⚠" : "✓"} {toast.text}</div>}

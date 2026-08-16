@@ -1,6 +1,8 @@
 from rest_framework import serializers
 
-from .models import CarrierOffer, DispatchPlan, DispatchTask, HireRequirement, PlanEvent, PlannedRoute, PlannedStop, PlanVehicle
+from .models import (CarrierOffer, DispatchPlan, DispatchTask, HireRequirement, PlanEvent, PlannedRoute, PlannedStop,
+                     PlanVehicle, ScenarioProfile)
+from .strategies import STRATEGY_PRESETS, StrategyError, resolve_strategy
 
 
 class PlanVehicleSerializer(serializers.ModelSerializer):
@@ -10,11 +12,40 @@ class PlanVehicleSerializer(serializers.ModelSerializer):
         model = PlanVehicle; fields = "__all__"
 
 
+class ScenarioProfileSerializer(serializers.ModelSerializer):
+    fallback_profile_name = serializers.CharField(source="fallback_profile.name", read_only=True, default="")
+    matched_task_count = serializers.IntegerField(source="matched_tasks.count", read_only=True)
+    class Meta:
+        model = ScenarioProfile; fields = "__all__"
+
+    def validate_base_strategy(self, value):
+        if value not in STRATEGY_PRESETS:
+            raise serializers.ValidationError(f"Unknown strategy '{value}'. Choose one of: {', '.join(sorted(STRATEGY_PRESETS))}.")
+        return value
+
+    def validate(self, attrs):
+        # Reuse the strategy resolver's own key/type validation rather than
+        # duplicating it - a profile's overrides are checked exactly the way
+        # a solve request's overrides are (strategies.resolve_strategy).
+        weights = attrs.get("weight_overrides", getattr(self.instance, "weight_overrides", {}) or {})
+        constraints = attrs.get("constraint_overrides", getattr(self.instance, "constraint_overrides", {}) or {})
+        try:
+            resolve_strategy({"weights": weights, "constraints": constraints})
+        except StrategyError as error:
+            raise serializers.ValidationError(str(error)) from error
+
+        fallback_profile = attrs.get("fallback_profile", getattr(self.instance, "fallback_profile", None))
+        if fallback_profile is not None and self.instance is not None and fallback_profile.pk == self.instance.pk:
+            raise serializers.ValidationError("A profile cannot be its own fallback.")
+        return attrs
+
+
 class DispatchTaskSerializer(serializers.ModelSerializer):
     pickup_name = serializers.CharField(source="pickup.name", read_only=True, default="")
     dropoff_name = serializers.CharField(source="dropoff.name", read_only=True, default="")
     order_number = serializers.CharField(source="order.number", read_only=True, default="")
     indent_number = serializers.CharField(source="indent.number", read_only=True, default="")
+    matched_scenario_name = serializers.CharField(source="matched_scenario.name", read_only=True, default="")
     class Meta:
         model = DispatchTask; fields = "__all__"
 

@@ -12,6 +12,7 @@ from importlib.util import find_spec
 from unittest import mock, skipUnless
 
 from django.contrib.auth.models import User
+from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -20,8 +21,9 @@ from fleet.models import (Customer, Driver, Indent, Order, Place, ServiceArea, T
                           Vendor, VendorLaneRate)
 from iam.models import Role, UserProfile
 
-from .models import CarrierOffer, DispatchPlan, DispatchTask, HireRequirement, PlannedRoute, PlannedStop, PlanVehicle
-from .solver import costing, greedy, inputs, matrix, tracking
+from .models import (CarrierOffer, DispatchPlan, DispatchTask, HireRequirement, PlannedRoute, PlannedStop, PlanVehicle,
+                     ScenarioProfile)
+from .solver import costing, greedy, inputs, matrix, scenarios, tracking
 from .solver.engine import solve_plan
 from .solver.replan import replan as replan_plan
 from .strategies import resolve_strategy
@@ -748,9 +750,9 @@ class OrToolsSolverTests(BaseDispatchTest):
         captured = {}
         real_greedy_solve = greedy.solve
 
-        def spy(plan_vehicles, tasks, strategy=None):
+        def spy(plan_vehicles, tasks, strategy=None, scenario_profiles=None):
             captured["strategy"] = strategy
-            return real_greedy_solve(plan_vehicles, tasks, strategy)
+            return real_greedy_solve(plan_vehicles, tasks, strategy, scenario_profiles)
 
         with mock.patch.dict(sys.modules, {"dispatch.solver.ortools_solver": None}), \
              mock.patch("dispatch.solver.engine.greedy_solve", spy):
@@ -1743,3 +1745,298 @@ class SpotSlotVehicleTests(BaseDispatchTest):
         self.assertEqual(self.plan.summary["served_own_fleet"], 1)
         route = self.plan.routes.first()
         self.assertEqual(route.plan_vehicle.source, "spot_slot")
+
+
+class ScenarioMatchingTests(BaseDispatchTest):
+    """docs/SCENARIO-PROFILES.md: `Cluster`'s matching inputs and
+    `solver.scenarios`' pure matching/merging functions, independent of the
+    solver loop that calls them."""
+
+    def _task(self, dropoff, weight_kg, **overrides):
+        defaults = dict(plan=self.plan, pickup=self.pickup, dropoff=dropoff, weight_kg=weight_kg,
+                        revenue_estimate=Decimal("5000"), outsource_estimate=Decimal("6000"))
+        defaults.update(overrides)
+        return DispatchTask.objects.create(**defaults)
+
+    def _profile(self, **overrides):
+        defaults = dict(name="Test Profile")
+        defaults.update(overrides)
+        return ScenarioProfile.objects.create(**defaults)
+
+    def test_a_cluster_with_two_tasks_sharing_a_pickup_has_two_drops(self):
+        t1 = self._task(self.dropA, 1000)
+        t2 = self._task(self.dropB, 1000)
+        clusters, skipped = greedy.build_clusters([t1, t2])
+        self.assertEqual(skipped, [])
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(len(clusters[0].tasks), 2)
+
+    def test_cluster_distance_km_is_the_furthest_drop(self):
+        t1 = self._task(self.dropA, 1000)
+        t2 = self._task(self.dropB, 1000)
+        clusters, skipped = greedy.build_clusters([t1, t2])
+        km_a, _ = matrix.distance_and_duration((self.pickup.latitude, self.pickup.longitude),
+                                                (self.dropA.latitude, self.dropA.longitude))
+        km_b, _ = matrix.distance_and_duration((self.pickup.latitude, self.pickup.longitude),
+                                                (self.dropB.latitude, self.dropB.longitude))
+        self.assertEqual(clusters[0].distance_km, max(km_a, km_b))
+
+    def test_same_city_true_only_when_every_drop_matches_the_pickup_city(self):
+        same_city_drop = Place.objects.create(name="Bhiwandi Annex", code="DPL-BHA", city=self.pickup.city,
+                                              service_area=self.area, latitude=Decimal("19.300000"), longitude=Decimal("73.070000"))
+        local_task = self._task(same_city_drop, 1000)
+        local_clusters, _ = greedy.build_clusters([local_task])
+        self.assertTrue(local_clusters[0].same_city)
+
+        distant_task = self._task(self.dropA, 1000)   # Chakan, not Bhiwandi
+        distant_clusters, _ = greedy.build_clusters([distant_task])
+        self.assertFalse(distant_clusters[0].same_city)
+
+    def test_match_profile_respects_priority_order(self):
+        loose = self._profile(name="Loose", priority=50)          # no criteria - matches anything
+        tight = self._profile(name="Tight", priority=10, match_min_drops=2)
+        t1 = self._task(self.dropA, 1000)
+        t2 = self._task(self.dropB, 1000)
+        clusters, _ = greedy.build_clusters([t1, t2])
+        matched = scenarios.match_profile(clusters[0], ScenarioProfile.objects.filter(active=True))
+        self.assertEqual(matched, tight)
+        self.assertNotEqual(matched, loose)
+
+    def test_match_profile_returns_none_when_nothing_matches(self):
+        self._profile(name="Reefer only", match_temperature_classes=["frozen"])
+        task = self._task(self.dropA, 1000, temperature_class="dry")
+        clusters, _ = greedy.build_clusters([task])
+        matched = scenarios.match_profile(clusters[0], ScenarioProfile.objects.filter(active=True))
+        self.assertIsNone(matched)
+
+    def test_effective_strategy_merges_overrides_onto_the_base(self):
+        from dispatch.strategies import Strategy
+        base = Strategy()
+        profile = self._profile(weight_overrides={"outsource_bias": 5.0}, constraint_overrides={"time_windows": "hard"})
+        effective = scenarios.effective_strategy(base, profile)
+        self.assertEqual(effective.weights["outsource_bias"], 5.0)
+        self.assertEqual(effective.weights["distance_cost"], base.weights["distance_cost"])   # untouched
+        self.assertEqual(effective.constraints["time_windows"], "hard")
+
+    def test_effective_strategy_with_no_matched_profile_returns_the_base_unchanged(self):
+        from dispatch.strategies import Strategy
+        base = Strategy()
+        self.assertIs(scenarios.effective_strategy(base, None), base)
+
+
+class ScenarioProfileSolverTests(BaseDispatchTest):
+    """docs/SCENARIO-PROFILES.md: the greedy solver matches a profile per
+    cluster, merges its overrides onto the plan's strategy, and applies its
+    fallback action when the cluster cannot be placed."""
+
+    def _plan_vehicle(self, **overrides):
+        defaults = dict(plan=self.plan, vehicle=self.vehicle, source="own",
+                        start_latitude=self.vehicle.current_latitude, start_longitude=self.vehicle.current_longitude,
+                        available_from=timezone.now(), capacity_kg=8000, capacity_cbm=40, temperature_class="dry",
+                        cost_per_km=Decimal("30"), cost_per_hour=Decimal("0"), fixed_cost=Decimal("300"),
+                        max_stops=20, max_route_km=800, max_duty_minutes=600)
+        defaults.update(overrides)
+        return PlanVehicle.objects.create(**defaults)
+
+    def _task(self, dropoff, weight_kg, **overrides):
+        defaults = dict(plan=self.plan, pickup=self.pickup, dropoff=dropoff, weight_kg=weight_kg,
+                        revenue_estimate=Decimal("5000"), outsource_estimate=Decimal("6000"))
+        defaults.update(overrides)
+        return DispatchTask.objects.create(**defaults)
+
+    def test_a_matched_profile_is_recorded_on_applied_stops(self):
+        profile = ScenarioProfile.objects.create(name="Any Load")   # no criteria - matches everything
+        pv = self._plan_vehicle()
+        task = self._task(self.dropA, 2000)
+        routes, outsourced, skipped = greedy.solve([pv], [task], scenario_profiles=[profile])
+        self.assertEqual(outsourced, [])
+        route = routes[0]
+        self.assertTrue(route.used)
+        drop_stop = next(s for s in route.stops if s["stop_type"] == "drop")
+        self.assertEqual(drop_stop["matched_profile"], profile)
+
+    def test_no_scenario_profiles_leaves_clusters_unmatched(self):
+        pv = self._plan_vehicle()
+        task = self._task(self.dropA, 2000)
+        routes, outsourced, skipped = greedy.solve([pv], [task])
+        self.assertEqual(outsourced, [])
+        drop_stop = next(s for s in routes[0].stops if s["stop_type"] == "drop")
+        self.assertIsNone(drop_stop["matched_profile"])
+
+    def test_hold_fallback_action_holds_instead_of_outsourcing(self):
+        profile = ScenarioProfile.objects.create(name="Reefer", match_temperature_classes=["frozen"], fallback_action="hold")
+        pv = self._plan_vehicle(temperature_class="dry")   # cannot take frozen cargo
+        task = self._task(self.dropA, 500, temperature_class="frozen", outsource_estimate=Decimal("0"))
+        routes, outsourced, skipped = greedy.solve([pv], [task], scenario_profiles=[profile])
+        self.assertEqual(len(outsourced), 1)
+        cluster, reason = outsourced[0]
+        self.assertEqual(cluster.disposition, "held")
+        self.assertEqual(cluster.matched_profile, profile)
+        self.assertEqual(reason, "temperature class mismatch")
+
+    def test_defer_fallback_action_defers_instead_of_outsourcing(self):
+        profile = ScenarioProfile.objects.create(name="Long Haul", match_min_distance_km=Decimal("1"), fallback_action="defer")
+        pv = self._plan_vehicle(capacity_kg=100)   # too small for the task below
+        task = self._task(self.dropA, 2000, outsource_estimate=Decimal("500"))
+        routes, outsourced, skipped = greedy.solve([pv], [task], scenario_profiles=[profile])
+        self.assertEqual(len(outsourced), 1)
+        cluster, reason = outsourced[0]
+        self.assertEqual(cluster.disposition, "deferred")
+
+    def test_hold_fallback_is_allowed_even_when_allow_partial_service_is_false(self):
+        """A hold is a deliberate, visible stop, not a silently lost load - so
+        unlike every other disposition it is let through even when the plan's
+        own strategy refuses to drop anything (docs/SCENARIO-PROFILES.md)."""
+        from dispatch.strategies import resolve_strategy
+        profile = ScenarioProfile.objects.create(name="Reefer", match_temperature_classes=["frozen"], fallback_action="hold")
+        pv = self._plan_vehicle(temperature_class="dry")
+        task = self._task(self.dropA, 500, temperature_class="frozen", outsource_estimate=Decimal("0"))
+        strategy = resolve_strategy({"constraints": {"allow_partial_service": False}})
+        routes, outsourced, skipped = greedy.solve([pv], [task], strategy, scenario_profiles=[profile])
+        self.assertEqual(len(outsourced), 1)
+        self.assertEqual(outsourced[0][0].disposition, "held")
+
+    def test_relax_fallback_retries_under_the_fallback_profile(self):
+        fallback = ScenarioProfile.objects.create(name="Reefer Relaxed")   # no overrides - the vehicle fits fine under this one
+        primary = ScenarioProfile.objects.create(name="Reefer Strict", priority=5,
+                                                 constraint_overrides={"max_route_km": 1},   # infeasible for any real route
+                                                 fallback_action="relax", fallback_profile=fallback)
+        pv = self._plan_vehicle()   # max_route_km=800
+        task = self._task(self.dropA, 2000)
+        routes, outsourced, skipped = greedy.solve([pv], [task], scenario_profiles=[primary, fallback])
+        self.assertEqual(outsourced, [])
+        self.assertTrue(routes[0].used)
+        drop_stop = next(s for s in routes[0].stops if s["stop_type"] == "drop")
+        self.assertEqual(drop_stop["matched_profile"], fallback)
+
+    def test_relax_fallback_without_a_configured_fallback_profile_outsources(self):
+        profile = ScenarioProfile.objects.create(name="Reefer Strict", constraint_overrides={"max_route_km": 1},
+                                                 fallback_action="relax")   # no fallback_profile set
+        pv = self._plan_vehicle()
+        task = self._task(self.dropA, 2000, outsource_estimate=Decimal("1"))
+        routes, outsourced, skipped = greedy.solve([pv], [task], scenario_profiles=[profile])
+        self.assertEqual(len(outsourced), 1)
+        self.assertEqual(outsourced[0][0].disposition, "outsourced")
+
+
+class ScenarioProfileEngineTests(BaseDispatchTest):
+    """docs/SCENARIO-PROFILES.md: `solve_plan` feeds every active scenario
+    profile into the greedy solver and persists what happened on the task and
+    the plan summary."""
+
+    def _solved_plan_with_profile(self, order_number, weight_kg=2000, **profile_overrides):
+        if profile_overrides:
+            ScenarioProfile.objects.create(**profile_overrides)
+        order = self.make_order(order_number, self.dropA, weight_kg)
+        inputs.collect_tasks(self.plan)
+        inputs.build_plan_vehicles(self.plan)
+        self.plan.status = "ready"
+        self.plan.save()
+        solve_plan(self.plan)
+        return order
+
+    def test_matched_scenario_is_recorded_on_a_planned_task(self):
+        order = self._solved_plan_with_profile("ORD-SP-1", name="Any Load")   # matches everything
+        task = DispatchTask.objects.get(order=order)
+        self.assertEqual(task.status, "planned")
+        self.assertEqual(task.matched_scenario.name, "Any Load")
+
+    def test_deferred_disposition_does_not_create_a_hire_requirement(self):
+        self.vehicle.capacity_kg = 100   # too small - forces a fallback
+        self.vehicle.save()
+        order = self._solved_plan_with_profile("ORD-SP-2", name="Always Defer", fallback_action="defer")
+        task = DispatchTask.objects.get(order=order)
+        self.assertEqual(task.status, "deferred")
+        self.assertEqual(HireRequirement.objects.filter(plan=self.plan).count(), 0)
+
+    def test_held_disposition_does_not_create_a_hire_requirement(self):
+        self.vehicle.capacity_kg = 100
+        self.vehicle.save()
+        order = self._solved_plan_with_profile("ORD-SP-3", name="Always Hold", fallback_action="hold")
+        task = DispatchTask.objects.get(order=order)
+        self.assertEqual(task.status, "held_for_review")
+        self.assertEqual(HireRequirement.objects.filter(plan=self.plan).count(), 0)
+
+    def test_plan_summary_includes_disposition_counts_and_scenario_breakdown(self):
+        self._solved_plan_with_profile("ORD-SP-4", name="Any Load")
+        self.plan.refresh_from_db()
+        self.assertEqual(self.plan.summary["outsourced_count"], 0)
+        self.assertEqual(self.plan.summary["deferred_count"], 0)
+        self.assertEqual(self.plan.summary["held_for_review_count"], 0)
+        self.assertEqual(self.plan.summary["scenario_breakdown"], {"Any Load": 1})
+
+    def test_solver_status_reports_deferred_and_held_counts(self):
+        self.vehicle.capacity_kg = 100
+        self.vehicle.save()
+        self._solved_plan_with_profile("ORD-SP-5", name="Always Hold", fallback_action="hold")
+        self.plan.refresh_from_db()
+        self.assertIn("1 held for review", self.plan.solver_status)
+
+    def test_inactive_profile_is_never_matched(self):
+        order = self._solved_plan_with_profile("ORD-SP-6", name="Disabled", active=False)
+        task = DispatchTask.objects.get(order=order)
+        self.assertIsNone(task.matched_scenario)
+
+
+class ScenarioProfileApiTests(BaseDispatchTest):
+    """docs/SCENARIO-PROFILES.md: CRUD, validation that reuses the strategy
+    resolver's own key/type checks, and the preview action a dispatcher uses
+    to sanity-check a profile's criteria against real demand."""
+
+    def test_create_scenario_profile_via_api(self):
+        response = self.client.post("/api/v1/dispatch/scenario-profiles/", {
+            "name": "API Milk Run", "scenario_type": "milk_run", "match_min_drops": 2,
+            "base_strategy": "max_utilisation", "weight_overrides": {"utilisation_bonus": 50.0},
+            "fallback_action": "outsource",
+        }, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertTrue(ScenarioProfile.objects.filter(name="API Milk Run").exists())
+
+    def test_create_rejects_an_unknown_base_strategy(self):
+        response = self.client.post("/api/v1/dispatch/scenario-profiles/", {
+            "name": "Bad Strategy", "base_strategy": "warp_speed",
+        }, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("base_strategy", response.data)
+
+    def test_create_rejects_an_unknown_weight_override_key(self):
+        response = self.client.post("/api/v1/dispatch/scenario-profiles/", {
+            "name": "Bad Weight", "weight_overrides": {"not_a_real_weight": 1},
+        }, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_profile_cannot_be_its_own_fallback(self):
+        profile = ScenarioProfile.objects.create(name="Self Referencing")
+        response = self.client.patch(f"/api/v1/dispatch/scenario-profiles/{profile.id}/", {
+            "fallback_action": "relax", "fallback_profile": profile.id,
+        }, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_preview_action_reports_matching_clusters(self):
+        profile = ScenarioProfile.objects.create(name="Preview Target", match_min_drops=2)
+        self.make_order("ORD-SP-PREVIEW-1", self.dropA, 1000)
+        self.make_order("ORD-SP-PREVIEW-2", self.dropB, 1000)
+        inputs.collect_tasks(self.plan)
+        response = self.client.get(f"/api/v1/dispatch/scenario-profiles/{profile.id}/preview/?plan={self.plan.id}")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["matched_clusters"], 1)
+        self.assertEqual(response.data["matched_tasks"], 2)
+
+    def test_preview_requires_a_plan_query_param(self):
+        profile = ScenarioProfile.objects.create(name="No Plan Given")
+        response = self.client.get(f"/api/v1/dispatch/scenario-profiles/{profile.id}/preview/")
+        self.assertEqual(response.status_code, 400)
+
+
+class ScenarioProfileSeedCommandTests(TestCase):
+    """docs/SCENARIO-PROFILES.md: the four starter profiles a dispatcher can
+    tune from the Scenario Profiles screen, seeded idempotently."""
+
+    def test_seed_command_is_idempotent_and_creates_four_profiles(self):
+        call_command("seed_scenario_profiles")
+        self.assertEqual(ScenarioProfile.objects.count(), 4)
+        self.assertEqual(set(ScenarioProfile.objects.values_list("name", flat=True)),
+                         {"Milk Run", "Long Haul", "Reefer", "Local Delivery"})
+
+        call_command("seed_scenario_profiles")
+        self.assertEqual(ScenarioProfile.objects.count(), 4)

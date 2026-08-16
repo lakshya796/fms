@@ -12,7 +12,7 @@ from fleet.models import money
 
 from . import inputs
 from .greedy import solve as greedy_solve
-from ..models import DispatchTask, HireRequirement, PlanEvent, PlannedRoute, PlannedStop, PlanVehicle
+from ..models import DispatchTask, HireRequirement, PlanEvent, PlannedRoute, PlannedStop, PlanVehicle, ScenarioProfile
 from ..strategies import check_constraints, resolve_strategy
 
 
@@ -31,6 +31,10 @@ def solve_plan(plan, strategy=None):
 
     plan_vehicles = list(PlanVehicle.objects.filter(plan=plan))
     tasks = list(DispatchTask.objects.filter(plan=plan, status="pending").select_related("pickup", "dropoff"))
+    # Scenario profiles (docs/SCENARIO-PROFILES.md) are a greedy-only feature -
+    # OR-Tools' single global objective has no per-cluster hook to apply them
+    # to, so that path keeps running the plan's own strategy uniformly, as before.
+    scenario_profiles = list(ScenarioProfile.objects.filter(active=True))
 
     PlannedRoute.objects.filter(plan=plan).delete()
     HireRequirement.objects.filter(plan=plan, status="open").delete()
@@ -40,10 +44,10 @@ def solve_plan(plan, strategy=None):
             from .ortools_solver import solve as ortools_solve
             routes, outsourced, skipped = ortools_solve(plan_vehicles, tasks, strategy=strategy, horizon_hours=plan.horizon_hours)
         except ImportError:
-            routes, outsourced, skipped = greedy_solve(plan_vehicles, tasks, strategy)
+            routes, outsourced, skipped = greedy_solve(plan_vehicles, tasks, strategy, scenario_profiles)
             plan.solver = "greedy"
     else:
-        routes, outsourced, skipped = greedy_solve(plan_vehicles, tasks, strategy)
+        routes, outsourced, skipped = greedy_solve(plan_vehicles, tasks, strategy, scenario_profiles)
 
     committed_tasks, dropped_tasks = set(), set()
     total_revenue = total_cost = Decimal("0")
@@ -51,7 +55,12 @@ def solve_plan(plan, strategy=None):
     own_fleet_value = Decimal("0")
     route_count = 0
     weight_utils, volume_utils = [], []
+    scenario_counts = {}
     OWN_SOURCES = ("own", "attached", "leased")
+
+    def _tally_scenario(profile):
+        key = profile.name if profile else "none"
+        scenario_counts[key] = scenario_counts.get(key, 0) + 1
 
     for sequence, route in enumerate(routes, start=1):
         if not route.used:
@@ -73,8 +82,10 @@ def solve_plan(plan, strategy=None):
             if task is not None:
                 revenue += task.revenue_estimate or 0
                 task.status = "planned"
-                task.save(update_fields=["status", "updated_at"])
+                task.matched_scenario = stop.get("matched_profile")
+                task.save(update_fields=["status", "matched_scenario", "updated_at"])
                 committed_tasks.add(task.pk)
+                _tally_scenario(task.matched_scenario)
             peak_kg = max(peak_kg, stop["load_kg"])
             peak_cbm = max(peak_cbm, stop["load_cbm"])
             PlannedStop.objects.create(
@@ -104,14 +115,24 @@ def solve_plan(plan, strategy=None):
             own_fleet_value += revenue
 
     # Group outsourced clusters into hire requirements by pickup, so an RFQ goes
-    # out once per lane rather than once per dropped load.
+    # out once per lane rather than once per dropped load. Deferred and
+    # held-for-review clusters (docs/SCENARIO-PROFILES.md) never reach the
+    # market at all, so they are counted but excluded from that grouping.
     by_pickup = {}
+    disposition_status = {"outsourced": "outsourced", "deferred": "deferred", "held": "held_for_review"}
+    disposition_counts = {"outsourced": 0, "deferred": 0, "held": 0}
     for cluster, reason in outsourced:
+        disposition = getattr(cluster, "disposition", "outsourced")
+        disposition_counts[disposition] = disposition_counts.get(disposition, 0) + len(cluster.tasks)
         for task in cluster.tasks:
-            task.status = "outsourced"
+            task.status = disposition_status.get(disposition, "outsourced")
             task.drop_reason = reason
-            task.save(update_fields=["status", "drop_reason", "updated_at"])
+            task.matched_scenario = cluster.matched_profile
+            task.save(update_fields=["status", "drop_reason", "matched_scenario", "updated_at"])
             dropped_tasks.add(task.pk)
+            _tally_scenario(cluster.matched_profile)
+        if disposition != "outsourced":
+            continue
         key = cluster.pickup.pk
         by_pickup.setdefault(key, {"pickup": cluster.pickup, "tasks": [], "cost": Decimal("0")})
         by_pickup[key]["tasks"].extend(cluster.tasks)
@@ -168,11 +189,15 @@ def solve_plan(plan, strategy=None):
         "stops_per_route": float(round(total_stops / route_count, 1)) if route_count else 0.0,
         "avg_route_duration_hours": float(round(total_duration_hours / route_count, 1)) if route_count else 0.0,
         "tasks_by_temperature": tasks_by_temperature,
+        "outsourced_count": disposition_counts["outsourced"], "deferred_count": disposition_counts["deferred"],
+        "held_for_review_count": disposition_counts["held"], "scenario_breakdown": scenario_counts,
     }
     plan.summary["constraint_breaches"] = check_constraints(strategy, plan.summary)
     plan.status = "solved"
     plan.solver_seconds = elapsed
-    plan.solver_status = f"{route_count} route(s), {len(dropped_tasks)} outsourced, {len(skipped)} unroutable"
+    plan.solver_status = (f"{route_count} route(s), {disposition_counts['outsourced']} outsourced, "
+                          f"{disposition_counts['deferred']} deferred, {disposition_counts['held']} held for review, "
+                          f"{len(skipped)} unroutable")
     plan.save(update_fields=["status", "solver_seconds", "solver_status", "summary", "solver", "updated_at"])
     plan.log("solved", plan.solver_status, {"summary": plan.summary})
     return plan

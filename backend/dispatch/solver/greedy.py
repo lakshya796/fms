@@ -20,12 +20,18 @@ cannot be dropped even at a loss.
 longer hardcoded - both read from a `strategies.Strategy` passed into `solve`,
 so "cheapest plan" and "keep my own trucks full" are different runs of the
 same code rather than two different solvers. See docs/DISPATCH-PLANNER-V2.md §3.
+
+**Scenario profiles.** A dispatcher-configured planning profile - milk run,
+long haul, reefer, local delivery, or any custom one - is matched per cluster
+and merges its own weight/constraint overrides on top of the plan's strategy,
+with its own fallback when nothing eligible can take the load. See
+`solver.scenarios` and docs/SCENARIO-PROFILES.md.
 """
 from collections import defaultdict
 from datetime import timedelta
 from decimal import Decimal
 
-from . import matrix
+from . import matrix, scenarios
 
 PRECOOL_MINUTES = 45
 WINDOW_MISS_PENALTY = Decimal("500")  # historical default; strategies.DEFAULT_WEIGHTS carries the real one
@@ -72,6 +78,27 @@ class Cluster:
         # pinned task in the cluster has to agree on the vehicle, or the pin
         # cannot be honoured at all.
         self.pinned_vehicle_ids = {t.pinned_vehicle_id for t in tasks if t.pinned_vehicle_id}
+
+        # Scenario-profile matching inputs (docs/SCENARIO-PROFILES.md) - a
+        # cluster of >1 tasks is, by this module's own clustering rule, a
+        # milk run: several drops consolidated onto one pickup.
+        self.temperature_classes = {t.temperature_class for t in tasks}
+        self.same_city = bool(pickup.city) and all((t.dropoff.city or "") == pickup.city for t in tasks)
+        self.distance_km = None
+        for task in tasks:
+            if task.dropoff.latitude is None:
+                continue
+            km, _ = matrix.distance_and_duration((pickup.latitude, pickup.longitude),
+                                                  (task.dropoff.latitude, task.dropoff.longitude))
+            if km is not None and (self.distance_km is None or km > self.distance_km):
+                self.distance_km = km   # the furthest drop is what characterises "how far this run goes"
+
+        # Filled in by `solve()`, read back by `engine.py` to record which
+        # profile shaped this cluster's tasks and what happened when it
+        # could not be placed. Untouched (None / "outsourced") when no
+        # scenario profiles are configured, so behaviour is unchanged.
+        self.matched_profile = None
+        self.disposition = "outsourced"
 
 
 def build_clusters(tasks):
@@ -213,21 +240,60 @@ def _apply(route, cluster, evaluation):
     route.used = True
 
 
-def solve(plan_vehicles, tasks, strategy=None):
+def _best_route(eligible_routes, cluster, effective):
+    """The cheapest feasible route for `cluster` among `eligible_routes` under
+    `effective`, or (None, None, reason) when nothing fits."""
+    best_route, best_eval, best_reason = None, None, None
+    for route in eligible_routes:
+        evaluation, reason = _evaluate_cluster(route, cluster, effective)
+        if evaluation is None:
+            best_reason = best_reason or reason
+            continue
+        if best_eval is None or evaluation["cost"] < best_eval["cost"]:
+            best_route, best_eval = route, evaluation
+    return best_route, best_eval, best_reason
+
+
+def _dispose(cluster, action, reason, allow_partial, outsourced):
+    """Route a cluster that did not end up on a route to its final resting
+    place: bought on the market, deferred to the next plan, or held for a
+    human to look at - whichever `action` the matched scenario profile (if
+    any) asked for. See docs/SCENARIO-PROFILES.md."""
+    disposition = {"defer": "deferred", "hold": "held"}.get(action, "outsourced")
+    # A hold is itself a deliberate, visible stop - not a silent loss of
+    # demand - so it is allowed even when the plan otherwise refuses to drop
+    # anything; every other disposition still has to honour that refusal.
+    if not allow_partial and disposition != "held":
+        raise RuntimeError(f"The load from {cluster.pickup.name} could not be placed on a route "
+                           f"({reason}), and allow_partial_service is False.")
+    cluster.disposition = disposition
+    outsourced.append((cluster, reason))
+
+
+def solve(plan_vehicles, tasks, strategy=None, scenario_profiles=None):
     """Returns (routes, outsourced, skipped).
 
     `routes` is every `RouteState` touched (used or not - the caller decides
     whether an empty route is worth persisting). `outsourced` is
-    `[(cluster, reason), ...]`. `skipped` is tasks with no usable coordinates,
-    which never reach the clustering stage at all.
+    `[(cluster, reason), ...]` for every cluster that did not end up on a
+    route - `cluster.disposition` (see `_dispose`) says whether that means
+    genuinely outsourced, deferred to the next plan, or held for review.
+    `skipped` is tasks with no usable coordinates, which never reach the
+    clustering stage at all.
 
     `strategy` is a `strategies.Strategy` (see that module); omitting it runs
     the "balanced" preset, matching this function's behaviour before
-    strategies existed.
+    strategies existed. `scenario_profiles` is an iterable of active
+    `ScenarioProfile` rows ordered by priority (see `solver.scenarios`) - each
+    cluster is matched against them independently, so one solve can run a
+    reefer cluster and a local-delivery cluster under different logic at the
+    same time. Omitting it (or passing none) leaves every cluster on the
+    plan's own strategy, unchanged from before scenario profiles existed.
     """
     if strategy is None:
         from ..strategies import Strategy
         strategy = Strategy()
+    scenario_profiles = list(scenario_profiles) if scenario_profiles else []
 
     clusters, skipped = build_clusters(tasks)
     clusters.sort(key=lambda c: (not c.must_go, -float(c.revenue_estimate or 0)))
@@ -235,19 +301,19 @@ def solve(plan_vehicles, tasks, strategy=None):
     candidate_vehicles = [pv for pv in plan_vehicles if not pv.excluded]
     routes = [RouteState(pv) for pv in candidate_vehicles]
 
-    allow_partial = strategy.constraints.get("allow_partial_service", True)
-    outsource_bias = Decimal(str(strategy.weights["outsource_bias"]))
-
     outsourced = []
     for cluster in clusters:
+        profile = scenarios.match_profile(cluster, scenario_profiles) if scenario_profiles else None
+        cluster.matched_profile = profile
+        effective = scenarios.effective_strategy(strategy, profile)
+        allow_partial = effective.constraints.get("allow_partial_service", True)
+        outsource_bias = Decimal(str(effective.weights["outsource_bias"]))
+
         if len(cluster.pinned_vehicle_ids) > 1:
             # Two tasks sharing this pickup are pinned to different vehicles -
             # no single route can honour both, so neither pin can be kept.
-            if not allow_partial:
-                raise RuntimeError(
-                    f"The load from {cluster.pickup.name} has conflicting vehicle pins, "
-                    f"and allow_partial_service is False.")
-            outsourced.append((cluster, "conflicting vehicle pins"))
+            _dispose(cluster, profile.fallback_action if profile else "outsource",
+                    "conflicting vehicle pins", allow_partial, outsourced)
             continue
 
         eligible_routes = routes
@@ -255,33 +321,38 @@ def solve(plan_vehicles, tasks, strategy=None):
             pinned_id = next(iter(cluster.pinned_vehicle_ids))
             eligible_routes = [r for r in routes if r.plan_vehicle.vehicle_id == pinned_id]
 
-        best_route, best_eval, best_reason = None, None, None
-        for route in eligible_routes:
-            evaluation, reason = _evaluate_cluster(route, cluster, strategy)
-            if evaluation is None:
-                best_reason = best_reason or reason
-                continue
-            if best_eval is None or evaluation["cost"] < best_eval["cost"]:
-                best_route, best_eval = route, evaluation
+        best_route, best_eval, best_reason = _best_route(eligible_routes, cluster, effective)
+
+        # A profile configured to "relax" gets one retry under its fallback
+        # profile's own logic before anything is given up on - e.g. Reefer
+        # falling back to a looser reefer profile that tolerates a longer
+        # detour, rather than straight to the spot market.
+        if best_route is None and profile and profile.fallback_action == "relax" and profile.fallback_profile_id:
+            fallback_profile = profile.fallback_profile
+            fallback_effective = scenarios.effective_strategy(strategy, fallback_profile)
+            retried_route, retried_eval, retried_reason = _best_route(eligible_routes, cluster, fallback_effective)
+            if retried_route is not None:
+                best_route, best_eval, best_reason = retried_route, retried_eval, retried_reason
+                profile, effective = fallback_profile, fallback_effective
+                cluster.matched_profile = profile
+                allow_partial = effective.constraints.get("allow_partial_service", True)
+                outsource_bias = Decimal(str(effective.weights["outsource_bias"]))
 
         if best_route is None:
-            if not allow_partial:
-                raise RuntimeError(
-                    f"No eligible vehicle for the load from {cluster.pickup.name} "
-                    f"({best_reason or 'no eligible vehicle'}), and allow_partial_service is False.")
-            outsourced.append((cluster, best_reason or (
+            action = profile.fallback_action if profile else "outsource"
+            reason = best_reason or (
                 "pinned vehicle is not in this plan or cannot take the load" if cluster.pinned_vehicle_ids
-                else "no eligible vehicle")))
+                else "no eligible vehicle")
+            _dispose(cluster, action, reason, allow_partial, outsourced)
             continue
 
         threshold = cluster.outsource_estimate * outsource_bias
         if cluster.must_go or cluster.pinned_vehicle_ids or not threshold or best_eval["cost"] <= threshold:
             _apply(best_route, cluster, best_eval)
+            for stop in best_eval["stop_plan"]:
+                stop["matched_profile"] = profile
         else:
-            if not allow_partial:
-                raise RuntimeError(
-                    f"The load from {cluster.pickup.name} would be outsourced as cheaper, "
-                    f"and allow_partial_service is False.")
-            outsourced.append((cluster, "cheaper on the spot market"))
+            action = profile.fallback_action if profile else "outsource"
+            _dispose(cluster, action, "cheaper on the spot market", allow_partial, outsourced)
 
     return routes, outsourced, skipped

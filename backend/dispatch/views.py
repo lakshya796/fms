@@ -14,10 +14,11 @@ from iam.filtering import apply_filters
 from iam.messaging import send_email
 from iam.permissions import HasModulePermission
 
-from .models import CarrierOffer, DispatchPlan, DispatchTask, HireRequirement, PlanEvent, PlannedRoute, PlannedStop, PlanVehicle
+from .models import (CarrierOffer, DispatchPlan, DispatchTask, HireRequirement, PlanEvent, PlannedRoute, PlannedStop,
+                     PlanVehicle, ScenarioProfile)
 from .serializers import (CarrierOfferSerializer, DispatchPlanDetailSerializer, DispatchPlanSerializer,
                           DispatchTaskSerializer, HireRequirementSerializer, PlanEventSerializer,
-                          PlannedRouteSerializer, PlannedStopSerializer, PlanVehicleSerializer)
+                          PlannedRouteSerializer, PlannedStopSerializer, PlanVehicleSerializer, ScenarioProfileSerializer)
 from .solver import inputs, override, tracking
 from .solver.engine import solve_plan
 from .solver.replan import replan as replan_plan
@@ -522,10 +523,41 @@ class PlanVehicleViewSet(DispatchViewSet):
 
 
 class DispatchTaskViewSet(DispatchViewSet):
-    queryset = DispatchTask.objects.select_related("plan", "pickup", "dropoff", "order", "indent").all()
+    queryset = DispatchTask.objects.select_related("plan", "pickup", "dropoff", "order", "indent", "matched_scenario").all()
     serializer_class = DispatchTaskSerializer
-    filter_fields = ["plan", "status", "priority", "temperature_class"]
+    filter_fields = ["plan", "status", "priority", "temperature_class", "matched_scenario"]
     http_method_names = ["get", "head", "options"]
+
+
+class ScenarioProfileViewSet(DispatchViewSet):
+    """Dispatcher-configured planning + fallback logic per operational
+    pattern - milk run, long haul, reefer, local delivery, or any custom
+    profile. See docs/SCENARIO-PROFILES.md and `solver.scenarios`."""
+    queryset = ScenarioProfile.objects.select_related("fallback_profile").all()
+    serializer_class = ScenarioProfileSerializer
+    filter_fields = ["scenario_type", "active"]
+    search_fields = ["name", "description"]
+
+    @action(detail=True, methods=["get"])
+    def preview(self, request, pk=None):
+        """Which of a plan's currently pending tasks this profile would match
+        on the next solve - so a dispatcher can sanity-check a profile's
+        criteria against real demand before relying on it."""
+        profile = self.get_object()
+        plan_id = request.query_params.get("plan")
+        if not plan_id:
+            raise ValidationError("Provide ?plan=<id>.")
+        from .solver import scenarios as scenarios_module
+        from .solver.greedy import build_clusters
+        tasks = list(DispatchTask.objects.filter(plan_id=plan_id, status="pending").select_related("pickup", "dropoff"))
+        clusters, _ = build_clusters(tasks)
+        matched = [c for c in clusters if scenarios_module.match_profile(c, [profile]) is not None]
+        return Response({
+            "matched_clusters": len(matched), "matched_tasks": sum(len(c.tasks) for c in matched),
+            "sample": [{"pickup": c.pickup.name, "drops": len(c.tasks),
+                       "distance_km": float(c.distance_km) if c.distance_km is not None else None}
+                      for c in matched[:10]],
+        })
 
 
 class HireRequirementViewSet(DispatchViewSet):
