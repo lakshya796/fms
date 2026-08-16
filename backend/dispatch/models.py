@@ -37,6 +37,9 @@ class DispatchPlan(Timestamped):
     horizon_hours = models.PositiveIntegerField(default=24)
     status = models.CharField(max_length=12, choices=PLAN_STATUSES, default="draft")
     objective = models.JSONField(default=dict, blank=True, help_text="Cost/service weight overrides for the solver")
+    collection_filters = models.JSONField(default=dict, blank=True,
+                                          help_text="What universe of demand `collect` pulled in - customers, "
+                                                    "places, temperature class, a date window or explicit order ids")
     solver = models.CharField(max_length=10, choices=SOLVERS, default="greedy")
     solver_seconds = models.DecimalField(max_digits=8, decimal_places=2, default=0)
     solver_status = models.CharField(max_length=40, blank=True)

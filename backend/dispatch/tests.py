@@ -16,7 +16,7 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from fleet.models import Customer, Driver, Order, Place, ServiceArea, Trip, TripExpense, Vehicle, VehicleHire, Vendor
+from fleet.models import Customer, Driver, Indent, Order, Place, ServiceArea, Trip, TripExpense, Vehicle, VehicleHire, Vendor
 from iam.models import Role, UserProfile
 
 from .models import CarrierOffer, DispatchPlan, DispatchTask, HireRequirement, PlannedRoute, PlannedStop, PlanVehicle
@@ -988,3 +988,180 @@ class StrategyTests(BaseDispatchTest):
         self.plan.refresh_from_db()
         child = replan_plan(self.plan, created_by="dispatcher")
         self.assertEqual(child.objective["preset"], "own_fleet_first")
+
+
+class DemandCollectionTests(BaseDispatchTest):
+    """Phase 2 of docs/DISPATCH-PLANNER-V2.md: collect_tasks reads what the
+    order/indent actually recorded - temperature, priority, task type, pickup
+    window - instead of hardcoding dry/ftl/normal/no-window on every task."""
+
+    def test_temperature_class_is_read_from_the_order_not_hardcoded(self):
+        self.make_order("ORD-DC-1", self.dropA, 2000, temperature_class="frozen", temp_set_point_c=Decimal("-18.0"))
+        tasks = inputs.collect_tasks(self.plan)
+        self.assertEqual(tasks[0].temperature_class, "frozen")
+        self.assertEqual(tasks[0].temp_set_point_c, Decimal("-18.0"))
+
+    def test_a_frozen_order_is_never_routed_onto_a_dry_vehicle(self):
+        # self.vehicle defaults temperature_class="dry" - this is the exact
+        # defect docs/DISPATCH-PLANNER-V2.md §1.2 (D2) describes.
+        order = self.make_order("ORD-DC-2", self.dropA, 2000, temperature_class="frozen")
+        inputs.collect_tasks(self.plan)
+        inputs.build_plan_vehicles(self.plan)
+        self.plan.status = "ready"
+        self.plan.save()
+        solve_plan(self.plan)
+        self.plan.refresh_from_db()
+        self.assertEqual(HireRequirement.objects.filter(plan=self.plan).count(), 1)
+        task = DispatchTask.objects.get(plan=self.plan, order=order)
+        self.assertEqual(task.status, "outsourced")
+
+    def test_a_frozen_order_is_routed_onto_a_frozen_vehicle_when_one_exists(self):
+        self.vehicle.temperature_class = "frozen"
+        self.vehicle.save()
+        self.make_order("ORD-DC-3", self.dropA, 2000, temperature_class="frozen")
+        inputs.collect_tasks(self.plan)
+        inputs.build_plan_vehicles(self.plan)
+        self.plan.status = "ready"
+        self.plan.save()
+        solve_plan(self.plan)
+        self.plan.refresh_from_db()
+        self.assertEqual(self.plan.summary["served_own_fleet"], 1)
+
+    def test_order_type_maps_to_task_type(self):
+        self.make_order("ORD-DC-4", self.dropA, 2000, order_type="ftl")
+        self.make_order("ORD-DC-5", self.dropB, 1000, order_type="ptl")
+        tasks = {t.order.number: t for t in inputs.collect_tasks(self.plan)}
+        self.assertEqual(tasks["ORD-DC-4"].task_type, "ftl")
+        self.assertEqual(tasks["ORD-DC-5"].task_type, "multi_drop_leg")
+
+    def test_an_indent_with_no_order_type_defaults_to_ftl(self):
+        Indent.objects.create(number="IND-DC-1", customer=self.customer, pickup=self.pickup,
+                              dropoff=self.dropA, weight_kg=Decimal("2000"))
+        tasks = inputs.collect_tasks(self.plan)
+        self.assertEqual(tasks[0].task_type, "ftl")
+
+    def test_priority_maps_urgent_to_must_go_and_low_to_deferrable(self):
+        self.make_order("ORD-DC-6", self.dropA, 2000, priority="urgent")
+        self.make_order("ORD-DC-7", self.dropB, 1000, priority="low")
+        tasks = {t.order.number: t for t in inputs.collect_tasks(self.plan)}
+        self.assertEqual(tasks["ORD-DC-6"].priority, "must_go")
+        self.assertEqual(tasks["ORD-DC-7"].priority, "deferrable")
+
+    def test_an_overdue_order_becomes_must_go_even_without_an_explicit_priority(self):
+        self.make_order("ORD-DC-8", self.dropA, 2000, scheduled_at=timezone.now() - timedelta(days=1))
+        tasks = inputs.collect_tasks(self.plan)
+        self.assertEqual(tasks[0].priority, "must_go")
+
+    def test_pickup_window_is_derived_from_the_places_loading_hours(self):
+        from dispatch.solver.inputs import _pickup_window
+        self.pickup.loading_hours = "09:00-18:00"
+        self.pickup.save()
+        deadline = timezone.now() + timedelta(days=1)
+        self.make_order("ORD-DC-9", self.dropA, 2000, scheduled_at=deadline)
+        expected_start, expected_end = _pickup_window(self.pickup, deadline)
+        tasks = inputs.collect_tasks(self.plan)
+        self.assertEqual(tasks[0].pickup_window_start, expected_start)
+        self.assertEqual(tasks[0].pickup_window_end, expected_end)
+        self.assertIsNotNone(expected_start)
+
+    def test_an_unparsable_loading_hours_value_degrades_to_no_window(self):
+        self.pickup.loading_hours = "business hours"
+        self.pickup.save()
+        self.make_order("ORD-DC-10", self.dropA, 2000)
+        tasks = inputs.collect_tasks(self.plan)
+        self.assertIsNone(tasks[0].pickup_window_start)
+
+    def test_a_blank_loading_hours_value_is_no_window(self):
+        self.assertEqual(self.pickup.loading_hours, "")
+        self.make_order("ORD-DC-10B", self.dropA, 2000)
+        tasks = inputs.collect_tasks(self.plan)
+        self.assertIsNone(tasks[0].pickup_window_start)
+        self.assertIsNone(tasks[0].pickup_window_end)
+
+    def test_a_plant_that_opens_late_makes_the_vehicle_wait_not_load_early(self):
+        from dispatch.solver.inputs import _pickup_window
+        self.pickup.loading_hours = "09:00-18:00"
+        self.pickup.save()
+        deadline = timezone.now() + timedelta(days=1)
+        self.make_order("ORD-DC-11", self.dropA, 2000, scheduled_at=deadline)
+        expected_start, _ = _pickup_window(self.pickup, deadline)
+        inputs.collect_tasks(self.plan)
+        inputs.build_plan_vehicles(self.plan)
+        self.plan.status = "ready"
+        self.plan.save()
+        solve_plan(self.plan)
+        self.plan.refresh_from_db()
+        route = self.plan.routes.first()
+        self.assertGreater(route.wait_minutes, 0)
+        pickup_stop = route.stops.filter(stop_type="pickup").first()
+        self.assertEqual(pickup_stop.planned_arrival, expected_start)
+        self.assertEqual(pickup_stop.wait_minutes, route.wait_minutes)
+
+    def test_hard_windows_reject_a_load_whose_pickup_window_has_already_closed(self):
+        from dispatch.strategies import resolve_strategy
+        self.pickup.loading_hours = "09:00-18:00"
+        self.pickup.save()
+        # A deadline anchored to a day whose loading window is already long past.
+        deadline = timezone.now() - timedelta(days=10)
+        order = self.make_order("ORD-DC-12", self.dropA, 2000, scheduled_at=deadline)
+        inputs.collect_tasks(self.plan)
+        inputs.build_plan_vehicles(self.plan)
+        self.plan.status = "ready"
+        self.plan.save()
+        solve_plan(self.plan, resolve_strategy({"constraints": {"time_windows": "hard"}}))
+        self.plan.refresh_from_db()
+        task = DispatchTask.objects.get(plan=self.plan, order=order)
+        self.assertIn(task.status, ("outsourced", "dropped"))
+
+    # -- collection filters -------------------------------------------------
+
+    def test_collect_filters_by_customer(self):
+        other = Customer.objects.create(name="Other Co", gstin="27AAACT2727Q1ZX")
+        self.make_order("ORD-DC-F1", self.dropA, 2000)
+        Order.objects.create(number="ORD-DC-F2", customer=other, pickup=self.pickup, dropoff=self.dropA,
+                             weight_kg=1000, status="created")
+        tasks = inputs.collect_tasks(self.plan, filters={"customers": [self.customer.id]})
+        self.assertEqual({t.order.number for t in tasks}, {"ORD-DC-F1"})
+
+    def test_collect_filters_by_temperature_class(self):
+        self.make_order("ORD-DC-F3", self.dropA, 2000, temperature_class="dry")
+        self.make_order("ORD-DC-F4", self.dropB, 1000, temperature_class="frozen")
+        tasks = inputs.collect_tasks(self.plan, filters={"temperature_class": "frozen"})
+        self.assertEqual({t.order.number for t in tasks}, {"ORD-DC-F4"})
+
+    def test_collect_filters_by_pickup_place(self):
+        third = Place.objects.create(name="Other pickup", code="DPL-OTHER", city="Nashik", service_area=self.area,
+                                     latitude=Decimal("19.997500"), longitude=Decimal("73.789700"))
+        self.make_order("ORD-DC-F5A", self.dropA, 2000)
+        Order.objects.create(number="ORD-DC-F5B", customer=self.customer, pickup=third, dropoff=self.dropA,
+                             weight_kg=1000, status="created")
+        tasks = inputs.collect_tasks(self.plan, filters={"pickup_places": [self.pickup.id]})
+        self.assertEqual({t.order.number for t in tasks}, {"ORD-DC-F5A"})
+
+    def test_explicit_order_ids_overrides_every_other_filter_and_excludes_indents(self):
+        order = self.make_order("ORD-DC-F6", self.dropA, 2000)
+        self.make_order("ORD-DC-F7", self.dropB, 1000)
+        Indent.objects.create(number="IND-DC-F1", customer=self.customer, pickup=self.pickup, dropoff=self.dropA,
+                              weight_kg=Decimal("500"))
+        tasks = inputs.collect_tasks(self.plan, filters={"order_ids": [order.id]})
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0].order_id, order.id)
+
+    def test_include_indents_false_excludes_open_indents(self):
+        Indent.objects.create(number="IND-DC-F2", customer=self.customer, pickup=self.pickup, dropoff=self.dropA,
+                              weight_kg=Decimal("500"))
+        tasks = inputs.collect_tasks(self.plan, filters={"include_indents": False})
+        self.assertEqual(tasks, [])
+
+    def test_collect_persists_the_filters_used_onto_the_plan(self):
+        inputs.collect_tasks(self.plan, filters={"temperature_class": "frozen"})
+        self.plan.refresh_from_db()
+        self.assertEqual(self.plan.collection_filters, {"temperature_class": "frozen"})
+
+    def test_collect_endpoint_accepts_filters_in_the_request_body(self):
+        self.make_order("ORD-DC-API1", self.dropA, 2000, temperature_class="dry")
+        self.make_order("ORD-DC-API2", self.dropB, 1000, temperature_class="frozen")
+        response = self.client.post(f"/api/v1/dispatch/plans/{self.plan.id}/collect/",
+                                    {"temperature_class": "frozen"}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["task_count"], 1)

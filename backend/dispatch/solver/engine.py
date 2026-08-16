@@ -77,6 +77,7 @@ def solve_plan(plan, strategy=None):
                 route=planned_route, sequence=stop_no, task=task, place=stop["place"], stop_type=stop["stop_type"],
                 planned_arrival=stop["arrival"], planned_departure=stop["departure"],
                 service_minutes=int((stop["departure"] - stop["arrival"]).total_seconds() // 60),
+                wait_minutes=int(stop.get("wait_minutes", 0)),
                 load_after_kg=stop["load_kg"], load_after_cbm=stop["load_cbm"], distance_from_previous_km=stop["distance_km"])
 
         planned_route.max_load_kg = peak_kg

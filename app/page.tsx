@@ -569,6 +569,8 @@ const recordForms: Record<string, FormSpec> = {
       { name: "vehicles_required", label: "How many", type: "number", value: "1" },
       { name: "material", label: "Material" },
       { name: "weight_kg", label: "Weight (kg)", type: "number", value: "12000" },
+      { name: "temperature_class", label: "Temperature", type: "select", options: [["dry", "Dry"], ["chiller", "Chiller"], ["frozen", "Frozen"], ["multi", "Multi-compartment"]] },
+      { name: "priority", label: "Priority", type: "select", options: [["normal", "Normal"], ["urgent", "Urgent - cannot be outsourced away"], ["low", "Low - can be deferred"]] },
       { name: "required_at", label: "Required by", type: "datetime" },
       { name: "expected_rate", label: "Expected freight (₹)", type: "number", value: "0" },
       { name: "service_rate", label: "Rate card", type: "select", source: "service-rates/" },
@@ -588,6 +590,8 @@ const recordForms: Record<string, FormSpec> = {
       { name: "payload_description", label: "Material" },
       { name: "weight_kg", label: "Weight (kg)", type: "number", value: "12000" },
       { name: "packages", label: "Packages", type: "number", value: "1" },
+      { name: "temperature_class", label: "Temperature", type: "select", options: [["dry", "Dry"], ["chiller", "Chiller"], ["frozen", "Frozen"], ["multi", "Multi-compartment"]] },
+      { name: "priority", label: "Priority", type: "select", options: [["normal", "Normal"], ["urgent", "Urgent - cannot be outsourced away"], ["low", "Low - can be deferred"]] },
       { name: "distance_km", label: "Distance (km)", type: "number" },
       { name: "declared_value", label: "Declared value (₹)", type: "number" },
       { name: "eway_bill_number", label: "E-way bill" },
@@ -1853,6 +1857,12 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
   const [weightOverrides, setWeightOverrides] = useState<Record<string, number>>({});
   const [constraintOverrides, setConstraintOverrides] = useState<Record<string, any>>({});
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [customersList, setCustomersList] = useState<any[]>([]);
+  const [placesList, setPlacesList] = useState<any[]>([]);
+  const [showCollectFilters, setShowCollectFilters] = useState(false);
+  const [collectFilters, setCollectFilters] = useState<{ temperature_class: string; scheduled_from: string; scheduled_to: string; customers: string[]; pickup_places: string[]; include_indents: boolean }>({
+    temperature_class: "", scheduled_from: "", scheduled_to: "", customers: [], pickup_places: [], include_indents: true,
+  });
 
   const load = () => {
     setLoading(true);
@@ -1861,6 +1871,8 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
   useEffect(load, []);
   useEffect(() => { fmsRequest<any>(wholeSet("drivers/")).then(payload => setDrivers(asList(payload))).catch(() => undefined); }, []);
   useEffect(() => { fmsRequest<any>("dispatch/strategies/").then(payload => setStrategies(asList(payload))).catch(() => undefined); }, []);
+  useEffect(() => { fmsRequest<any>(wholeSet("customers/")).then(payload => setCustomersList(asList(payload))).catch(() => undefined); }, []);
+  useEffect(() => { fmsRequest<any>(wholeSet("places/")).then(payload => setPlacesList(asList(payload))).catch(() => undefined); }, []);
 
   const openPlan = async (id: number) => {
     const payload = await fmsRequest<any>(`dispatch/plans/${id}/`);
@@ -1898,6 +1910,26 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
     setStrategyName(name);
     setWeightOverrides({});
     setConstraintOverrides({});
+  };
+
+  const runCollect = async () => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      const body: Record<string, unknown> = {};
+      if (collectFilters.temperature_class) body.temperature_class = collectFilters.temperature_class;
+      if (collectFilters.scheduled_from) body.scheduled_from = collectFilters.scheduled_from;
+      if (collectFilters.scheduled_to) body.scheduled_to = collectFilters.scheduled_to;
+      if (collectFilters.customers.length) body.customers = collectFilters.customers.map(Number);
+      if (collectFilters.pickup_places.length) body.pickup_places = collectFilters.pickup_places.map(Number);
+      if (!collectFilters.include_indents) body.include_indents = false;
+      const payload = await fmsRequest<any>(`dispatch/plans/${selected.id}/collect/`, { method: "POST", body: JSON.stringify(body) });
+      onAction(`${payload.task_count} task(s), ${payload.vehicle_count} vehicle(s) collected`);
+      await refreshSelected();
+      load();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 200) : "Collect failed", "warn");
+    } finally { setBusy(false); }
   };
 
   const runSolve = async () => {
@@ -1957,9 +1989,53 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
       <div className="record-head"><div><p className="eyebrow">{selected.code}</p><h2>Plan for {selected.plan_date}</h2><span className={"status " + selected.status}>{planStatusLabel[selected.status] || selected.status}</span></div><button className="panel-close" onClick={() => setSelected(null)}>×</button></div>
 
       <div className="record-actions">
-        <button className="secondary" disabled={busy || ["committed", "superseded"].includes(selected.status)} onClick={() => runStep("collect", p => `${p.task_count} task(s), ${p.vehicle_count} vehicle(s) collected`)}>Collect demand</button>
+        <button className="secondary" disabled={busy || ["committed", "superseded"].includes(selected.status)} onClick={runCollect}>Collect demand</button>
         <button className="primary" disabled={busy || selected.status !== "solved"} onClick={() => runStep("commit", p => `${p.committed_routes?.length || 0} route(s) committed`)}>Commit plan</button>
       </div>
+
+      {!["committed", "superseded"].includes(selected.status) && <div className="record-section strategy-panel">
+        <p className="eyebrow">COLLECT DEMAND</p>
+        <button className="link-toggle" type="button" onClick={() => setShowCollectFilters(!showCollectFilters)}>
+          {showCollectFilters ? "▾ Hide filters" : "▸ Narrow what gets collected"}
+        </button>
+        {showCollectFilters && <div className="strategy-advanced">
+          <div className="strategy-constraint-grid">
+            <label><span>Temperature</span>
+              <select value={collectFilters.temperature_class} onChange={event => setCollectFilters(prev => ({ ...prev, temperature_class: event.target.value }))}>
+                <option value="">Any</option>
+                <option value="dry">Dry</option>
+                <option value="chiller">Chiller</option>
+                <option value="frozen">Frozen</option>
+              </select>
+            </label>
+            <label className="checkbox-field">
+              <input type="checkbox" checked={collectFilters.include_indents}
+                     onChange={event => setCollectFilters(prev => ({ ...prev, include_indents: event.target.checked }))} />
+              <span>Include open indents (not just booked orders)</span>
+            </label>
+            <label><span>Scheduled from</span>
+              <input type="datetime-local" value={collectFilters.scheduled_from}
+                     onChange={event => setCollectFilters(prev => ({ ...prev, scheduled_from: event.target.value }))} />
+            </label>
+            <label><span>Scheduled to</span>
+              <input type="datetime-local" value={collectFilters.scheduled_to}
+                     onChange={event => setCollectFilters(prev => ({ ...prev, scheduled_to: event.target.value }))} />
+            </label>
+          </div>
+          <label><span>Customers (leave empty for all)</span>
+            <select multiple value={collectFilters.customers} size={4}
+                    onChange={event => setCollectFilters(prev => ({ ...prev, customers: Array.from(event.target.selectedOptions, o => o.value) }))}>
+              {customersList.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </label>
+          <label><span>Pickup places (leave empty for all)</span>
+            <select multiple value={collectFilters.pickup_places} size={4}
+                    onChange={event => setCollectFilters(prev => ({ ...prev, pickup_places: Array.from(event.target.selectedOptions, o => o.value) }))}>
+              {placesList.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </label>
+        </div>}
+      </div>}
 
       {!["committed", "superseded"].includes(selected.status) && <div className="record-section strategy-panel">
         <p className="eyebrow">RUN PLAN</p>

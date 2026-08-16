@@ -129,17 +129,29 @@ def _evaluate_cluster(route, cluster, strategy):
     added_km = to_pickup_km
     added_drive_minutes = to_pickup_min
     arrival = route.time + timedelta(minutes=float(to_pickup_min))
-    departure = arrival + timedelta(minutes=cluster.tasks[0].pickup_service_minutes)
+    violations = []
+
+    first_task = cluster.tasks[0]
+    added_wait_minutes = Decimal("0")
+    if first_task.pickup_window_start and arrival < first_task.pickup_window_start:
+        # The gate is not open yet - the vehicle waits, it does not load early.
+        added_wait_minutes = Decimal(str((first_task.pickup_window_start - arrival).total_seconds() / 60))
+        arrival = first_task.pickup_window_start
+    if first_task.pickup_window_end and arrival > first_task.pickup_window_end:
+        if hard_windows:
+            return None, f"{cluster.pickup.name}: arrival misses the loading window"
+        violations.append(f"{cluster.pickup.name}: arrival misses the loading window")
+
+    departure = arrival + timedelta(minutes=first_task.pickup_service_minutes)
     if cluster.needs_cooling:
         departure += timedelta(minutes=PRECOOL_MINUTES)
     onboard_kg = cluster.weight_kg
     onboard_cbm = cluster.volume_cbm
     stop_plan = [{"place": cluster.pickup, "stop_type": "pickup", "task": None,
                  "arrival": arrival, "departure": departure, "distance_km": to_pickup_km,
-                 "load_kg": onboard_kg, "load_cbm": onboard_cbm}]
+                 "load_kg": onboard_kg, "load_cbm": onboard_cbm, "wait_minutes": int(added_wait_minutes)}]
 
     position = (cluster.pickup.latitude, cluster.pickup.longitude)
-    violations = []
     for task in cluster.tasks:
         leg_km, leg_min = matrix.distance_and_duration(
             position, (task.dropoff.latitude, task.dropoff.longitude), average_speed_kph=speed)
@@ -157,7 +169,7 @@ def _evaluate_cluster(route, cluster, strategy):
         onboard_cbm -= (task.volume_cbm or 0)
         stop_plan.append({"place": task.dropoff, "stop_type": "drop", "task": task,
                           "arrival": arrival, "departure": departure, "distance_km": leg_km,
-                          "load_kg": onboard_kg, "load_cbm": onboard_cbm})
+                          "load_kg": onboard_kg, "load_cbm": onboard_cbm, "wait_minutes": 0})
         position = (task.dropoff.latitude, task.dropoff.longitude)
 
     if route.distance_km + added_km > max_route_km:
@@ -181,7 +193,7 @@ def _evaluate_cluster(route, cluster, strategy):
         cost -= cluster.revenue_estimate * Decimal(str(w["margin_weight"]))
 
     return {"stop_plan": stop_plan, "added_km": added_km, "added_drive_minutes": Decimal(str(added_drive_minutes)),
-           "dead_km": dead_km, "cost": cost, "violations": violations,
+           "added_wait_minutes": added_wait_minutes, "dead_km": dead_km, "cost": cost, "violations": violations,
            "final_position": position, "final_time": departure}, None
 
 
@@ -189,6 +201,7 @@ def _apply(route, cluster, evaluation):
     route.stops.extend(evaluation["stop_plan"])
     route.distance_km += evaluation["added_km"]
     route.drive_minutes += evaluation["added_drive_minutes"]
+    route.wait_minutes += evaluation["added_wait_minutes"]
     route.dead_km += evaluation["dead_km"]
     route.position = evaluation["final_position"]
     route.time = evaluation["final_time"]

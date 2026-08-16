@@ -525,4 +525,7 @@ tr.clickable:hover td{background:#f8faf7}
 .strategy-chip strong{color:#1e2a24}
 .constraint-breaches{margin-top:12px;display:flex;flex-direction:column;gap:6px}
 .breach-line{margin:0;font-size:10.5px;color:#9a6b22;background:#fff4df;border-radius:8px;padding:8px 10px}
+.strategy-advanced>label{display:flex;flex-direction:column;gap:6px;font-size:9.5px;font-weight:700;color:#606b65}
+.strategy-advanced>label select[multiple]{border:1px solid #dfe4df;border-radius:8px;padding:6px;font-size:11px;outline:none;background:#fff}
+.strategy-advanced>label select[multiple] option{padding:4px 6px;border-radius:5px;font-weight:500}
 @media(max-width:520px){.strategy-cards,.strategy-weight-grid,.strategy-constraint-grid{grid-template-columns:1fr}}

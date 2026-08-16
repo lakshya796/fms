@@ -77,11 +77,14 @@ class DispatchPlanViewSet(DispatchViewSet):
     @transaction.atomic
     def collect(self, request, pk=None):
         """Pull open indents and un-trip'd orders into this plan's task list, and
-        snapshot the eligible fleet as `PlanVehicle` offers."""
+        snapshot the eligible fleet as `PlanVehicle` offers. The body may narrow
+        what gets pulled in - `customers`, `pickup_places`, `temperature_class`,
+        `scheduled_from`/`scheduled_to`, `order_ids` or `include_indents` - see
+        `solver.inputs.collect_tasks` and docs/DISPATCH-PLANNER-V2.md §4.3."""
         plan = self.get_object()
         if plan.status in ("committed", "superseded"):
             raise ValidationError(f"A {plan.status} plan cannot collect new demand.")
-        tasks = inputs.collect_tasks(plan)
+        tasks = inputs.collect_tasks(plan, filters=request.data)
         vehicles = inputs.build_plan_vehicles(plan)
         plan.status = "ready"
         plan.save(update_fields=["status", "updated_at"])
