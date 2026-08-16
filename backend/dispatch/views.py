@@ -135,6 +135,38 @@ class DispatchPlanViewSet(DispatchViewSet):
     def kpis(self, request, pk=None):
         return Response(self.get_object().summary)
 
+    ROUTE_MAP_COLOURS = ["#0d5f45", "#3a6e9d", "#9a6b22", "#6656d9", "#b95544", "#347257", "#4c574f", "#c45f48"]
+
+    @action(detail=True, methods=["get"])
+    def map(self, request, pk=None):
+        """Everything the plan map needs in one payload: each route's polyline
+        path and a stable colour, plus every un-routed or outsourced task with
+        its pickup/drop coordinates - the loads the plan could not serve are
+        exactly what a dispatcher needs to see. See docs/DISPATCH-PLANNER-V2.md §6.1."""
+        plan = self.get_object()
+        routes = plan.routes.select_related("plan_vehicle__vehicle") \
+                            .prefetch_related("stops__place", "stops__task__order__customer").order_by("sequence")
+        route_payload = []
+        for index, route in enumerate(routes):
+            data = PlannedRouteSerializer(route).data
+            data["colour"] = self.ROUTE_MAP_COLOURS[index % len(self.ROUTE_MAP_COLOURS)]
+            route_payload.append(data)
+
+        unrouted = plan.tasks.filter(status__in=["outsourced", "dropped"]).select_related("pickup", "dropoff", "order", "indent")
+        unrouted_payload = [{
+            "id": task.id, "status": task.status, "reason": task.drop_reason,
+            "pickup_name": task.pickup.name,
+            "pickup_lat": float(task.pickup.latitude) if task.pickup.latitude is not None else None,
+            "pickup_lng": float(task.pickup.longitude) if task.pickup.longitude is not None else None,
+            "dropoff_name": task.dropoff.name,
+            "dropoff_lat": float(task.dropoff.latitude) if task.dropoff.latitude is not None else None,
+            "dropoff_lng": float(task.dropoff.longitude) if task.dropoff.longitude is not None else None,
+            "order_number": getattr(task.order, "number", "") or getattr(task.indent, "number", ""),
+            "weight_kg": float(task.weight_kg),
+        } for task in unrouted]
+
+        return Response({"routes": route_payload, "unrouted_tasks": unrouted_payload})
+
     @action(detail=True, methods=["get"], url_path="replan-status")
     def replan_status(self, request, pk=None):
         """Which committed routes are running behind - the signal a dispatcher

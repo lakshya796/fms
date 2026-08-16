@@ -20,7 +20,16 @@ class DispatchTaskSerializer(serializers.ModelSerializer):
 
 
 class PlannedStopSerializer(serializers.ModelSerializer):
+    """Coordinates and order/customer, so the frontend can draw a route line
+    and label a marker without a second round trip. See
+    docs/DISPATCH-PLANNER-V2.md §6.1 - the map could not be built at all
+    without this: the previous shape carried `place_name` but no coordinates."""
     place_name = serializers.CharField(source="place.name", read_only=True, default="")
+    city = serializers.CharField(source="place.city", read_only=True, default="")
+    latitude = serializers.DecimalField(source="place.latitude", max_digits=9, decimal_places=6, read_only=True, default=None)
+    longitude = serializers.DecimalField(source="place.longitude", max_digits=9, decimal_places=6, read_only=True, default=None)
+    order_number = serializers.CharField(source="task.order.number", read_only=True, default="")
+    customer_name = serializers.CharField(source="task.order.customer.name", read_only=True, default="")
     task_detail = DispatchTaskSerializer(source="task", read_only=True)
     class Meta:
         model = PlannedStop; fields = "__all__"
@@ -43,8 +52,22 @@ class PlannedRouteSerializer(serializers.ModelSerializer):
     avg_utilisation_percent = serializers.SerializerMethodField()
     on_time_stops = serializers.SerializerMethodField()
     window_risk_stops = serializers.SerializerMethodField()
+    path = serializers.SerializerMethodField()
     class Meta:
         model = PlannedRoute; fields = "__all__"
+
+    def get_path(self, route):
+        """`[[lat, lng], ...]` from the vehicle's start position through every
+        stop in sequence, so the frontend draws a polyline without re-deriving
+        it from separate stop coordinates."""
+        pv = route.plan_vehicle
+        path = []
+        if pv and pv.start_latitude is not None and pv.start_longitude is not None:
+            path.append([float(pv.start_latitude), float(pv.start_longitude)])
+        for stop in route.stops.all():
+            if stop.place.latitude is not None and stop.place.longitude is not None:
+                path.append([float(stop.place.latitude), float(stop.place.longitude)])
+        return path
 
     def get_gps_verified(self, route):
         """Whether arrivals on this route can be trusted from a GPS device

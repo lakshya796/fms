@@ -1865,6 +1865,7 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
   });
   const [routeSort, setRouteSort] = useState<{ key: string; dir: 1 | -1 }>({ key: "sequence", dir: 1 });
   const [expandedRoute, setExpandedRoute] = useState<number | null>(null);
+  const [mapData, setMapData] = useState<{ routes: any[]; unrouted_tasks: any[] } | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -1875,6 +1876,12 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
   useEffect(() => { fmsRequest<any>("dispatch/strategies/").then(payload => setStrategies(asList(payload))).catch(() => undefined); }, []);
   useEffect(() => { fmsRequest<any>(wholeSet("customers/")).then(payload => setCustomersList(asList(payload))).catch(() => undefined); }, []);
   useEffect(() => { fmsRequest<any>(wholeSet("places/")).then(payload => setPlacesList(asList(payload))).catch(() => undefined); }, []);
+  useEffect(() => {
+    if (!selected || !(selected.routes || []).length) { setMapData(null); return; }
+    let active = true;
+    fmsRequest<any>(`dispatch/plans/${selected.id}/map/`).then(payload => { if (active) setMapData(payload); }).catch(() => { if (active) setMapData(null); });
+    return () => { active = false; };
+  }, [selected?.id, selected?.status, (selected?.routes || []).length]);
 
   const openPlan = async (id: number) => {
     const payload = await fmsRequest<any>(`dispatch/plans/${id}/`);
@@ -2138,6 +2145,14 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
       </div>}
 
       {!!(selected.routes || []).length && <div className="record-section">
+        <p className="eyebrow">ROUTE MAP</p>
+        {mapData
+          ? <PlanMap routes={mapData.routes} unroutedTasks={mapData.unrouted_tasks} highlightRoute={expandedRoute}
+                     onSelectRoute={id => setExpandedRoute(id)} />
+          : <div className="data-state">Loading map…</div>}
+      </div>}
+
+      {!!(selected.routes || []).length && <div className="record-section">
         <p className="eyebrow">ROUTES</p>
         <div className="table-wrap">
           <table className="kpi-route-table">
@@ -2164,7 +2179,29 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
 
         {(selected.routes || []).filter((route: any) => expandedRoute === route.id).map((route: any) => <div key={route.id} className="record-field" style={{ display: "block", marginTop: 12 }}>
           <div><strong>{route.plan_vehicle_detail?.registration_number || "Route #" + route.sequence}</strong> · {rupees(route.estimated_cost)} cost · {route.stop_count} stop(s) · {route.window_risk_stops} at risk of a late window</div>
-          <div style={{ marginTop: 4 }}>
+
+          <div className="gantt">
+            <div className="gantt-row">
+              <span className="gantt-label">Drive / wait</span>
+              <div className="gantt-track">
+                <div className="seg-drive" style={{ width: `${route.total_duration_minutes ? (route.drive_minutes / route.total_duration_minutes * 100) : 0}%` }} />
+                <div className="seg-wait" style={{ width: `${route.total_duration_minutes ? (route.wait_minutes / route.total_duration_minutes * 100) : 0}%` }} />
+              </div>
+              <span className="gantt-total">{route.total_duration_minutes ? (route.total_duration_minutes / 60).toFixed(1) : 0}h</span>
+            </div>
+            <div className="gantt-legend">
+              <span><i className="seg-drive" />Drive {route.drive_minutes}m</span>
+              <span><i className="seg-wait" />Wait {route.wait_minutes}m</span>
+            </div>
+          </div>
+
+          <div className="load-profile" title="Load after each stop, against vehicle capacity">
+            {(route.stops || []).map((stop: any) => <div key={stop.id} className="load-bar" title={`${stop.place_name}: ${stop.load_after_kg}kg`}>
+              <i style={{ height: `${route.plan_vehicle_detail?.capacity_kg ? Math.min(100, Number(stop.load_after_kg) / Number(route.plan_vehicle_detail.capacity_kg) * 100) : 0}%` }} />
+            </div>)}
+          </div>
+
+          <div style={{ marginTop: 10 }}>
             {(route.stops || []).map((stop: any) => <span key={stop.id} style={{ marginRight: 8, fontSize: 12 }}>{stop.stop_type === "pickup" ? "▲" : "▼"} {stop.place_name} ({stop.load_after_kg}kg)</span>)}
           </div>
           {!route.plan_vehicle_detail?.driver && !route.committed_trip && <div className="assign-row" style={{ marginTop: 6 }}>
@@ -2841,6 +2878,145 @@ function FleetMap({ vehicles, selectedReg, onSelect }: {
           <button onClick={fitAll} title="Zoom to fit every vehicle">Fit</button>
         </div>}
   </div>;
+}
+
+// Dispatch planning route map (docs/DISPATCH-PLANNER-V2.md §6.2) - the same
+// Leaflet setup as FleetMap (dynamic import, basemap switcher), drawing one
+// polyline per route in a stable colour, numbered pickup/drop markers, and
+// unrouted/outsourced tasks as dashed grey pickup->drop lines so the loads
+// the plan could not serve are as visible as the ones it did.
+function PlanMap({ routes, unroutedTasks, highlightRoute, onSelectRoute }: {
+  routes: any[]; unroutedTasks: any[]; highlightRoute: number | null; onSelectRoute: (id: number | null) => void;
+}) {
+  const container = useRef<HTMLDivElement | null>(null);
+  const map = useRef<any>(null);
+  const leaflet = useRef<any>(null);
+  const layerGroup = useRef<any>(null);
+  const selectRef = useRef(onSelectRoute);
+  const [layer, setLayer] = useState(MAP_LAYERS[0].id);
+  const [ready, setReady] = useState(false);
+  const [failed, setFailed] = useState("");
+  const [showUnrouted, setShowUnrouted] = useState(true);
+  const [showDeadLegs, setShowDeadLegs] = useState(true);
+
+  selectRef.current = onSelectRoute;
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const L = (await import("leaflet")).default;
+        if (cancelled || !container.current || map.current) return;
+        leaflet.current = L;
+        const instance = L.map(container.current, { center: INDIA_CENTRE, zoom: 5, zoomControl: true,
+                                                    worldCopyJump: true, minZoom: 3, maxZoom: 19 });
+        map.current = instance;
+        layerGroup.current = L.layerGroup().addTo(instance);
+        setReady(true);
+      } catch (e) {
+        if (!cancelled) setFailed(e instanceof Error ? e.message : String(e));
+      }
+    })();
+    return () => { cancelled = true; map.current?.remove(); map.current = null; };
+  }, []);
+
+  useEffect(() => {
+    const L = leaflet.current;
+    if (!ready || !L || !map.current) return;
+    const chosen = MAP_LAYERS.find(l => l.id === layer) || MAP_LAYERS[0];
+    const tiles = L.tileLayer(chosen.url, { attribution: chosen.attribution, maxZoom: chosen.maxZoom });
+    tiles.addTo(map.current);
+    tiles.bringToBack();
+    const previous = map.current.__basemap;
+    const drop = () => { if (previous) map.current?.removeLayer(previous); };
+    tiles.once("load", drop);
+    setTimeout(drop, 2500);
+    map.current.__basemap = tiles;
+  }, [layer, ready]);
+
+  useEffect(() => {
+    const L = leaflet.current;
+    if (!ready || !L || !layerGroup.current) return;
+    layerGroup.current.clearLayers();
+    const bounds: [number, number][] = [];
+
+    for (const route of routes) {
+      const path: [number, number][] = route.path || [];
+      if (path.length < 2) continue;
+      const dimmed = highlightRoute != null && highlightRoute !== route.id;
+      const colour = route.colour || "#0d5f45";
+      // The very first leg (vehicle start -> first stop) is the dead-km run;
+      // drawn dashed and separately so it reads as different from a laden leg.
+      if (showDeadLegs && path.length > 1) {
+        L.polyline([path[0], path[1]], { color: colour, weight: 3, opacity: dimmed ? 0.15 : 0.6, dashArray: "2,7" }).addTo(layerGroup.current);
+      }
+      L.polyline(path.slice(1), { color: colour, weight: dimmed ? 2 : 4, opacity: dimmed ? 0.18 : 0.85 })
+        .addTo(layerGroup.current)
+        .on("click", () => selectRef.current(highlightRoute === route.id ? null : route.id));
+      path.forEach(p => bounds.push(p));
+
+      (route.stops || []).forEach((stop: any, index: number) => {
+        if (stop.latitude == null || stop.longitude == null) return;
+        const isPickup = stop.stop_type === "pickup";
+        const marker = L.marker([Number(stop.latitude), Number(stop.longitude)], {
+          icon: L.divIcon({
+            className: "", iconSize: [22, 22], iconAnchor: [11, 11],
+            html: `<div class="plan-stop-pin ${isPickup ? "pickup" : "drop"}" style="--pin:${colour};opacity:${dimmed ? 0.35 : 1}">${isPickup ? "▲" : index}</div>`,
+          }),
+        });
+        marker.bindPopup(planStopPopup(stop), { closeButton: false, minWidth: 200 });
+        marker.on("click", () => selectRef.current(highlightRoute === route.id ? null : route.id));
+        marker.addTo(layerGroup.current);
+      });
+    }
+
+    if (showUnrouted) {
+      for (const task of unroutedTasks) {
+        if (task.pickup_lat == null || task.dropoff_lat == null) continue;
+        const from: [number, number] = [task.pickup_lat, task.pickup_lng];
+        const to: [number, number] = [task.dropoff_lat, task.dropoff_lng];
+        L.polyline([from, to], { color: "#8a938e", weight: 2, opacity: 0.7, dashArray: "1,6" }).addTo(layerGroup.current);
+        [from, to].forEach((point, index) => {
+          const marker = L.marker(point, {
+            icon: L.divIcon({ className: "", iconSize: [16, 16], iconAnchor: [8, 8],
+                             html: `<div class="plan-stop-pin unrouted">${index === 0 ? "▲" : "▼"}</div>` }),
+          });
+          marker.bindPopup(`<div class="gps-popup"><h4>${escapeHtml(task.order_number || "Unrouted")}</h4>
+            <dl><dt>Status</dt><dd>${escapeHtml(task.status)}</dd>${task.reason ? `<dt>Reason</dt><dd>${escapeHtml(task.reason)}</dd>` : ""}</dl></div>`,
+            { closeButton: false, minWidth: 180 });
+          marker.addTo(layerGroup.current);
+        });
+        bounds.push(from, to);
+      }
+    }
+
+    if (bounds.length) map.current.fitBounds(L.latLngBounds(bounds), { padding: [36, 36] });
+  }, [routes, unroutedTasks, ready, highlightRoute, showUnrouted, showDeadLegs]);
+
+  return <div className="fleet-map plan-map">
+    <div ref={container} style={{ height: "100%" }} />
+    {failed
+      ? <div className="fleet-map-overlay"><div className="data-state">The map could not be loaded.<br /><small>{failed}</small></div></div>
+      : <div className="fleet-map-layers">
+          {MAP_LAYERS.map(l => <button key={l.id} className={l.id === layer ? "active" : ""} onClick={() => setLayer(l.id)}>{l.label}</button>)}
+          <button className={showUnrouted ? "active" : ""} onClick={() => setShowUnrouted(!showUnrouted)}>Outsourced</button>
+          <button className={showDeadLegs ? "active" : ""} onClick={() => setShowDeadLegs(!showDeadLegs)}>Dead legs</button>
+        </div>}
+  </div>;
+}
+
+function planStopPopup(stop: any) {
+  const row = (label: string, value: string) => value ? `<dt>${label}</dt><dd>${escapeHtml(value)}</dd>` : "";
+  return `<div class="gps-popup">
+    <h4>${escapeHtml(stop.place_name || stop.city || "Stop")}</h4>
+    <dl>
+      ${row("Type", stop.stop_type === "pickup" ? "Pickup" : "Drop")}
+      ${row("Order", stop.order_number)}
+      ${row("Customer", stop.customer_name)}
+      ${row("Load after", stop.load_after_kg != null ? `${stop.load_after_kg} kg` : "")}
+      ${row("ETA", stop.planned_arrival ? new Date(stop.planned_arrival).toLocaleString() : "")}
+    </dl>
+  </div>`;
 }
 
 const escapeHtml = (value: string) =>

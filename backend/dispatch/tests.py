@@ -1271,3 +1271,86 @@ class KpiTests(BaseDispatchTest):
         deadline = timezone.now() + timedelta(days=2)
         self._solved_plan(("ORD-KPI-10", self.dropA, 2000, {"scheduled_at": deadline}))
         self.assertEqual(self.plan.summary["projected_on_time_percent"], 100.0)
+
+
+class PlanViewTests(BaseDispatchTest):
+    """Phase 4 of docs/DISPATCH-PLANNER-V2.md: a route cannot be drawn on a map
+    without coordinates, which the stop/route shape never carried until now."""
+
+    def _solved_plan(self, *orders):
+        for spec in orders:
+            self.make_order(*spec[:3], **(spec[3] if len(spec) > 3 else {}))
+        inputs.collect_tasks(self.plan)
+        inputs.build_plan_vehicles(self.plan)
+        self.plan.status = "ready"
+        self.plan.save()
+        solve_plan(self.plan)
+        self.plan.refresh_from_db()
+        return self.plan
+
+    def test_stop_serializer_exposes_coordinates_and_order_detail(self):
+        order = self.make_order("ORD-PV-1", self.dropA, 2000)
+        inputs.collect_tasks(self.plan)
+        inputs.build_plan_vehicles(self.plan)
+        self.plan.status = "ready"
+        self.plan.save()
+        solve_plan(self.plan)
+        route = self.plan.routes.first()
+        stop = route.stops.filter(stop_type="drop").first()
+        response = self.client.get(f"/api/v1/dispatch/routes/{route.id}/")
+        drop = next(s for s in response.data["stops"] if s["stop_type"] == "drop")
+        self.assertEqual(float(drop["latitude"]), float(self.dropA.latitude))
+        self.assertEqual(float(drop["longitude"]), float(self.dropA.longitude))
+        self.assertEqual(drop["city"], self.dropA.city)
+        self.assertEqual(drop["order_number"], order.number)
+        self.assertEqual(drop["customer_name"], self.customer.name)
+
+    def test_route_path_starts_at_the_vehicle_and_visits_every_stop_in_order(self):
+        self._solved_plan(("ORD-PV-2", self.dropA, 2000))
+        route = self.plan.routes.first()
+        response = self.client.get(f"/api/v1/dispatch/routes/{route.id}/")
+        path = response.data["path"]
+        self.assertEqual(len(path), 1 + route.stops.count())   # vehicle start + every stop
+        self.assertEqual(path[0], [float(self.vehicle.current_latitude), float(self.vehicle.current_longitude)])
+        last_stop = route.stops.order_by("-sequence").first()
+        self.assertEqual(path[-1], [float(last_stop.place.latitude), float(last_stop.place.longitude)])
+
+    def test_map_endpoint_returns_a_coloured_route_and_no_unrouted_tasks(self):
+        self._solved_plan(("ORD-PV-3", self.dropA, 2000))
+        response = self.client.get(f"/api/v1/dispatch/plans/{self.plan.id}/map/")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(response.data["routes"]), 1)
+        self.assertTrue(response.data["routes"][0]["colour"].startswith("#"))
+        self.assertGreater(len(response.data["routes"][0]["path"]), 0)
+        self.assertEqual(response.data["unrouted_tasks"], [])
+
+    def test_map_endpoint_surfaces_an_outsourced_task_with_pickup_and_drop_coordinates(self):
+        # Too small a vehicle forces the load onto the market instead of a route.
+        self.vehicle.capacity_kg = 100
+        self.vehicle.save()
+        self._solved_plan(("ORD-PV-4", self.dropA, 2000))
+        response = self.client.get(f"/api/v1/dispatch/plans/{self.plan.id}/map/")
+        self.assertEqual(response.data["routes"], [])
+        self.assertEqual(len(response.data["unrouted_tasks"]), 1)
+        unrouted = response.data["unrouted_tasks"][0]
+        self.assertEqual(unrouted["status"], "outsourced")
+        self.assertEqual(unrouted["order_number"], "ORD-PV-4")
+        self.assertEqual(unrouted["pickup_lat"], float(self.pickup.latitude))
+        self.assertEqual(unrouted["dropoff_lat"], float(self.dropA.latitude))
+
+    def test_map_endpoint_assigns_distinct_colours_to_multiple_routes(self):
+        second_vehicle = Vehicle.objects.create(registration_number="MH 12 QR 5566", vehicle_type="20 ft SXL",
+                                                 capacity_kg=8000, volume_cbm=40, current_latitude=Decimal("18.590000"),
+                                                 current_longitude=Decimal("73.730000"))
+        Order.objects.create(number="ORD-PV-5A", customer=self.customer, pickup=self.pickup, dropoff=self.dropA,
+                             weight_kg=2000, status="created")
+        Order.objects.create(number="ORD-PV-5B", customer=self.customer, pickup=self.dropB, dropoff=self.dropA,
+                             weight_kg=2000, status="created")
+        inputs.collect_tasks(self.plan)
+        inputs.build_plan_vehicles(self.plan)
+        self.plan.status = "ready"
+        self.plan.save()
+        solve_plan(self.plan)
+        response = self.client.get(f"/api/v1/dispatch/plans/{self.plan.id}/map/")
+        colours = {route["colour"] for route in response.data["routes"]}
+        self.assertEqual(len(colours), len(response.data["routes"]))   # every route gets its own colour

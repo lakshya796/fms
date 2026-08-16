@@ -544,3 +544,28 @@ tr.clickable:hover td{background:#f8faf7}
 .util-bar{width:64px;height:9px;border-radius:5px;background:#eef1ed;overflow:hidden}
 .util-bar i{display:block;height:100%;background:linear-gradient(90deg,#0d5f45,#63a888)}
 @media(max-width:520px){.kpi-tiles,.kpi-secondary{grid-template-columns:1fr}}
+
+/* Dispatch planning route map (docs/DISPATCH-PLANNER-V2.md Phase 4) */
+.fleet-map.plan-map{height:320px;border-radius:12px;border:1px solid var(--line)}
+.plan-stop-pin{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:10px;font-weight:800;
+  background:var(--pin);color:#fff;border:2px solid #fff;box-shadow:0 1px 5px rgba(16,25,21,.4)}
+.plan-stop-pin.pickup{border-radius:4px}
+.plan-stop-pin.unrouted{width:16px;height:16px;font-size:8px;background:#8a938e}
+.gantt{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+.gantt-row{display:flex;align-items:center;gap:9px}
+.gantt-label{width:96px;flex:none;font-size:10px;color:#606b65;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gantt-track{flex:1;display:flex;height:16px;border-radius:5px;overflow:hidden;background:#eef1ed}
+.gantt-track div{height:100%}
+.gantt-track .seg-drive{background:#0d5f45}
+.gantt-track .seg-service{background:#dff77d}
+.gantt-track .seg-wait{background:#e0a99c}
+.gantt-total{width:56px;flex:none;font-size:10px;color:#8a938e;text-align:right}
+.gantt-legend{display:flex;gap:14px;margin-top:2px;font-size:9.5px;color:#8a938e}
+.gantt-legend span{display:inline-flex;align-items:center;gap:5px}
+.gantt-legend i{width:8px;height:8px;border-radius:2px;display:inline-block}
+.gantt-legend .seg-drive{background:#0d5f45}
+.gantt-legend .seg-service{background:#dff77d}
+.gantt-legend .seg-wait{background:#e0a99c}
+.load-profile{display:flex;align-items:flex-end;gap:4px;height:56px;margin-top:12px;padding:6px;border:1px solid var(--line);border-radius:9px;background:#fafbf9}
+.load-bar{flex:1;height:100%;display:flex;align-items:flex-end;border-radius:3px;overflow:hidden;background:#eef1ed}
+.load-bar i{display:block;width:100%;background:linear-gradient(180deg,#63a888,#0d5f45)}
