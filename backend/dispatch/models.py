@@ -162,7 +162,8 @@ class PlannedRoute(Timestamped):
     dead_km = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     max_load_kg = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     utilisation_weight_percent = models.DecimalField(max_digits=5, decimal_places=1, default=0)
-    utilisation_volume_percent = models.DecimalField(max_digits=5, decimal_places=1, default=0)
+    utilisation_volume_percent = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True,
+                                                      help_text="Null when the vehicle's volume capacity was never recorded, not 0")
     estimated_cost = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     estimated_revenue = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     estimated_margin = models.DecimalField(max_digits=12, decimal_places=2, default=0)

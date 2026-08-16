@@ -529,3 +529,18 @@ tr.clickable:hover td{background:#f8faf7}
 .strategy-advanced>label select[multiple]{border:1px solid #dfe4df;border-radius:8px;padding:6px;font-size:11px;outline:none;background:#fff}
 .strategy-advanced>label select[multiple] option{padding:4px 6px;border-radius:5px;font-weight:500}
 @media(max-width:520px){.strategy-cards,.strategy-weight-grid,.strategy-constraint-grid{grid-template-columns:1fr}}
+
+/* Dispatch planning: tiered KPI board (docs/DISPATCH-PLANNER-V2.md Phase 3) */
+.kpi-tiles{display:grid;grid-template-columns:repeat(2,1fr);gap:9px;margin:12px 0}
+.kpi-tile{background:#fff;border:1px solid var(--line);border-radius:11px;padding:14px;display:flex;flex-direction:column;gap:6px}
+.kpi-tile span{font-size:9.5px;text-transform:uppercase;letter-spacing:.6px;color:#8b9590}
+.kpi-tile strong{font-size:19px;letter-spacing:-.4px}
+.kpi-tile strong.good{color:#347257}
+.kpi-tile strong.bad{color:#b95544}
+.kpi-secondary{margin-top:4px;grid-template-columns:1fr 1fr}
+.kpi-secondary strong small{font-weight:600;color:#8a938e;font-size:9px;text-transform:none;letter-spacing:0}
+.kpi-route-table th.sortable{cursor:pointer;user-select:none}
+.kpi-route-table th.sortable:hover{color:#3a453f}
+.util-bar{width:64px;height:9px;border-radius:5px;background:#eef1ed;overflow:hidden}
+.util-bar i{display:block;height:100%;background:linear-gradient(90deg,#0d5f45,#63a888)}
+@media(max-width:520px){.kpi-tiles,.kpi-secondary{grid-template-columns:1fr}}

@@ -27,9 +27,22 @@ class PlannedStopSerializer(serializers.ModelSerializer):
 
 
 class PlannedRouteSerializer(serializers.ModelSerializer):
+    """KPI fields beyond the stored columns (`dead_km`, `utilisation_*_percent`,
+    `estimated_*`) are derived here rather than stored, since every input they
+    need - stops, the plan vehicle's capacity, each task's window - is already
+    on the route. See docs/DISPATCH-PLANNER-V2.md §5.2."""
     stops = PlannedStopSerializer(many=True, read_only=True)
     plan_vehicle_detail = PlanVehicleSerializer(source="plan_vehicle", read_only=True)
     gps_verified = serializers.SerializerMethodField()
+    laden_km = serializers.SerializerMethodField()
+    dead_km_percent = serializers.SerializerMethodField()
+    stop_count = serializers.SerializerMethodField()
+    orders_carried = serializers.SerializerMethodField()
+    revenue_per_km = serializers.SerializerMethodField()
+    cost_per_tonne_km = serializers.SerializerMethodField()
+    avg_utilisation_percent = serializers.SerializerMethodField()
+    on_time_stops = serializers.SerializerMethodField()
+    window_risk_stops = serializers.SerializerMethodField()
     class Meta:
         model = PlannedRoute; fields = "__all__"
 
@@ -38,6 +51,66 @@ class PlannedRouteSerializer(serializers.ModelSerializer):
         rather than a driver's own say-so - see docs/DISPATCH-PLANNING.md §7.3."""
         vehicle = route.plan_vehicle.vehicle
         return bool(vehicle and vehicle.gps_device_id)
+
+    def get_laden_km(self, route):
+        if route.total_distance_km is None:
+            return 0.0
+        return float(route.total_distance_km - (route.dead_km or 0))
+
+    def get_dead_km_percent(self, route):
+        if not route.total_distance_km:
+            return 0.0
+        return float(round((route.dead_km or 0) / route.total_distance_km * 100, 1))
+
+    def get_stop_count(self, route):
+        return len(route.stops.all())
+
+    def get_orders_carried(self, route):
+        order_ids = {stop.task.order_id for stop in route.stops.all() if stop.task_id and stop.task.order_id}
+        return len(order_ids)
+
+    def get_revenue_per_km(self, route):
+        if not route.total_distance_km:
+            return None
+        return float(round(route.estimated_revenue / route.total_distance_km, 2))
+
+    def get_cost_per_tonne_km(self, route):
+        tonnes = (route.max_load_kg or 0) / 1000
+        if not tonnes or not route.total_distance_km:
+            return None
+        return float(round(route.estimated_cost / (tonnes * route.total_distance_km), 2))
+
+    def get_avg_utilisation_percent(self, route):
+        """The mean load across every leg, not just the peak - a truck full
+        for one leg of eight is not a full truck (docs/DISPATCH-PLANNER-V2.md §5.2)."""
+        capacity = route.plan_vehicle.capacity_kg if route.plan_vehicle_id else None
+        stops = list(route.stops.all())
+        if not capacity or not stops:
+            return None
+        average_load = sum((stop.load_after_kg for stop in stops), 0) / len(stops)
+        return float(round(min(100, average_load / capacity * 100), 1))
+
+    def _windowed_stops(self, route):
+        return [stop for stop in route.stops.all() if stop.task_id and stop.task.drop_window_end and stop.planned_arrival]
+
+    def get_on_time_stops(self, route):
+        windowed = self._windowed_stops(route)
+        if not windowed:
+            return None
+        on_time = sum(1 for stop in windowed if stop.planned_arrival <= stop.task.drop_window_end)
+        return {"on_time": on_time, "total": len(windowed)}
+
+    def get_window_risk_stops(self, route):
+        """Stops arriving within 30 minutes of their deadline - close enough
+        that a small delay tips them late."""
+        at_risk = 0
+        for stop in self._windowed_stops(route):
+            if stop.planned_arrival > stop.task.drop_window_end:
+                continue
+            minutes_to_spare = (stop.task.drop_window_end - stop.planned_arrival).total_seconds() / 60
+            if minutes_to_spare <= 30:
+                at_risk += 1
+        return at_risk
 
 
 class PlanEventSerializer(serializers.ModelSerializer):

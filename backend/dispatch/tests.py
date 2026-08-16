@@ -1165,3 +1165,109 @@ class DemandCollectionTests(BaseDispatchTest):
                                     {"temperature_class": "frozen"}, format="json")
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data["task_count"], 1)
+
+
+class KpiTests(BaseDispatchTest):
+    """Phase 3 of docs/DISPATCH-PLANNER-V2.md: PlannedRoute.dead_km actually
+    gets written, utilisation_volume_percent tells "untracked" apart from
+    "empty", and both the route and the plan carry a fuller KPI set."""
+
+    def _solved_plan(self, *orders):
+        for spec in orders:
+            self.make_order(*spec[:3], **(spec[3] if len(spec) > 3 else {}))
+        inputs.collect_tasks(self.plan)
+        inputs.build_plan_vehicles(self.plan)
+        self.plan.status = "ready"
+        self.plan.save()
+        solve_plan(self.plan)
+        self.plan.refresh_from_db()
+        return self.plan
+
+    def test_dead_km_is_recorded_on_a_planned_route(self):
+        self._solved_plan(("ORD-KPI-1", self.dropA, 2000))
+        route = self.plan.routes.first()
+        self.assertGreater(route.dead_km, 0)
+        self.assertGreaterEqual(route.total_distance_km, route.dead_km)
+
+    def test_utilisation_volume_percent_is_none_when_capacity_is_untracked(self):
+        self.vehicle.volume_cbm = 0
+        self.vehicle.save()
+        self._solved_plan(("ORD-KPI-2", self.dropA, 2000))
+        route = self.plan.routes.first()
+        self.assertIsNone(route.utilisation_volume_percent)
+
+    def test_utilisation_volume_percent_is_computed_when_capacity_is_tracked(self):
+        self._solved_plan(("ORD-KPI-3", self.dropA, 2000, {"volume_cbm": Decimal("10")}))
+        route = self.plan.routes.first()
+        self.assertIsNotNone(route.utilisation_volume_percent)
+        self.assertGreater(route.utilisation_volume_percent, 0)
+
+    def test_route_serializer_exposes_derived_kpis(self):
+        self._solved_plan(("ORD-KPI-4", self.dropA, 2000))
+        route = self.plan.routes.first()
+        response = self.client.get(f"/api/v1/dispatch/routes/{route.id}/")
+        self.assertEqual(response.status_code, 200)
+        data = response.data
+        self.assertGreater(data["laden_km"], 0)
+        self.assertGreaterEqual(data["dead_km_percent"], 0)
+        self.assertEqual(data["stop_count"], 2)          # one pickup, one drop
+        self.assertEqual(data["orders_carried"], 1)
+        self.assertIsNotNone(data["revenue_per_km"])
+        self.assertIsNotNone(data["cost_per_tonne_km"])
+        self.assertIsNotNone(data["avg_utilisation_percent"])
+
+    def test_on_time_and_window_risk_stops_when_the_task_has_a_deadline(self):
+        deadline = timezone.now() + timedelta(days=2)
+        self._solved_plan(("ORD-KPI-5", self.dropA, 2000, {"scheduled_at": deadline}))
+        route = self.plan.routes.first()
+        response = self.client.get(f"/api/v1/dispatch/routes/{route.id}/")
+        self.assertEqual(response.data["on_time_stops"], {"on_time": 1, "total": 1})
+        self.assertEqual(response.data["window_risk_stops"], 0)   # two days out - no risk
+
+    def test_on_time_stops_is_none_when_no_task_has_a_deadline(self):
+        self._solved_plan(("ORD-KPI-6", self.dropA, 2000))
+        route = self.plan.routes.first()
+        response = self.client.get(f"/api/v1/dispatch/routes/{route.id}/")
+        self.assertIsNone(response.data["on_time_stops"])
+
+    def test_plan_summary_includes_the_new_kpi_fields(self):
+        self._solved_plan(("ORD-KPI-7", self.dropA, 2000))
+        summary = self.plan.summary
+        self.assertGreater(summary["total_dead_km"], 0)
+        self.assertGreaterEqual(summary["dead_km_percent"], 0)
+        self.assertGreater(summary["avg_weight_utilisation"], 0)
+        self.assertIn("own_fleet_value", summary)
+        self.assertIn("outsourced_value", summary)
+        self.assertIn("own_vs_hire_percent", summary)
+        self.assertGreater(summary["stops_per_route"], 0)
+        self.assertGreater(summary["avg_route_duration_hours"], 0)
+        self.assertEqual(summary["tasks_by_temperature"], {"dry": 1})
+
+    def test_own_vs_hire_percent_reflects_a_mixed_plan(self):
+        # priority="urgent" -> must_go, so this one is kept in-house even if
+        # the market would nominally be cheaper. A different pickup place
+        # keeps it in its own cluster - sharing self.pickup with the
+        # over-capacity order below would sum their weight into one cluster
+        # and outsource both together.
+        self.make_order("ORD-KPI-8A", self.dropA, 2000, total_amount=Decimal("15000"), priority="urgent")
+        Order.objects.create(number="ORD-KPI-8B", customer=self.customer, pickup=self.dropB, dropoff=self.dropA,
+                             weight_kg=50000, status="created")
+        inputs.collect_tasks(self.plan)
+        inputs.build_plan_vehicles(self.plan)
+        self.plan.status = "ready"
+        self.plan.save()
+        solve_plan(self.plan)
+        self.plan.refresh_from_db()
+        summary = self.plan.summary
+        self.assertGreater(summary["own_fleet_value"], 0)
+        self.assertGreater(summary["outsourced_value"], 0)
+        self.assertLess(summary["own_vs_hire_percent"], 100)
+
+    def test_projected_on_time_percent_is_none_without_any_deadline(self):
+        self._solved_plan(("ORD-KPI-9", self.dropA, 2000))
+        self.assertIsNone(self.plan.summary["projected_on_time_percent"])
+
+    def test_projected_on_time_percent_reflects_a_met_deadline(self):
+        deadline = timezone.now() + timedelta(days=2)
+        self._solved_plan(("ORD-KPI-10", self.dropA, 2000, {"scheduled_at": deadline}))
+        self.assertEqual(self.plan.summary["projected_on_time_percent"], 100.0)

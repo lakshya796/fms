@@ -289,7 +289,8 @@ def _convert_indent(indent, plan_vehicle):
 
 
 class PlannedRouteViewSet(DispatchViewSet):
-    queryset = PlannedRoute.objects.select_related("plan", "plan_vehicle__vehicle", "plan_vehicle__driver").prefetch_related("stops").all()
+    queryset = PlannedRoute.objects.select_related("plan", "plan_vehicle__vehicle", "plan_vehicle__driver") \
+                                   .prefetch_related("stops__task__order").all()
     serializer_class = PlannedRouteSerializer
     filter_fields = ["plan", "feasible", "locked"]
 

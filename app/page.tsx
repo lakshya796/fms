@@ -1863,6 +1863,8 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
   const [collectFilters, setCollectFilters] = useState<{ temperature_class: string; scheduled_from: string; scheduled_to: string; customers: string[]; pickup_places: string[]; include_indents: boolean }>({
     temperature_class: "", scheduled_from: "", scheduled_to: "", customers: [], pickup_places: [], include_indents: true,
   });
+  const [routeSort, setRouteSort] = useState<{ key: string; dir: 1 | -1 }>({ key: "sequence", dir: 1 });
+  const [expandedRoute, setExpandedRoute] = useState<number | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -1947,6 +1949,18 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
       onAction(e instanceof Error ? e.message.slice(0, 200) : "Solve failed", "warn");
     } finally { setBusy(false); }
   };
+
+  const routeSortValue = (route: any, key: string) => key.split(".").reduce((value, part) => value?.[part], route);
+  const toggleRouteSort = (key: string) => setRouteSort(prev => prev.key === key ? { key, dir: (prev.dir * -1) as 1 | -1 } : { key, dir: 1 });
+  const sortArrow = (key: string) => routeSort.key === key ? (routeSort.dir === 1 ? " ▲" : " ▼") : "";
+  const sortedRoutes = [...(selected?.routes || [])].sort((a, b) => {
+    const av = routeSortValue(a, routeSort.key);
+    const bv = routeSortValue(b, routeSort.key);
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    return av > bv ? routeSort.dir : av < bv ? -routeSort.dir : 0;
+  });
 
   const assignDriver = async (routeId: number, driverId: string) => {
     if (!driverId) return;
@@ -2091,18 +2105,33 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
       {!!Object.keys(summary).length && <div className="record-section">
         <p className="eyebrow">PLAN SUMMARY</p>
         {summary.strategy && <p className="strategy-chip">Solved with <strong>{strategies.find(s => s.name === summary.strategy)?.label || summary.strategy}</strong></p>}
-        <div className="tracking-grid">
+
+        <div className="kpi-tiles">
+          <div className="kpi-tile"><span>Fill rate</span><strong>{summary.fill_rate_percent}%</strong></div>
+          <div className="kpi-tile"><span>Margin</span><strong className={Number(summary.total_margin) >= 0 ? "good" : "bad"}>{rupees(summary.total_margin)}</strong></div>
+          <div className="kpi-tile"><span>Cost / tonne-km</span><strong>{summary.cost_per_tonne_km != null ? `₹${summary.cost_per_tonne_km}` : "—"}</strong></div>
+          <div className="kpi-tile"><span>Projected on-time</span><strong>{summary.projected_on_time_percent != null ? `${summary.projected_on_time_percent}%` : "—"}</strong></div>
+        </div>
+
+        <div className="tracking-grid kpi-secondary">
           <div><span>Total tasks</span><strong>{summary.total_tasks}</strong></div>
           <div><span>Served (own fleet)</span><strong>{summary.served_own_fleet}</strong></div>
           <div><span>Outsourced</span><strong>{summary.outsourced}</strong></div>
           <div><span>Unroutable</span><strong>{summary.dropped_unroutable}</strong></div>
-          <div><span>Fill rate</span><strong>{summary.fill_rate_percent}%</strong></div>
           <div><span>Routes used</span><strong>{summary.routes_used}</strong></div>
-          <div><span>Distance</span><strong>{summary.total_distance_km} km</strong></div>
+          <div><span>Distance (dead km)</span><strong>{summary.total_distance_km} km <small>({summary.dead_km_percent}% dead)</small></strong></div>
           <div><span>Revenue</span><strong>{rupees(summary.total_revenue)}</strong></div>
           <div><span>Cost</span><strong>{rupees(summary.total_cost)}</strong></div>
-          <div><span>Margin</span><strong className={Number(summary.total_margin) >= 0 ? "good" : "bad"}>{rupees(summary.total_margin)}</strong></div>
+          <div><span>Own fleet value</span><strong>{rupees(summary.own_fleet_value)}</strong></div>
+          <div><span>Outsourced value</span><strong>{rupees(summary.outsourced_value)}</strong></div>
+          <div><span>Own vs hire</span><strong>{summary.own_vs_hire_percent != null ? `${summary.own_vs_hire_percent}% own` : "—"}</strong></div>
+          <div><span>Avg weight fill</span><strong>{summary.avg_weight_utilisation}%</strong></div>
+          <div><span>Avg volume fill</span><strong>{summary.avg_volume_utilisation != null ? `${summary.avg_volume_utilisation}%` : "not tracked"}</strong></div>
+          <div><span>Stops / route</span><strong>{summary.stops_per_route}</strong></div>
+          <div><span>Avg route duration</span><strong>{summary.avg_route_duration_hours} h</strong></div>
+          <div><span>By temperature</span><strong>{Object.entries(summary.tasks_by_temperature || {}).map(([k, v]) => `${k}:${v}`).join(" · ") || "—"}</strong></div>
         </div>
+
         {!!(summary.constraint_breaches || []).length && <div className="constraint-breaches">
           {summary.constraint_breaches.map((breach: string, index: number) => <p key={index} className="breach-line">⚠ {breach}</p>)}
         </div>}
@@ -2110,8 +2139,31 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
 
       {!!(selected.routes || []).length && <div className="record-section">
         <p className="eyebrow">ROUTES</p>
-        {(selected.routes || []).map((route: any) => <div key={route.id} className="record-field" style={{ display: "block", marginBottom: 12 }}>
-          <div><strong>{route.plan_vehicle_detail?.registration_number || "Route #" + route.sequence}</strong> · {route.total_distance_km} km · {rupees(route.estimated_cost)} cost · {rupees(route.estimated_margin)} margin</div>
+        <div className="table-wrap">
+          <table className="kpi-route-table">
+            <thead><tr>
+              <th className="sortable" onClick={() => toggleRouteSort("plan_vehicle_detail.registration_number")}>Vehicle{sortArrow("plan_vehicle_detail.registration_number")}</th>
+              <th className="sortable" onClick={() => toggleRouteSort("total_distance_km")}>Distance{sortArrow("total_distance_km")}</th>
+              <th className="sortable" onClick={() => toggleRouteSort("dead_km_percent")}>Dead km{sortArrow("dead_km_percent")}</th>
+              <th>Utilisation</th>
+              <th className="sortable" onClick={() => toggleRouteSort("estimated_margin")}>Margin{sortArrow("estimated_margin")}</th>
+              <th className="sortable" onClick={() => toggleRouteSort("orders_carried")}>Orders{sortArrow("orders_carried")}</th>
+              <th>On-time</th>
+            </tr></thead>
+            <tbody>{sortedRoutes.map((route: any) => <tr key={route.id} className="clickable" onClick={() => setExpandedRoute(expandedRoute === route.id ? null : route.id)}>
+              <td>{route.plan_vehicle_detail?.registration_number || "Route #" + route.sequence}</td>
+              <td>{route.total_distance_km} km</td>
+              <td>{route.dead_km_percent}%</td>
+              <td><div className="util-bar"><i style={{ width: `${Math.min(100, route.avg_utilisation_percent ?? 0)}%` }} /></div></td>
+              <td className={Number(route.estimated_margin) >= 0 ? "good" : "bad"}>{rupees(route.estimated_margin)}</td>
+              <td>{route.orders_carried}</td>
+              <td>{route.on_time_stops ? `${route.on_time_stops.on_time}/${route.on_time_stops.total}` : "—"}</td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+
+        {(selected.routes || []).filter((route: any) => expandedRoute === route.id).map((route: any) => <div key={route.id} className="record-field" style={{ display: "block", marginTop: 12 }}>
+          <div><strong>{route.plan_vehicle_detail?.registration_number || "Route #" + route.sequence}</strong> · {rupees(route.estimated_cost)} cost · {route.stop_count} stop(s) · {route.window_risk_stops} at risk of a late window</div>
           <div style={{ marginTop: 4 }}>
             {(route.stops || []).map((stop: any) => <span key={stop.id} style={{ marginRight: 8, fontSize: 12 }}>{stop.stop_type === "pickup" ? "▲" : "▼"} {stop.place_name} ({stop.load_after_kg}kg)</span>)}
           </div>

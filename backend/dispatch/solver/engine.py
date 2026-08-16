@@ -47,7 +47,11 @@ def solve_plan(plan, strategy=None):
 
     committed_tasks, dropped_tasks = set(), set()
     total_revenue = total_cost = Decimal("0")
+    total_tonne_km = Decimal("0")
+    own_fleet_value = Decimal("0")
     route_count = 0
+    weight_utils, volume_utils = [], []
+    OWN_SOURCES = ("own", "attached", "leased")
 
     for sequence, route in enumerate(routes, start=1):
         if not route.used:
@@ -56,7 +60,7 @@ def solve_plan(plan, strategy=None):
         planned_route = PlannedRoute.objects.create(
             plan=plan, plan_vehicle=route.plan_vehicle, sequence=sequence,
             total_distance_km=route.distance_km, total_duration_minutes=int(route.drive_minutes + route.wait_minutes),
-            drive_minutes=int(route.drive_minutes), wait_minutes=int(route.wait_minutes),
+            drive_minutes=int(route.drive_minutes), wait_minutes=int(route.wait_minutes), dead_km=route.dead_km,
             temperature_class=route.plan_vehicle.temperature_class, estimated_cost=money(route.cost))
 
         capacity = route.plan_vehicle.capacity_kg or Decimal("1")
@@ -84,11 +88,20 @@ def solve_plan(plan, strategy=None):
         planned_route.estimated_revenue = money(revenue)
         planned_route.estimated_margin = money(Decimal(str(revenue)) - route.cost)
         planned_route.utilisation_weight_percent = money(min(Decimal("100"), peak_kg / capacity * 100)) if capacity else Decimal("0")
-        if vol_capacity:
-            planned_route.utilisation_volume_percent = money(min(Decimal("100"), peak_cbm / vol_capacity * 100))
+        # None (not 0) when the vehicle's volume capacity was never recorded -
+        # a genuinely empty reefer and an un-measured dry truck must not look
+        # the same on a utilisation chart (docs/DISPATCH-PLANNER-V2.md §5.1).
+        planned_route.utilisation_volume_percent = (
+            money(min(Decimal("100"), peak_cbm / vol_capacity * 100)) if vol_capacity else None)
         planned_route.save()
         total_revenue += revenue
         total_cost += route.cost
+        total_tonne_km += (peak_kg / Decimal("1000")) * route.distance_km
+        weight_utils.append(planned_route.utilisation_weight_percent)
+        if planned_route.utilisation_volume_percent is not None:
+            volume_utils.append(planned_route.utilisation_volume_percent)
+        if route.plan_vehicle.source in OWN_SOURCES:
+            own_fleet_value += revenue
 
     # Group outsourced clusters into hire requirements by pickup, so an RFQ goes
     # out once per lane rather than once per dropped load.
@@ -104,6 +117,7 @@ def solve_plan(plan, strategy=None):
         by_pickup[key]["tasks"].extend(cluster.tasks)
         by_pickup[key]["cost"] += cluster.outsource_estimate
 
+    outsourced_value = Decimal("0")
     for group in by_pickup.values():
         requirement = HireRequirement.objects.create(
             plan=plan, vehicle_type=group["tasks"][0].allowed_vehicle_types[0] if group["tasks"][0].allowed_vehicle_types else "",
@@ -111,6 +125,7 @@ def solve_plan(plan, strategy=None):
             pickup=group["pickup"], dropoff=group["tasks"][0].dropoff, estimated_cost=money(group["cost"]))
         requirement.tasks.set(group["tasks"])
         total_cost += group["cost"]
+        outsourced_value += group["cost"]
 
     for task in skipped:
         task.status = "dropped"
@@ -120,13 +135,39 @@ def solve_plan(plan, strategy=None):
     elapsed = Decimal(str(round(_time.monotonic() - started, 2)))
     total_tasks = len(tasks) + len(skipped)
     served = len(committed_tasks)
+    used_routes = [r for r in routes if r.used]
+    total_distance = sum((r.distance_km for r in used_routes), Decimal("0"))
+    total_dead_km = sum((r.dead_km for r in used_routes), Decimal("0"))
+    total_stops = sum((len(r.stops) for r in used_routes), 0)
+    total_duration_hours = sum(((r.drive_minutes + r.wait_minutes) for r in used_routes), Decimal("0")) / Decimal("60")
+
+    windowed_stops = list(PlannedStop.objects.filter(route__plan=plan, task__isnull=False, task__drop_window_end__isnull=False)
+                                             .select_related("task"))
+    on_time_count = sum(1 for stop in windowed_stops if stop.planned_arrival and stop.planned_arrival <= stop.task.drop_window_end)
+
+    own_hire_total = own_fleet_value + outsourced_value
+    tasks_by_temperature = {}
+    for task in list(tasks) + list(skipped):
+        tasks_by_temperature[task.temperature_class] = tasks_by_temperature.get(task.temperature_class, 0) + 1
+
     plan.summary = {
         "total_tasks": total_tasks, "served_own_fleet": served, "outsourced": len(dropped_tasks),
         "dropped_unroutable": len(skipped), "fill_rate_percent": float(round(served / total_tasks * 100, 1)) if total_tasks else 0.0,
-        "routes_used": route_count, "total_distance_km": float(sum((r.distance_km for r in routes if r.used), Decimal("0"))),
+        "routes_used": route_count, "total_distance_km": float(total_distance),
         "total_revenue": float(money(total_revenue)), "total_cost": float(money(total_cost)),
         "total_margin": float(money(total_revenue - total_cost)),
         "strategy": strategy.preset,
+        "total_dead_km": float(total_dead_km),
+        "dead_km_percent": float(round(total_dead_km / total_distance * 100, 1)) if total_distance else 0.0,
+        "avg_weight_utilisation": float(round(sum(weight_utils, Decimal("0")) / len(weight_utils), 1)) if weight_utils else 0.0,
+        "avg_volume_utilisation": float(round(sum(volume_utils, Decimal("0")) / len(volume_utils), 1)) if volume_utils else None,
+        "cost_per_tonne_km": float(round(total_cost / total_tonne_km, 2)) if total_tonne_km else None,
+        "own_fleet_value": float(money(own_fleet_value)), "outsourced_value": float(money(outsourced_value)),
+        "own_vs_hire_percent": float(round(own_fleet_value / own_hire_total * 100, 1)) if own_hire_total else None,
+        "projected_on_time_percent": float(round(on_time_count / len(windowed_stops) * 100, 1)) if windowed_stops else None,
+        "stops_per_route": float(round(total_stops / route_count, 1)) if route_count else 0.0,
+        "avg_route_duration_hours": float(round(total_duration_hours / route_count, 1)) if route_count else 0.0,
+        "tasks_by_temperature": tasks_by_temperature,
     }
     plan.summary["constraint_breaches"] = check_constraints(strategy, plan.summary)
     plan.status = "solved"
