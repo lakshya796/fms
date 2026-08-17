@@ -7,9 +7,8 @@ from .views import (health, dashboard, fleet_analytics, public_tracking, live_tr
                     PlaceViewSet, FleetViewSet, ServiceRateViewSet, ServiceQuoteViewSet, OrderViewSet, WaypointViewSet,
                     TrackingActivityViewSet, ProofOfDeliveryViewSet, FuelEntryViewSet, TripExpenseViewSet, IssueViewSet,
                     ComplianceDocumentViewSet, MaintenanceScheduleViewSet, IndentViewSet, VehicleHireViewSet,
-
-                    order_profitability, report_driver_availability, report_fleet, report_customer_invoices,
-                    report_vehicle_settlement, report_sales)
+                    VendorLaneRateViewSet, order_profitability, report_driver_availability, report_fleet,
+                    report_customer_invoices, report_vehicle_settlement, report_sales)
 router = DefaultRouter()
 router.register("maintenance", MaintenanceWorkOrderViewSet)
 router.register("quotes", SalesQuoteViewSet)
