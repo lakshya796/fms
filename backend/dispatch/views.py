@@ -3,8 +3,9 @@ from uuid import uuid4
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import viewsets
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import ValidationError
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from fleet.models import Order as FleetOrder
@@ -13,13 +14,15 @@ from iam.filtering import apply_filters
 from iam.messaging import send_email
 from iam.permissions import HasModulePermission
 
-from .models import CarrierOffer, DispatchPlan, DispatchTask, HireRequirement, PlanEvent, PlannedRoute, PlannedStop, PlanVehicle
+from .models import (CarrierOffer, DispatchPlan, DispatchTask, HireRequirement, PlanEvent, PlannedRoute, PlannedStop,
+                     PlanVehicle, ScenarioProfile)
 from .serializers import (CarrierOfferSerializer, DispatchPlanDetailSerializer, DispatchPlanSerializer,
                           DispatchTaskSerializer, HireRequirementSerializer, PlanEventSerializer,
-                          PlannedRouteSerializer, PlannedStopSerializer, PlanVehicleSerializer)
-from .solver import inputs, tracking
+                          PlannedRouteSerializer, PlannedStopSerializer, PlanVehicleSerializer, ScenarioProfileSerializer)
+from .solver import inputs, override, tracking
 from .solver.engine import solve_plan
 from .solver.replan import replan as replan_plan
+from .strategies import StrategyError, resolve_strategy, strategy_catalogue
 
 
 def _require_commit_permission(request):
@@ -75,24 +78,36 @@ class DispatchPlanViewSet(DispatchViewSet):
     @transaction.atomic
     def collect(self, request, pk=None):
         """Pull open indents and un-trip'd orders into this plan's task list, and
-        snapshot the eligible fleet as `PlanVehicle` offers."""
+        snapshot the eligible fleet as `PlanVehicle` offers. The body may narrow
+        what gets pulled in - `customers`, `pickup_places`, `temperature_class`,
+        `scheduled_from`/`scheduled_to`, `order_ids` or `include_indents` - see
+        `solver.inputs.collect_tasks` and docs/DISPATCH-PLANNER-V2.md §4.3."""
         plan = self.get_object()
         if plan.status in ("committed", "superseded"):
             raise ValidationError(f"A {plan.status} plan cannot collect new demand.")
-        tasks = inputs.collect_tasks(plan)
+        tasks = inputs.collect_tasks(plan, filters=request.data)
         vehicles = inputs.build_plan_vehicles(plan)
+        spot_slots = inputs.build_spot_slot_vehicles(plan)
         plan.status = "ready"
         plan.save(update_fields=["status", "updated_at"])
-        plan.log("collected", f"{len(tasks)} task(s), {len(vehicles)} vehicle(s)")
-        return Response({"plan": DispatchPlanSerializer(plan).data, "task_count": len(tasks), "vehicle_count": len(vehicles)})
+        plan.log("collected", f"{len(tasks)} task(s), {len(vehicles)} vehicle(s), {len(spot_slots)} spot slot(s)")
+        return Response({"plan": DispatchPlanSerializer(plan).data, "task_count": len(tasks),
+                         "vehicle_count": len(vehicles), "spot_slot_count": len(spot_slots)})
 
     @action(detail=True, methods=["post"])
     def solve(self, request, pk=None):
+        """Body may carry `strategy` (a preset name), `weights` and
+        `constraints` overrides (see strategies.py) - all optional, defaulting
+        to the "balanced" preset. See docs/DISPATCH-PLANNER-V2.md §3.3."""
         plan = self.get_object()
         if plan.status not in ("ready", "solved", "failed"):
             raise ValidationError("Collect demand before solving, or this plan is already committed.")
         try:
-            solve_plan(plan)
+            strategy = resolve_strategy(request.data)
+        except StrategyError as error:
+            raise ValidationError(str(error)) from error
+        try:
+            solve_plan(plan, strategy)
         except Exception as error:  # noqa: BLE001 - surfaced to the dispatcher, not swallowed
             plan.status = "failed"
             plan.solver_status = str(error)
@@ -122,6 +137,181 @@ class DispatchPlanViewSet(DispatchViewSet):
     @action(detail=True, methods=["get"])
     def kpis(self, request, pk=None):
         return Response(self.get_object().summary)
+
+    ROUTE_MAP_COLOURS = ["#0d5f45", "#3a6e9d", "#9a6b22", "#6656d9", "#b95544", "#347257", "#4c574f", "#c45f48"]
+
+    @action(detail=True, methods=["get"])
+    def map(self, request, pk=None):
+        """Everything the plan map needs in one payload: each route's polyline
+        path and a stable colour, plus every un-routed or outsourced task with
+        its pickup/drop coordinates - the loads the plan could not serve are
+        exactly what a dispatcher needs to see. See docs/DISPATCH-PLANNER-V2.md §6.1."""
+        plan = self.get_object()
+        routes = plan.routes.select_related("plan_vehicle__vehicle") \
+                            .prefetch_related("stops__place", "stops__task__order__customer").order_by("sequence")
+        route_payload = []
+        for index, route in enumerate(routes):
+            data = PlannedRouteSerializer(route).data
+            data["colour"] = self.ROUTE_MAP_COLOURS[index % len(self.ROUTE_MAP_COLOURS)]
+            route_payload.append(data)
+
+        unrouted = plan.tasks.filter(status__in=["outsourced", "dropped"]).select_related("pickup", "dropoff", "order", "indent")
+        unrouted_payload = [{
+            "id": task.id, "status": task.status, "reason": task.drop_reason,
+            "pickup_name": task.pickup.name,
+            "pickup_lat": float(task.pickup.latitude) if task.pickup.latitude is not None else None,
+            "pickup_lng": float(task.pickup.longitude) if task.pickup.longitude is not None else None,
+            "dropoff_name": task.dropoff.name,
+            "dropoff_lat": float(task.dropoff.latitude) if task.dropoff.latitude is not None else None,
+            "dropoff_lng": float(task.dropoff.longitude) if task.dropoff.longitude is not None else None,
+            "order_number": getattr(task.order, "number", "") or getattr(task.indent, "number", ""),
+            "weight_kg": float(task.weight_kg),
+            "outsource_estimate": float(task.outsource_estimate),
+            "outsource_confidence": task.outsource_confidence,
+        } for task in unrouted]
+
+        return Response({"routes": route_payload, "unrouted_tasks": unrouted_payload})
+
+    @action(detail=True, methods=["post"], url_path="move-task")
+    @transaction.atomic
+    def move_task(self, request, pk=None):
+        """Move a task onto a different route, appended at the end, and
+        re-cost both routes it touches. See docs/DISPATCH-PLANNER-V2.md §8.1."""
+        plan = self.get_object()
+        task_id, route_id = request.data.get("task"), request.data.get("to_route")
+        if not task_id or not route_id:
+            raise ValidationError("Provide 'task' and 'to_route'.")
+        task = DispatchTask.objects.select_related("pickup", "dropoff").filter(pk=task_id, plan=plan).first()
+        to_route = PlannedRoute.objects.select_related("plan_vehicle__vehicle").filter(pk=route_id, plan=plan).first()
+        if task is None or to_route is None:
+            raise ValidationError("That task or route does not belong to this plan.")
+        override.move_task(plan, task, to_route)
+        plan.log("manual_move", f"Task {task.pk} moved onto route #{to_route.sequence}",
+                 {"task": task.pk, "route": to_route.pk})
+        return Response(DispatchPlanDetailSerializer(plan).data)
+
+    @action(detail=True, methods=["post"], url_path="reorder-route")
+    @transaction.atomic
+    def reorder_route(self, request, pk=None):
+        """Resequence one route's stops to the given order and re-cost it."""
+        plan = self.get_object()
+        route_id, stop_ids = request.data.get("route"), request.data.get("stop_ids")
+        if not route_id or not stop_ids:
+            raise ValidationError("Provide 'route' and a non-empty 'stop_ids' list.")
+        route = PlannedRoute.objects.select_related("plan_vehicle__vehicle").filter(pk=route_id, plan=plan).first()
+        if route is None:
+            raise ValidationError("That route does not belong to this plan.")
+        try:
+            override.reorder_route(route, stop_ids)
+        except ValueError as error:
+            raise ValidationError(str(error)) from error
+        plan.log("manual_move", f"Route #{route.sequence} reordered", {"route": route.pk})
+        return Response(DispatchPlanDetailSerializer(plan).data)
+
+    @action(detail=True, methods=["post"], url_path="pin-task")
+    def pin_task(self, request, pk=None):
+        """Force `task` onto `vehicle` on the plan's next solve - or clear the
+        pin when `vehicle` is omitted. Nothing already routed changes until
+        the plan is solved again; `greedy.solve` is what honours the pin."""
+        plan = self.get_object()
+        task_id = request.data.get("task")
+        if not task_id:
+            raise ValidationError("Provide 'task'.")
+        task = DispatchTask.objects.filter(pk=task_id, plan=plan).first()
+        if task is None:
+            raise ValidationError("That task does not belong to this plan.")
+        vehicle_id = request.data.get("vehicle") or None
+        task.pinned_vehicle_id = vehicle_id
+        task.save(update_fields=["pinned_vehicle", "updated_at"])
+        plan.log("manual_move", f"Task {task.pk} pinned to vehicle {vehicle_id}" if vehicle_id
+                 else f"Task {task.pk} unpinned", {"task": task.pk, "vehicle": vehicle_id})
+        return Response(DispatchTaskSerializer(task).data)
+
+    @action(detail=True, methods=["post"], url_path="unroute-task")
+    @transaction.atomic
+    def unroute_task(self, request, pk=None):
+        """Take a task off its route entirely, freeing it for the next solve
+        or another manual placement."""
+        plan = self.get_object()
+        task_id = request.data.get("task")
+        if not task_id:
+            raise ValidationError("Provide 'task'.")
+        task = DispatchTask.objects.filter(pk=task_id, plan=plan).first()
+        if task is None:
+            raise ValidationError("That task does not belong to this plan.")
+        override.unroute_task(plan, task)
+        plan.log("manual_move", f"Task {task.pk} taken off its route", {"task": task.pk})
+        return Response(DispatchPlanDetailSerializer(plan).data)
+
+    @action(detail=True, methods=["post"])
+    @transaction.atomic
+    def compare(self, request, pk=None):
+        """Solve the same demand under each named strategy as a scenario
+        child plan, and return a comparison table - see
+        docs/DISPATCH-PLANNER-V2.md §8.2. Never touches the parent plan;
+        `adopt` is the only thing that does."""
+        plan = self.get_object()
+        names = request.data.get("strategies") or []
+        if not names:
+            raise ValidationError("Provide a non-empty 'strategies' list of preset names.")
+        scenarios = []
+        for name in names:
+            try:
+                strategy = resolve_strategy({"strategy": name})
+            except StrategyError as error:
+                raise ValidationError(str(error)) from error
+            child = DispatchPlan.objects.create(
+                branch=plan.branch, plan_date=plan.plan_date, horizon_hours=plan.horizon_hours,
+                parent_plan=plan, is_scenario=True, created_by=request.user.get_username())
+            inputs.collect_tasks(child, filters=plan.collection_filters)
+            inputs.build_plan_vehicles(child)
+            inputs.build_spot_slot_vehicles(child)
+            child.status = "ready"
+            child.save(update_fields=["status", "updated_at"])
+            solve_plan(child, strategy)
+            child.refresh_from_db()
+            scenarios.append(child)
+        plan.log("scenario_compared", f"Compared {len(scenarios)} strategy scenario(s)",
+                 {"scenarios": [s.pk for s in scenarios]})
+        return Response({"scenarios": [
+            {"id": s.pk, "code": s.code, "strategy": s.objective.get("preset"), "summary": s.summary}
+            for s in scenarios
+        ]})
+
+    @action(detail=True, methods=["post"])
+    @transaction.atomic
+    def adopt(self, request, pk=None):
+        """Transplant a `compare` scenario's routes, tasks and hire
+        requirements onto this plan - reassigning ownership rather than
+        copying rows, since a copy would leave PlannedStop pointing at a
+        DispatchTask that belongs to a different plan."""
+        _require_commit_permission(request)
+        plan = self.get_object()
+        scenario_id = request.data.get("scenario")
+        if not scenario_id:
+            raise ValidationError("Provide a scenario id.")
+        scenario = DispatchPlan.objects.filter(pk=scenario_id, parent_plan=plan, is_scenario=True).first()
+        if scenario is None:
+            raise ValidationError("That scenario does not belong to this plan.")
+        if plan.status == "committed":
+            raise ValidationError("This plan is already committed.")
+
+        PlannedRoute.objects.filter(plan=plan).delete()
+        HireRequirement.objects.filter(plan=plan, status="open").delete()
+        DispatchTask.objects.filter(plan=plan).delete()
+
+        DispatchTask.objects.filter(plan=scenario).update(plan=plan)
+        PlannedRoute.objects.filter(plan=scenario).update(plan=plan)
+        HireRequirement.objects.filter(plan=scenario).update(plan=plan)
+
+        plan.objective = scenario.objective
+        plan.summary = scenario.summary
+        plan.status = "solved"
+        plan.save(update_fields=["objective", "summary", "status", "updated_at"])
+        DispatchPlan.objects.filter(pk=scenario.pk).update(status="superseded")
+        DispatchPlan.objects.filter(parent_plan=plan, is_scenario=True).exclude(pk=scenario.pk).update(status="superseded")
+        plan.log("scenario_adopted", f"Adopted {scenario.code} ({scenario.objective.get('preset')})", {"scenario": scenario.pk})
+        return Response(DispatchPlanDetailSerializer(plan).data)
 
     @action(detail=True, methods=["get"], url_path="replan-status")
     def replan_status(self, request, pk=None):
@@ -277,7 +467,8 @@ def _convert_indent(indent, plan_vehicle):
 
 
 class PlannedRouteViewSet(DispatchViewSet):
-    queryset = PlannedRoute.objects.select_related("plan", "plan_vehicle__vehicle", "plan_vehicle__driver").prefetch_related("stops").all()
+    queryset = PlannedRoute.objects.select_related("plan", "plan_vehicle__vehicle", "plan_vehicle__driver") \
+                                   .prefetch_related("stops__task__order").all()
     serializer_class = PlannedRouteSerializer
     filter_fields = ["plan", "feasible", "locked"]
 
@@ -332,10 +523,41 @@ class PlanVehicleViewSet(DispatchViewSet):
 
 
 class DispatchTaskViewSet(DispatchViewSet):
-    queryset = DispatchTask.objects.select_related("plan", "pickup", "dropoff", "order", "indent").all()
+    queryset = DispatchTask.objects.select_related("plan", "pickup", "dropoff", "order", "indent", "matched_scenario").all()
     serializer_class = DispatchTaskSerializer
-    filter_fields = ["plan", "status", "priority", "temperature_class"]
+    filter_fields = ["plan", "status", "priority", "temperature_class", "matched_scenario"]
     http_method_names = ["get", "head", "options"]
+
+
+class ScenarioProfileViewSet(DispatchViewSet):
+    """Dispatcher-configured planning + fallback logic per operational
+    pattern - milk run, long haul, reefer, local delivery, or any custom
+    profile. See docs/SCENARIO-PROFILES.md and `solver.scenarios`."""
+    queryset = ScenarioProfile.objects.select_related("fallback_profile").all()
+    serializer_class = ScenarioProfileSerializer
+    filter_fields = ["scenario_type", "active"]
+    search_fields = ["name", "description"]
+
+    @action(detail=True, methods=["get"])
+    def preview(self, request, pk=None):
+        """Which of a plan's currently pending tasks this profile would match
+        on the next solve - so a dispatcher can sanity-check a profile's
+        criteria against real demand before relying on it."""
+        profile = self.get_object()
+        plan_id = request.query_params.get("plan")
+        if not plan_id:
+            raise ValidationError("Provide ?plan=<id>.")
+        from .solver import scenarios as scenarios_module
+        from .solver.greedy import build_clusters
+        tasks = list(DispatchTask.objects.filter(plan_id=plan_id, status="pending").select_related("pickup", "dropoff"))
+        clusters, _ = build_clusters(tasks)
+        matched = [c for c in clusters if scenarios_module.match_profile(c, [profile]) is not None]
+        return Response({
+            "matched_clusters": len(matched), "matched_tasks": sum(len(c.tasks) for c in matched),
+            "sample": [{"pickup": c.pickup.name, "drops": len(c.tasks),
+                       "distance_km": float(c.distance_km) if c.distance_km is not None else None}
+                      for c in matched[:10]],
+        })
 
 
 class HireRequirementViewSet(DispatchViewSet):
@@ -482,3 +704,12 @@ class CarrierOfferViewSet(DispatchViewSet):
         solve_plan(plan)
         plan.refresh_from_db()
         return Response(DispatchPlanDetailSerializer(plan).data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def strategies_view(request):
+    """The preset catalogue with each one's fully expanded weight vector, so
+    the solve panel builds its picker from the server rather than a hardcoded
+    copy. See docs/DISPATCH-PLANNER-V2.md §3.3."""
+    return Response(strategy_catalogue())

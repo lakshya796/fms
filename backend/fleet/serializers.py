@@ -269,7 +269,7 @@ class ProjectionRequestSerializer(QuoteRequestSerializer):
     days = serializers.IntegerField(required=False, default=90, min_value=1, max_value=730)
 
 
-from .models import Indent, VehicleHire
+from .models import Indent, VehicleHire, VendorLaneRate
 
 
 class VehicleHireSerializer(serializers.ModelSerializer):
@@ -277,6 +277,11 @@ class VehicleHireSerializer(serializers.ModelSerializer):
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     trip_number = serializers.CharField(source="trip.number", read_only=True, default="")
     class Meta: model = VehicleHire; fields = "__all__"
+
+
+class VendorLaneRateSerializer(serializers.ModelSerializer):
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True)
+    class Meta: model = VendorLaneRate; fields = "__all__"
 
 
 class IndentSerializer(serializers.ModelSerializer):

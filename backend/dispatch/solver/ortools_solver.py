@@ -11,6 +11,14 @@ true drop-in rather than a hard dependency of the app.
 Money is scaled to paise and distance to metres before reaching OR-Tools,
 which works in integers - the same convention docs/DISPATCH-PLANNING.md §6.1
 specifies.
+
+**Strategies.** The same weight vector `greedy.py` reads (see strategies.py)
+maps onto this model's arc costs, fixed vehicle costs, disjunction penalty and
+soft/hard time windows - `distance_cost`, `time_cost`, `fixed_cost`,
+`window_miss_penalty`, `outsource_bias`, `own_fleet_discount` and
+`dead_km_penalty` (applied to each vehicle's first, necessarily empty, arc).
+`utilisation_bonus` and `margin_weight` are not linear arc costs and are not
+encoded here - see docs/DISPATCH-PLANNER-V2.md §3.2.
 """
 from datetime import timedelta
 from decimal import Decimal
@@ -27,7 +35,7 @@ DEFAULT_TIME_LIMIT_SECONDS = 10
 PRECOOL_SECONDS = 45 * 60
 
 
-def solve(plan_vehicles, tasks, *, time_limit_seconds=None, horizon_hours=48):
+def solve(plan_vehicles, tasks, *, strategy=None, time_limit_seconds=None, horizon_hours=48):
     """Returns (routes, outsourced, skipped) - identical shape to `greedy.solve`.
 
     `horizon_hours` bounds the Time dimension's domain. It has to stay tight to
@@ -35,7 +43,15 @@ def solve(plan_vehicles, tasks, *, time_limit_seconds=None, horizon_hours=48):
     correct, it just gives the search a far larger neighbourhood to explore per
     node and turns a sub-second solve into one that never converges within its
     own time limit.
+
+    `strategy` is a `strategies.Strategy`; omitting it runs the "balanced" preset.
     """
+    if strategy is None:
+        from ..strategies import Strategy
+        strategy = Strategy()
+    w = strategy.weights
+    hard_windows = strategy.constraints.get("time_windows") == "hard"
+
     candidate_vehicles = [pv for pv in plan_vehicles if not pv.excluded]
     routable = [t for t in tasks if t.pickup.latitude is not None and t.pickup.longitude is not None
                and t.dropoff.latitude is not None and t.dropoff.longitude is not None]
@@ -121,20 +137,36 @@ def solve(plan_vehicles, tasks, *, time_limit_seconds=None, horizon_hours=48):
     volume_capacities = [int((pv.capacity_cbm or 0) * 1000) or 10**9 for pv in candidate_vehicles]
     routing.AddDimensionWithVehicleCapacity(volume_callback_index, 0, volume_capacities, True, "Volume")
 
+    w_distance = Decimal(str(w["distance_cost"]))
+    w_time = Decimal(str(w["time_cost"]))
+    w_fixed = Decimal(str(w["fixed_cost"]))
+    w_dead = Decimal(str(w["dead_km_penalty"]))
+    w_own_discount = Decimal(str(w["own_fleet_discount"]))
+
     for v, pv in enumerate(candidate_vehicles):
         cost_per_km = pv.cost_per_km or Decimal("0")
         cost_per_second = (pv.cost_per_hour or Decimal("0")) / Decimal("3600")
+        start_node = starts[v]
+        is_own = pv.source == "own"
 
-        def make_cost_callback(cpk=cost_per_km, cps=cost_per_second):
+        def make_cost_callback(cpk=cost_per_km, cps=cost_per_second, start=start_node, own=is_own):
             def cb(from_index, to_index):
                 i, j = manager.IndexToNode(from_index), manager.IndexToNode(to_index)
                 km = Decimal(distance_m[i][j]) / KM_SCALE
                 seconds = Decimal(duration_s[i][j])
-                return int((km * cpk + seconds * cps) * MONEY_SCALE)
+                cost = km * cpk * w_distance + seconds * cps * w_time
+                if i == start:
+                    # The vehicle's first arc, wherever it lands, is by
+                    # definition empty running - see greedy.py's `dead_km`.
+                    cost += km * w_dead
+                return int(cost * MONEY_SCALE)
             return cb
         cost_index = routing.RegisterTransitCallback(make_cost_callback())
         routing.SetArcCostEvaluatorOfVehicle(cost_index, v)
-        routing.SetFixedCostOfVehicle(int((pv.fixed_cost or 0) * MONEY_SCALE), v)
+        fixed_cost = (pv.fixed_cost or 0) * w_fixed
+        if is_own:
+            fixed_cost -= w_own_discount
+        routing.SetFixedCostOfVehicle(max(0, int(fixed_cost * MONEY_SCALE)), v)
         distance_dimension.SetSpanUpperBoundForVehicle(int((pv.max_route_km or 800) * KM_SCALE), v)
         available_seconds = int((pv.available_from - solve_start).total_seconds()) if pv.available_from else 0
         time_dimension.CumulVar(routing.Start(v)).SetMin(max(0, available_seconds))
@@ -163,10 +195,15 @@ def solve(plan_vehicles, tasks, *, time_limit_seconds=None, horizon_hours=48):
         if task.drop_window_end:
             deadline = int((task.drop_window_end - solve_start).total_seconds())
             if deadline > 0:
-                time_dimension.SetCumulVarSoftUpperBound(delivery_index, deadline, int(WINDOW_MISS_PENALTY * MONEY_SCALE))
+                if hard_windows:
+                    time_dimension.CumulVar(delivery_index).SetMax(deadline)
+                else:
+                    window_penalty = Decimal(str(w["window_miss_penalty"]))
+                    time_dimension.SetCumulVarSoftUpperBound(delivery_index, deadline, int(window_penalty * MONEY_SCALE))
 
         if task.priority != "must_go":
-            penalty = int((task.outsource_estimate or 0) * MONEY_SCALE)
+            outsource_bias = Decimal(str(w["outsource_bias"]))
+            penalty = int((task.outsource_estimate or 0) * outsource_bias * MONEY_SCALE)
             routing.AddDisjunction([pickup_index, delivery_index], penalty)
 
     search_parameters = pywrapcp.DefaultRoutingSearchParameters()
@@ -187,6 +224,7 @@ def solve(plan_vehicles, tasks, *, time_limit_seconds=None, horizon_hours=48):
         route = routes[v]
         index = routing.Start(v)
         position = (pv.start_latitude, pv.start_longitude)
+        first_leg = True
         while not routing.IsEnd(index):
             node = manager.IndexToNode(index)
             next_index = solution.Value(routing.NextVar(index))
@@ -209,6 +247,11 @@ def solve(plan_vehicles, tasks, *, time_limit_seconds=None, horizon_hours=48):
                 route.drive_minutes += Decimal(str(leg_minutes or 0))
                 route.cost += leg_km * (pv.cost_per_km or 0) + (Decimal(str(leg_minutes or 0)) / 60) * (pv.cost_per_hour or 0)
                 route.used = True
+                if first_leg:
+                    # A vehicle's very first leg, to whatever it visits first,
+                    # is by definition empty running (greedy.py's `dead_km`).
+                    route.dead_km += leg_km
+                    first_leg = False
                 position = (place.latitude, place.longitude)
                 if kind == "delivery":
                     visited_task_ids.add(task.pk)

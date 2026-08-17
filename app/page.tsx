@@ -7,7 +7,7 @@ import { UNAUTHORISED_EVENT, fmsRequest, fmsRequestRaw, login, logout } from "./
 
 const navGroups: { label: string; items: [string, string][] }[] = [
   { label: "WORKSPACE", items: [["Overview", "⌂"], ["Analytics", "◎"]] },
-  { label: "TRANSPORT", items: [["Indents", "◰"], ["Dispatch", "▦"], ["Planning", "⛁"], ["Orders", "◈"], ["Hires", "⚑"], ["ePOD", "✍"], ["Tracking", "⌖"], ["Operations", "▤"]] },
+  { label: "TRANSPORT", items: [["Indents", "◰"], ["Dispatch", "▦"], ["Planning", "⛁"], ["Scenario Profiles", "⚙"], ["Orders", "◈"], ["Hires", "⚑"], ["ePOD", "✍"], ["Tracking", "⌖"], ["Operations", "▤"]] },
   { label: "COMMERCIAL", items: [["Customers", "◇"], ["Sales", "↗"], ["Rates", "⚖"], ["Invoices", "▥"]] },
   { label: "FLEET", items: [["Fleet", "▱"], ["Fleets", "▩"], ["Drivers", "♙"], ["Maintenance", "⚒"], ["Compliance", "▣"], ["Fuel", "⛽"], ["Issues", "⚠"]] },
   { label: "NETWORK", items: [["Vendors", "⌸"], ["Places", "⌂"], ["Service areas", "◫"], ["Zones", "◍"]] },
@@ -570,6 +570,8 @@ const recordForms: Record<string, FormSpec> = {
       { name: "vehicles_required", label: "How many", type: "number", value: "1" },
       { name: "material", label: "Material" },
       { name: "weight_kg", label: "Weight (kg)", type: "number", value: "12000" },
+      { name: "temperature_class", label: "Temperature", type: "select", options: [["dry", "Dry"], ["chiller", "Chiller"], ["frozen", "Frozen"], ["multi", "Multi-compartment"]] },
+      { name: "priority", label: "Priority", type: "select", options: [["normal", "Normal"], ["urgent", "Urgent - cannot be outsourced away"], ["low", "Low - can be deferred"]] },
       { name: "required_at", label: "Required by", type: "datetime" },
       { name: "expected_rate", label: "Expected freight (₹)", type: "number", value: "0" },
       { name: "service_rate", label: "Rate card", type: "select", source: "service-rates/" },
@@ -589,6 +591,8 @@ const recordForms: Record<string, FormSpec> = {
       { name: "payload_description", label: "Material" },
       { name: "weight_kg", label: "Weight (kg)", type: "number", value: "12000" },
       { name: "packages", label: "Packages", type: "number", value: "1" },
+      { name: "temperature_class", label: "Temperature", type: "select", options: [["dry", "Dry"], ["chiller", "Chiller"], ["frozen", "Frozen"], ["multi", "Multi-compartment"]] },
+      { name: "priority", label: "Priority", type: "select", options: [["normal", "Normal"], ["urgent", "Urgent - cannot be outsourced away"], ["low", "Low - can be deferred"]] },
       { name: "distance_km", label: "Distance (km)", type: "number" },
       { name: "declared_value", label: "Declared value (₹)", type: "number" },
       { name: "eway_bill_number", label: "E-way bill" },
@@ -617,6 +621,22 @@ const recordForms: Record<string, FormSpec> = {
       { name: "toll_responsibility", label: "Toll paid by", type: "select", options: [["vendor", "Vendor"], ["ours", "This fleet"]] },
       { name: "advance_amount", label: "Advance paid (₹)", type: "number", value: "0" },
       { name: "payment_terms_days", label: "Payment terms (days)", type: "number", value: "30" },
+      { name: "remarks", label: "Remarks", type: "textarea" },
+    ],
+  },
+  "vendor-lane-rate": {
+    eyebrow: "LANE PRICING", title: "Record a vendor's lane rate", button: "Save lane rate", endpoint: "vendor-lane-rates/",
+    reference: (_values, created) => created ? `${created.origin_city} → ${created.destination_city}` : "Lane rate",
+    fields: [
+      { name: "vendor", label: "Vendor", type: "select", source: "vendors/", required: true },
+      { name: "origin_city", label: "Origin city", required: true },
+      { name: "destination_city", label: "Destination city", required: true },
+      { name: "vehicle_type", label: "Vehicle type (blank = any)" },
+      { name: "temperature_class", label: "Temperature", type: "select", options: [["dry", "Dry"], ["chiller", "Chiller"], ["frozen", "Frozen"], ["multi", "Multi-compartment"]] },
+      { name: "rate", label: "Rate (₹)", type: "number", required: true },
+      { name: "rate_basis", label: "Rate basis", type: "select", options: [["trip", "Per trip"], ["km", "Per km"], ["day", "Per day"], ["ton", "Per ton"], ["other", "Other"]] },
+      { name: "valid_from", label: "Valid from", type: "date" },
+      { name: "valid_until", label: "Valid until", type: "date" },
       { name: "remarks", label: "Remarks", type: "textarea" },
     ],
   },
@@ -1849,6 +1869,20 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
   const [drivers, setDrivers] = useState<any[]>([]);
   const [busy, setBusy] = useState(false);
   const [newDate, setNewDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [strategies, setStrategies] = useState<any[]>([]);
+  const [strategyName, setStrategyName] = useState("balanced");
+  const [weightOverrides, setWeightOverrides] = useState<Record<string, number>>({});
+  const [constraintOverrides, setConstraintOverrides] = useState<Record<string, any>>({});
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [customersList, setCustomersList] = useState<any[]>([]);
+  const [placesList, setPlacesList] = useState<any[]>([]);
+  const [showCollectFilters, setShowCollectFilters] = useState(false);
+  const [collectFilters, setCollectFilters] = useState<{ temperature_class: string; scheduled_from: string; scheduled_to: string; customers: string[]; pickup_places: string[]; include_indents: boolean }>({
+    temperature_class: "", scheduled_from: "", scheduled_to: "", customers: [], pickup_places: [], include_indents: true,
+  });
+  const [routeSort, setRouteSort] = useState<{ key: string; dir: 1 | -1 }>({ key: "sequence", dir: 1 });
+  const [expandedRoute, setExpandedRoute] = useState<number | null>(null);
+  const [mapData, setMapData] = useState<{ routes: any[]; unrouted_tasks: any[] } | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -1856,6 +1890,15 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
   };
   useEffect(load, []);
   useEffect(() => { fmsRequest<any>(wholeSet("drivers/")).then(payload => setDrivers(asList(payload))).catch(() => undefined); }, []);
+  useEffect(() => { fmsRequest<any>("dispatch/strategies/").then(payload => setStrategies(asList(payload))).catch(() => undefined); }, []);
+  useEffect(() => { fmsRequest<any>(wholeSet("customers/")).then(payload => setCustomersList(asList(payload))).catch(() => undefined); }, []);
+  useEffect(() => { fmsRequest<any>(wholeSet("places/")).then(payload => setPlacesList(asList(payload))).catch(() => undefined); }, []);
+  useEffect(() => {
+    if (!selected || !(selected.routes || []).length) { setMapData(null); return; }
+    let active = true;
+    fmsRequest<any>(`dispatch/plans/${selected.id}/map/`).then(payload => { if (active) setMapData(payload); }).catch(() => { if (active) setMapData(null); });
+    return () => { active = false; };
+  }, [selected?.id, selected?.status, (selected?.routes || []).length]);
 
   const openPlan = async (id: number) => {
     const payload = await fmsRequest<any>(`dispatch/plans/${id}/`);
@@ -1886,6 +1929,116 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
       load();
     } catch (e) {
       onAction(e instanceof Error ? e.message.slice(0, 200) : "Action failed", "warn");
+    } finally { setBusy(false); }
+  };
+
+  const pickStrategy = (name: string) => {
+    setStrategyName(name);
+    setWeightOverrides({});
+    setConstraintOverrides({});
+  };
+
+  const runCollect = async () => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      const body: Record<string, unknown> = {};
+      if (collectFilters.temperature_class) body.temperature_class = collectFilters.temperature_class;
+      if (collectFilters.scheduled_from) body.scheduled_from = collectFilters.scheduled_from;
+      if (collectFilters.scheduled_to) body.scheduled_to = collectFilters.scheduled_to;
+      if (collectFilters.customers.length) body.customers = collectFilters.customers.map(Number);
+      if (collectFilters.pickup_places.length) body.pickup_places = collectFilters.pickup_places.map(Number);
+      if (!collectFilters.include_indents) body.include_indents = false;
+      const payload = await fmsRequest<any>(`dispatch/plans/${selected.id}/collect/`, { method: "POST", body: JSON.stringify(body) });
+      onAction(`${payload.task_count} task(s), ${payload.vehicle_count} vehicle(s) collected`);
+      await refreshSelected();
+      load();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 200) : "Collect failed", "warn");
+    } finally { setBusy(false); }
+  };
+
+  const runSolve = async () => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      const body: Record<string, unknown> = { strategy: strategyName };
+      if (Object.keys(weightOverrides).length) body.weights = weightOverrides;
+      if (Object.keys(constraintOverrides).length) body.constraints = constraintOverrides;
+      const payload = await fmsRequest<any>(`dispatch/plans/${selected.id}/solve/`, { method: "POST", body: JSON.stringify(body) });
+      onAction(payload.solver_status || "Solved");
+      await refreshSelected();
+      load();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 200) : "Solve failed", "warn");
+    } finally { setBusy(false); }
+  };
+
+  const routeSortValue = (route: any, key: string) => key.split(".").reduce((value, part) => value?.[part], route);
+  const toggleRouteSort = (key: string) => setRouteSort(prev => prev.key === key ? { key, dir: (prev.dir * -1) as 1 | -1 } : { key, dir: 1 });
+  const sortArrow = (key: string) => routeSort.key === key ? (routeSort.dir === 1 ? " ▲" : " ▼") : "";
+  const sortedRoutes = [...(selected?.routes || [])].sort((a, b) => {
+    const av = routeSortValue(a, routeSort.key);
+    const bv = routeSortValue(b, routeSort.key);
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    return av > bv ? routeSort.dir : av < bv ? -routeSort.dir : 0;
+  });
+
+  const moveTask = async (taskId: number, toRouteId: string) => {
+    if (!selected || !toRouteId) return;
+    setBusy(true);
+    try {
+      await fmsRequest<any>(`dispatch/plans/${selected.id}/move-task/`, { method: "POST", body: JSON.stringify({ task: taskId, to_route: Number(toRouteId) }) });
+      onAction("Task moved to another route");
+      await refreshSelected();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 160) : "Could not move task", "warn");
+    } finally { setBusy(false); }
+  };
+
+  const unrouteTask = async (taskId: number) => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      await fmsRequest<any>(`dispatch/plans/${selected.id}/unroute-task/`, { method: "POST", body: JSON.stringify({ task: taskId }) });
+      onAction("Task taken off its route - available for the next solve");
+      await refreshSelected();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 160) : "Could not unroute task", "warn");
+    } finally { setBusy(false); }
+  };
+
+  const [compareNames, setCompareNames] = useState<string[]>([]);
+  const [scenarios, setScenarios] = useState<any[] | null>(null);
+
+  const toggleCompareName = (name: string) =>
+    setCompareNames(prev => prev.includes(name) ? prev.filter(n => n !== name) : [...prev, name]);
+
+  const runCompare = async () => {
+    if (!selected || compareNames.length < 2) return;
+    setBusy(true);
+    try {
+      const payload = await fmsRequest<any>(`dispatch/plans/${selected.id}/compare/`, { method: "POST", body: JSON.stringify({ strategies: compareNames }) });
+      setScenarios(payload.scenarios);
+      onAction(`${payload.scenarios.length} scenario(s) solved for comparison`);
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 200) : "Compare failed", "warn");
+    } finally { setBusy(false); }
+  };
+
+  const adoptScenario = async (scenarioId: number) => {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      await fmsRequest<any>(`dispatch/plans/${selected.id}/adopt/`, { method: "POST", body: JSON.stringify({ scenario: scenarioId }) });
+      onAction("Scenario adopted - its routes now belong to this plan");
+      setScenarios(null);
+      await refreshSelected();
+      load();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 200) : "Adopt failed", "warn");
     } finally { setBusy(false); }
   };
 
@@ -1930,33 +2083,238 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
       <div className="record-head"><div><p className="eyebrow">{selected.code}</p><h2>Plan for {selected.plan_date}</h2><span className={"status " + selected.status}>{planStatusLabel[selected.status] || selected.status}</span></div><button className="panel-close" onClick={() => setSelected(null)}>×</button></div>
 
       <div className="record-actions">
-        <button className="secondary" disabled={busy || ["committed", "superseded"].includes(selected.status)} onClick={() => runStep("collect", p => `${p.task_count} task(s), ${p.vehicle_count} vehicle(s) collected`)}>Collect demand</button>
-        <button className="secondary" disabled={busy || ["committed", "superseded"].includes(selected.status)} onClick={() => runStep("solve", p => p.solver_status || "Solved")}>Solve</button>
+        <button className="secondary" disabled={busy || ["committed", "superseded"].includes(selected.status)} onClick={runCollect}>Collect demand</button>
         <button className="primary" disabled={busy || selected.status !== "solved"} onClick={() => runStep("commit", p => `${p.committed_routes?.length || 0} route(s) committed`)}>Commit plan</button>
       </div>
 
+      {!["committed", "superseded"].includes(selected.status) && <div className="record-section strategy-panel">
+        <p className="eyebrow">COLLECT DEMAND</p>
+        <button className="link-toggle" type="button" onClick={() => setShowCollectFilters(!showCollectFilters)}>
+          {showCollectFilters ? "▾ Hide filters" : "▸ Narrow what gets collected"}
+        </button>
+        {showCollectFilters && <div className="strategy-advanced">
+          <div className="strategy-constraint-grid">
+            <label><span>Temperature</span>
+              <select value={collectFilters.temperature_class} onChange={event => setCollectFilters(prev => ({ ...prev, temperature_class: event.target.value }))}>
+                <option value="">Any</option>
+                <option value="dry">Dry</option>
+                <option value="chiller">Chiller</option>
+                <option value="frozen">Frozen</option>
+              </select>
+            </label>
+            <label className="checkbox-field">
+              <input type="checkbox" checked={collectFilters.include_indents}
+                     onChange={event => setCollectFilters(prev => ({ ...prev, include_indents: event.target.checked }))} />
+              <span>Include open indents (not just booked orders)</span>
+            </label>
+            <label><span>Scheduled from</span>
+              <input type="datetime-local" value={collectFilters.scheduled_from}
+                     onChange={event => setCollectFilters(prev => ({ ...prev, scheduled_from: event.target.value }))} />
+            </label>
+            <label><span>Scheduled to</span>
+              <input type="datetime-local" value={collectFilters.scheduled_to}
+                     onChange={event => setCollectFilters(prev => ({ ...prev, scheduled_to: event.target.value }))} />
+            </label>
+          </div>
+          <label><span>Customers (leave empty for all)</span>
+            <select multiple value={collectFilters.customers} size={4}
+                    onChange={event => setCollectFilters(prev => ({ ...prev, customers: Array.from(event.target.selectedOptions, o => o.value) }))}>
+              {customersList.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </label>
+          <label><span>Pickup places (leave empty for all)</span>
+            <select multiple value={collectFilters.pickup_places} size={4}
+                    onChange={event => setCollectFilters(prev => ({ ...prev, pickup_places: Array.from(event.target.selectedOptions, o => o.value) }))}>
+              {placesList.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </label>
+        </div>}
+      </div>}
+
+      {!["committed", "superseded"].includes(selected.status) && <div className="record-section strategy-panel">
+        <p className="eyebrow">RUN PLAN</p>
+        <div className="strategy-cards">
+          {(strategies.length ? strategies : [{ name: "balanced", label: "Balanced", description: "Loading strategies…" }]).map(s => (
+            <button key={s.name} type="button" className={"strategy-card" + (strategyName === s.name ? " active" : "")} onClick={() => pickStrategy(s.name)}>
+              <strong>{s.label}</strong>
+              <span>{s.description}</span>
+            </button>
+          ))}
+        </div>
+        <button className="link-toggle" type="button" onClick={() => setShowAdvanced(!showAdvanced)}>
+          {showAdvanced ? "▾ Hide advanced weights" : "▸ Advanced weights & constraints"}
+        </button>
+        {showAdvanced && <div className="strategy-advanced">
+          <div className="strategy-weight-grid">
+            {Object.entries(strategies.find(s => s.name === strategyName)?.weights || {}).map(([key, value]) => (
+              <label key={key}>
+                <span>{key.replace(/_/g, " ")}</span>
+                <input type="number" step="0.1" value={weightOverrides[key] ?? (value as number)}
+                       onChange={event => setWeightOverrides(prev => ({ ...prev, [key]: Number(event.target.value) }))} />
+              </label>
+            ))}
+          </div>
+          <div className="strategy-constraint-grid">
+            <label><span>Max outsource %</span>
+              <input type="number" placeholder="no limit" value={constraintOverrides.max_outsource_percent ?? ""}
+                     onChange={event => setConstraintOverrides(prev => ({ ...prev, max_outsource_percent: event.target.value === "" ? null : Number(event.target.value) }))} />
+            </label>
+            <label><span>Min utilisation %</span>
+              <input type="number" placeholder="no minimum" value={constraintOverrides.min_utilisation_percent ?? ""}
+                     onChange={event => setConstraintOverrides(prev => ({ ...prev, min_utilisation_percent: event.target.value === "" ? null : Number(event.target.value) }))} />
+            </label>
+            <label><span>Delivery windows</span>
+              <select value={constraintOverrides.time_windows ?? (strategies.find(s => s.name === strategyName)?.constraints?.time_windows || "soft")}
+                      onChange={event => setConstraintOverrides(prev => ({ ...prev, time_windows: event.target.value }))}>
+                <option value="soft">Soft — penalise a late arrival</option>
+                <option value="hard">Hard — never plan a late arrival</option>
+              </select>
+            </label>
+            <label className="checkbox-field">
+              <input type="checkbox" checked={constraintOverrides.allow_partial_service ?? true}
+                     onChange={event => setConstraintOverrides(prev => ({ ...prev, allow_partial_service: event.target.checked }))} />
+              <span>Allow partial service — outsource or drop what does not fit rather than fail the solve</span>
+            </label>
+          </div>
+        </div>}
+        <button className="primary" disabled={busy} onClick={runSolve}>
+          Run plan — {strategies.find(s => s.name === strategyName)?.label || "Balanced"}
+        </button>
+
+        <div className="compare-panel">
+          <p className="eyebrow">COMPARE STRATEGIES</p>
+          <div className="compare-chips">
+            {strategies.map(s => <label key={s.name} className="compare-chip">
+              <input type="checkbox" checked={compareNames.includes(s.name)} onChange={() => toggleCompareName(s.name)} />
+              <span>{s.label}</span>
+            </label>)}
+          </div>
+          <button className="secondary" disabled={busy || compareNames.length < 2} onClick={runCompare}>
+            Solve {compareNames.length || ""} ways and compare
+          </button>
+
+          {!!scenarios?.length && <div className="table-wrap" style={{ marginTop: 10 }}>
+            <table>
+              <thead><tr><th>Strategy</th><th>Fill rate</th><th>Margin</th><th>Own vs hire</th><th>On-time</th><th></th></tr></thead>
+              <tbody>{scenarios.map(s => <tr key={s.id}>
+                <td>{strategies.find(x => x.name === s.strategy)?.label || s.strategy}</td>
+                <td>{s.summary?.fill_rate_percent}%</td>
+                <td className={Number(s.summary?.total_margin) >= 0 ? "good" : "bad"}>{rupees(s.summary?.total_margin)}</td>
+                <td>{s.summary?.own_vs_hire_percent != null ? `${s.summary.own_vs_hire_percent}% own` : "—"}</td>
+                <td>{s.summary?.projected_on_time_percent != null ? `${s.summary.projected_on_time_percent}%` : "—"}</td>
+                <td><button className="row-action" disabled={busy} onClick={() => adoptScenario(s.id)}>Adopt</button></td>
+              </tr>)}</tbody>
+            </table>
+          </div>}
+        </div>
+      </div>}
+
       {!!Object.keys(summary).length && <div className="record-section">
         <p className="eyebrow">PLAN SUMMARY</p>
-        <div className="tracking-grid">
+        {summary.strategy && <p className="strategy-chip">Solved with <strong>{strategies.find(s => s.name === summary.strategy)?.label || summary.strategy}</strong></p>}
+
+        <div className="kpi-tiles">
+          <div className="kpi-tile"><span>Fill rate</span><strong>{summary.fill_rate_percent}%</strong></div>
+          <div className="kpi-tile"><span>Margin</span><strong className={Number(summary.total_margin) >= 0 ? "good" : "bad"}>{rupees(summary.total_margin)}</strong></div>
+          <div className="kpi-tile"><span>Cost / tonne-km</span><strong>{summary.cost_per_tonne_km != null ? `₹${summary.cost_per_tonne_km}` : "—"}</strong></div>
+          <div className="kpi-tile"><span>Projected on-time</span><strong>{summary.projected_on_time_percent != null ? `${summary.projected_on_time_percent}%` : "—"}</strong></div>
+        </div>
+
+        <div className="tracking-grid kpi-secondary">
           <div><span>Total tasks</span><strong>{summary.total_tasks}</strong></div>
           <div><span>Served (own fleet)</span><strong>{summary.served_own_fleet}</strong></div>
           <div><span>Outsourced</span><strong>{summary.outsourced}</strong></div>
           <div><span>Unroutable</span><strong>{summary.dropped_unroutable}</strong></div>
-          <div><span>Fill rate</span><strong>{summary.fill_rate_percent}%</strong></div>
           <div><span>Routes used</span><strong>{summary.routes_used}</strong></div>
-          <div><span>Distance</span><strong>{summary.total_distance_km} km</strong></div>
+          <div><span>Distance (dead km)</span><strong>{summary.total_distance_km} km <small>({summary.dead_km_percent}% dead)</small></strong></div>
           <div><span>Revenue</span><strong>{rupees(summary.total_revenue)}</strong></div>
           <div><span>Cost</span><strong>{rupees(summary.total_cost)}</strong></div>
-          <div><span>Margin</span><strong className={Number(summary.total_margin) >= 0 ? "good" : "bad"}>{rupees(summary.total_margin)}</strong></div>
+          <div><span>Own fleet value</span><strong>{rupees(summary.own_fleet_value)}</strong></div>
+          <div><span>Outsourced value</span><strong>{rupees(summary.outsourced_value)}</strong></div>
+          <div><span>Own vs hire</span><strong>{summary.own_vs_hire_percent != null ? `${summary.own_vs_hire_percent}% own` : "—"}</strong></div>
+          <div><span>Avg weight fill</span><strong>{summary.avg_weight_utilisation}%</strong></div>
+          <div><span>Avg volume fill</span><strong>{summary.avg_volume_utilisation != null ? `${summary.avg_volume_utilisation}%` : "not tracked"}</strong></div>
+          <div><span>Stops / route</span><strong>{summary.stops_per_route}</strong></div>
+          <div><span>Avg route duration</span><strong>{summary.avg_route_duration_hours} h</strong></div>
+          <div><span>By temperature</span><strong>{Object.entries(summary.tasks_by_temperature || {}).map(([k, v]) => `${k}:${v}`).join(" · ") || "—"}</strong></div>
+          <div><span>Deferred / Held for review</span><strong>{summary.deferred_count ?? 0} / {summary.held_for_review_count ?? 0}</strong></div>
+          <div><span>By scenario profile</span><strong>{Object.entries(summary.scenario_breakdown || {}).map(([k, v]) => `${k}:${v}`).join(" · ") || "—"}</strong></div>
         </div>
+
+        {!!(summary.constraint_breaches || []).length && <div className="constraint-breaches">
+          {summary.constraint_breaches.map((breach: string, index: number) => <p key={index} className="breach-line">⚠ {breach}</p>)}
+        </div>}
+      </div>}
+
+      {!!(selected.routes || []).length && <div className="record-section">
+        <p className="eyebrow">ROUTE MAP</p>
+        {mapData
+          ? <PlanMap routes={mapData.routes} unroutedTasks={mapData.unrouted_tasks} highlightRoute={expandedRoute}
+                     onSelectRoute={id => setExpandedRoute(id)} />
+          : <div className="data-state">Loading map…</div>}
       </div>}
 
       {!!(selected.routes || []).length && <div className="record-section">
         <p className="eyebrow">ROUTES</p>
-        {(selected.routes || []).map((route: any) => <div key={route.id} className="record-field" style={{ display: "block", marginBottom: 12 }}>
-          <div><strong>{route.plan_vehicle_detail?.registration_number || "Route #" + route.sequence}</strong> · {route.total_distance_km} km · {rupees(route.estimated_cost)} cost · {rupees(route.estimated_margin)} margin</div>
-          <div style={{ marginTop: 4 }}>
-            {(route.stops || []).map((stop: any) => <span key={stop.id} style={{ marginRight: 8, fontSize: 12 }}>{stop.stop_type === "pickup" ? "▲" : "▼"} {stop.place_name} ({stop.load_after_kg}kg)</span>)}
+        <div className="table-wrap">
+          <table className="kpi-route-table">
+            <thead><tr>
+              <th className="sortable" onClick={() => toggleRouteSort("plan_vehicle_detail.registration_number")}>Vehicle{sortArrow("plan_vehicle_detail.registration_number")}</th>
+              <th className="sortable" onClick={() => toggleRouteSort("total_distance_km")}>Distance{sortArrow("total_distance_km")}</th>
+              <th className="sortable" onClick={() => toggleRouteSort("dead_km_percent")}>Dead km{sortArrow("dead_km_percent")}</th>
+              <th>Utilisation</th>
+              <th className="sortable" onClick={() => toggleRouteSort("estimated_margin")}>Margin{sortArrow("estimated_margin")}</th>
+              <th className="sortable" onClick={() => toggleRouteSort("orders_carried")}>Orders{sortArrow("orders_carried")}</th>
+              <th>On-time</th>
+            </tr></thead>
+            <tbody>{sortedRoutes.map((route: any) => <tr key={route.id} className="clickable" onClick={() => setExpandedRoute(expandedRoute === route.id ? null : route.id)}>
+              <td>{route.plan_vehicle_detail?.registration_number || "Route #" + route.sequence}</td>
+              <td>{route.total_distance_km} km</td>
+              <td>{route.dead_km_percent}%</td>
+              <td><div className="util-bar"><i style={{ width: `${Math.min(100, route.avg_utilisation_percent ?? 0)}%` }} /></div></td>
+              <td className={Number(route.estimated_margin) >= 0 ? "good" : "bad"}>{rupees(route.estimated_margin)}</td>
+              <td>{route.orders_carried}</td>
+              <td>{route.on_time_stops ? `${route.on_time_stops.on_time}/${route.on_time_stops.total}` : "—"}</td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+
+        {(selected.routes || []).filter((route: any) => expandedRoute === route.id).map((route: any) => <div key={route.id} className="record-field" style={{ display: "block", marginTop: 12 }}>
+          <div><strong>{route.plan_vehicle_detail?.registration_number || "Route #" + route.sequence}</strong> · {rupees(route.estimated_cost)} cost · {route.stop_count} stop(s) · {route.window_risk_stops} at risk of a late window</div>
+
+          <div className="gantt">
+            <div className="gantt-row">
+              <span className="gantt-label">Drive / wait</span>
+              <div className="gantt-track">
+                <div className="seg-drive" style={{ width: `${route.total_duration_minutes ? (route.drive_minutes / route.total_duration_minutes * 100) : 0}%` }} />
+                <div className="seg-wait" style={{ width: `${route.total_duration_minutes ? (route.wait_minutes / route.total_duration_minutes * 100) : 0}%` }} />
+              </div>
+              <span className="gantt-total">{route.total_duration_minutes ? (route.total_duration_minutes / 60).toFixed(1) : 0}h</span>
+            </div>
+            <div className="gantt-legend">
+              <span><i className="seg-drive" />Drive {route.drive_minutes}m</span>
+              <span><i className="seg-wait" />Wait {route.wait_minutes}m</span>
+            </div>
+          </div>
+
+          <div className="load-profile" title="Load after each stop, against vehicle capacity">
+            {(route.stops || []).map((stop: any) => <div key={stop.id} className="load-bar" title={`${stop.place_name}: ${stop.load_after_kg}kg`}>
+              <i style={{ height: `${route.plan_vehicle_detail?.capacity_kg ? Math.min(100, Number(stop.load_after_kg) / Number(route.plan_vehicle_detail.capacity_kg) * 100) : 0}%` }} />
+            </div>)}
+          </div>
+
+          <div className="stop-override-list" style={{ marginTop: 10 }}>
+            {(route.stops || []).map((stop: any) => <div key={stop.id} className="stop-override-row">
+              <span>{stop.stop_type === "pickup" ? "▲" : "▼"} {stop.place_name} ({stop.load_after_kg}kg){stop.order_number ? ` · ${stop.order_number}` : ""}</span>
+              {stop.stop_type === "drop" && stop.task_id && !route.committed_trip && <span className="stop-override-actions">
+                <select defaultValue="" onChange={event => { moveTask(stop.task_id, event.target.value); event.target.value = ""; }}>
+                  <option value="">Move to…</option>
+                  {(selected.routes || []).filter((r: any) => r.id !== route.id).map((r: any) =>
+                    <option key={r.id} value={r.id}>{r.plan_vehicle_detail?.registration_number || "Route #" + r.sequence}</option>)}
+                </select>
+                <button className="row-action" disabled={busy} onClick={() => unrouteTask(stop.task_id)}>Unroute</button>
+              </span>}
+            </div>)}
           </div>
           {!route.plan_vehicle_detail?.driver && !route.committed_trip && <div className="assign-row" style={{ marginTop: 6 }}>
             <select onChange={event => assignDriver(route.id, event.target.value)} defaultValue="">
@@ -1975,6 +2333,259 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
         </div>)}
       </div>}
     </aside></div>}
+  </div>;
+}
+
+function ScenarioProfilesView({ reloadKey, onAction }: { reloadKey: number; onAction: Notify }) {
+  const [profiles, setProfiles] = useState<any[]>([]);
+  const [strategies, setStrategies] = useState<any[]>([]);
+  const [plans, setPlans] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState<any>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [previewPlan, setPreviewPlan] = useState("");
+  const [previewResult, setPreviewResult] = useState<any>(null);
+  const [previewBusy, setPreviewBusy] = useState(false);
+
+  const load = () => { setLoading(true); fmsRequest<any>(wholeSet("dispatch/scenario-profiles/")).then(payload => setProfiles(asList(payload))).finally(() => setLoading(false)); };
+  useEffect(load, [reloadKey]);
+  useEffect(() => { fmsRequest<any>("dispatch/strategies/").then(payload => setStrategies(asList(payload))).catch(() => undefined); }, []);
+  useEffect(() => { fmsRequest<any>(wholeSet("dispatch/plans/")).then(payload => setPlans(asList(payload))).catch(() => undefined); }, [reloadKey]);
+
+  const blank = () => ({
+    name: "", scenario_type: "custom", description: "", priority: 100, active: true,
+    match_temperature_classes: [] as string[], match_min_distance_km: "", match_max_distance_km: "",
+    match_min_drops: "", match_same_city_only: false,
+    base_strategy: "balanced", weight_overrides: {} as Record<string, number>, constraint_overrides: {} as Record<string, any>,
+    fallback_action: "outsource", fallback_profile: "",
+  });
+
+  const open = (profile: any | null) => {
+    setError(""); setPreviewResult(null); setPreviewPlan("");
+    setEditing(profile ? {
+      ...profile,
+      match_min_distance_km: profile.match_min_distance_km ?? "", match_max_distance_km: profile.match_max_distance_km ?? "",
+      match_min_drops: profile.match_min_drops ?? "", fallback_profile: profile.fallback_profile ?? "",
+      weight_overrides: profile.weight_overrides || {}, constraint_overrides: profile.constraint_overrides || {},
+      match_temperature_classes: profile.match_temperature_classes || [],
+    } : blank());
+  };
+
+  const setField = (key: string, value: any) => setEditing((prev: any) => ({ ...prev, [key]: value }));
+
+  const toggleTemperature = (cls: string) => setEditing((prev: any) => ({
+    ...prev,
+    match_temperature_classes: prev.match_temperature_classes.includes(cls)
+      ? prev.match_temperature_classes.filter((c: string) => c !== cls)
+      : [...prev.match_temperature_classes, cls],
+  }));
+
+  const setWeightOverride = (key: string, value: string) => setEditing((prev: any) => {
+    const next = { ...prev.weight_overrides };
+    if (value === "") delete next[key]; else next[key] = Number(value);
+    return { ...prev, weight_overrides: next };
+  });
+
+  const setConstraintOverride = (key: string, value: any) => setEditing((prev: any) => {
+    const next = { ...prev.constraint_overrides };
+    if (value === "" || value === null) delete next[key]; else next[key] = value;
+    return { ...prev, constraint_overrides: next };
+  });
+
+  const save = async () => {
+    setBusy(true); setError("");
+    try {
+      const body = {
+        ...editing,
+        match_min_distance_km: editing.match_min_distance_km === "" ? null : Number(editing.match_min_distance_km),
+        match_max_distance_km: editing.match_max_distance_km === "" ? null : Number(editing.match_max_distance_km),
+        match_min_drops: editing.match_min_drops === "" ? null : Number(editing.match_min_drops),
+        fallback_profile: editing.fallback_action === "relax" && editing.fallback_profile ? Number(editing.fallback_profile) : null,
+      };
+      if (editing.id) {
+        await fmsRequest(`dispatch/scenario-profiles/${editing.id}/`, { method: "PATCH", body: JSON.stringify(body) });
+        onAction(`${editing.name} updated`);
+      } else {
+        await fmsRequest("dispatch/scenario-profiles/", { method: "POST", body: JSON.stringify(body) });
+        onAction(`${editing.name} created`);
+      }
+      setEditing(null);
+      load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message.slice(0, 240) : "Could not save this profile");
+    } finally { setBusy(false); }
+  };
+
+  const remove = async (profile: any) => {
+    if (!confirm(`Delete "${profile.name}"? Tasks it already shaped keep their record of it.`)) return;
+    try { await fmsRequest(`dispatch/scenario-profiles/${profile.id}/`, { method: "DELETE" }); onAction(`${profile.name} deleted`); load(); }
+    catch (e) { onAction(e instanceof Error ? e.message.slice(0, 160) : "Could not delete", "warn"); }
+  };
+
+  const runPreview = async () => {
+    if (!editing?.id || !previewPlan) return;
+    setPreviewBusy(true);
+    try {
+      const payload = await fmsRequest<any>(`dispatch/scenario-profiles/${editing.id}/preview/?plan=${previewPlan}`);
+      setPreviewResult(payload);
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 160) : "Preview failed", "warn");
+    } finally { setPreviewBusy(false); }
+  };
+
+  const matchSummary = (profile: any) => {
+    const bits: string[] = [];
+    if ((profile.match_temperature_classes || []).length) bits.push(profile.match_temperature_classes.join("/"));
+    if (profile.match_min_drops) bits.push(`≥${profile.match_min_drops} drops`);
+    if (profile.match_min_distance_km != null) bits.push(`≥${profile.match_min_distance_km}km`);
+    if (profile.match_max_distance_km != null) bits.push(`≤${profile.match_max_distance_km}km`);
+    if (profile.match_same_city_only) bits.push("same city");
+    return bits.length ? bits.join(", ") : "any load";
+  };
+
+  const basePreset = strategies.find(s => s.name === editing?.base_strategy) || strategies.find(s => s.name === "balanced") || { weights: {}, constraints: {} };
+
+  return <div className="module-page">
+    <div className="module-title">
+      <div>
+        <p className="eyebrow">DISPATCH PLANNING</p>
+        <h2>Scenario profiles</h2>
+        <p>Planning and fallback logic per operational pattern — milk run, long haul, reefer, local delivery, or a pattern of your own. The next solve matches these automatically, per pickup, narrowing whatever strategy the plan itself runs under.</p>
+      </div>
+      <button className="primary module-action" onClick={() => open(null)}>＋ New profile</button>
+    </div>
+
+    <section className="module-table-card">
+      <div className="table-wrap"><table>
+        <thead><tr><th>Name</th><th>Type</th><th>Priority</th><th>Matches</th><th>Base strategy</th><th>Fallback</th><th>Status</th><th></th></tr></thead>
+        <tbody>{profiles.map(profile => <tr key={profile.id} className="clickable" onClick={() => open(profile)}>
+          <td><strong>{profile.name}</strong>{profile.description && <small style={{ display: "block", maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis" }}>{profile.description}</small>}</td>
+          <td>{String(profile.scenario_type).replaceAll("_", " ")}</td>
+          <td>{profile.priority}</td>
+          <td>{matchSummary(profile)}</td>
+          <td>{strategies.find(s => s.name === profile.base_strategy)?.label || profile.base_strategy}</td>
+          <td>{profile.fallback_action === "relax" ? `relax → ${profile.fallback_profile_name || "—"}` : profile.fallback_action}</td>
+          <td><span className={"status " + (profile.active ? "active" : "inactive")}>{profile.active ? "active" : "inactive"}</span></td>
+          <td><button className="row-action" onClick={event => { event.stopPropagation(); remove(profile); }}>Delete</button></td>
+        </tr>)}</tbody>
+      </table></div>
+      {!loading && !profiles.length && <div className="data-state">No scenario profiles yet — every load plans under the plan's own strategy alone. Run <code>python manage.py seed_scenario_profiles</code> for starter profiles, or add one.</div>}
+    </section>
+
+    {editing && <div className="modal-backdrop" onMouseDown={() => setEditing(null)}><section className="action-panel" onMouseDown={event => event.stopPropagation()}>
+      <div className="panel-head"><div><p className="eyebrow">{editing.id ? "EDIT PROFILE" : "NEW PROFILE"}</p><h2>{editing.name || "New scenario profile"}</h2></div><button className="panel-close" onClick={() => setEditing(null)}>×</button></div>
+      <div className="action-form">
+        <div className="form-grid">
+          <label>Name<input value={editing.name} onChange={event => setField("name", event.target.value)} placeholder="e.g. Reefer" /></label>
+          <label>Type<select value={editing.scenario_type} onChange={event => setField("scenario_type", event.target.value)}>
+            <option value="milk_run">Milk run</option>
+            <option value="long_haul">Long haul</option>
+            <option value="reefer">Reefer</option>
+            <option value="local_delivery">Local delivery</option>
+            <option value="custom">Custom</option>
+          </select></label>
+          <label>Priority<input type="number" value={editing.priority} onChange={event => setField("priority", Number(event.target.value))} placeholder="100" /></label>
+          <label className="checkbox-field" style={{ marginTop: 22 }}>
+            <input type="checkbox" checked={editing.active} onChange={event => setField("active", event.target.checked)} />
+            <span>Active — matched by the next solve</span>
+          </label>
+        </div>
+        <label>Description<textarea value={editing.description} onChange={event => setField("description", event.target.value)} placeholder="What this profile is for, and why" /></label>
+
+        <p className="eyebrow" style={{ marginTop: 6 }}>MATCHING CRITERIA — every criterion set below must hold; leave blank to match anything</p>
+        <div className="form-grid">
+          <label><span>Temperature class</span>
+            <div className="chip-list">
+              {["dry", "chiller", "frozen"].map(cls => <button type="button" key={cls}
+                  className={editing.match_temperature_classes.includes(cls) ? "chip active" : "chip"}
+                  onClick={() => toggleTemperature(cls)}>{cls}</button>)}
+            </div>
+          </label>
+          <label className="checkbox-field" style={{ marginTop: 22 }}>
+            <input type="checkbox" checked={editing.match_same_city_only} onChange={event => setField("match_same_city_only", event.target.checked)} />
+            <span>Pickup and every drop share a city</span>
+          </label>
+          <label>Min drops on one pickup<input type="number" min={0} value={editing.match_min_drops} onChange={event => setField("match_min_drops", event.target.value)} placeholder="any" /></label>
+          <label>Min distance to furthest drop (km)<input type="number" min={0} value={editing.match_min_distance_km} onChange={event => setField("match_min_distance_km", event.target.value)} placeholder="any" /></label>
+          <label>Max distance to furthest drop (km)<input type="number" min={0} value={editing.match_max_distance_km} onChange={event => setField("match_max_distance_km", event.target.value)} placeholder="any" /></label>
+        </div>
+
+        <p className="eyebrow" style={{ marginTop: 6 }}>PLANNING LOGIC — only the values you set below are merged onto the plan's own strategy for a matched load; everything else still follows whatever strategy the plan is solved with</p>
+        <div className="form-grid">
+          <label>Base strategy (for reference — set the overrides below to actually change behaviour)<select value={editing.base_strategy} onChange={event => setField("base_strategy", event.target.value)}>
+            {(strategies.length ? strategies : [{ name: "balanced", label: "Balanced" }]).map(s => <option key={s.name} value={s.name}>{s.label}</option>)}
+          </select></label>
+        </div>
+        <div className="strategy-weight-grid">
+          {Object.keys(basePreset.weights || {}).map(key => <label key={key}>
+            <span>{key.replace(/_/g, " ")}</span>
+            <input type="number" step="0.1" placeholder={String((basePreset.weights as any)[key])} value={editing.weight_overrides[key] ?? ""}
+                   onChange={event => setWeightOverride(key, event.target.value)} />
+          </label>)}
+        </div>
+        <div className="strategy-constraint-grid">
+          <label><span>Max stops / route</span>
+            <input type="number" placeholder="vehicle default" value={editing.constraint_overrides.max_stops_per_route ?? ""}
+                   onChange={event => setConstraintOverride("max_stops_per_route", event.target.value === "" ? null : Number(event.target.value))} />
+          </label>
+          <label><span>Max route km</span>
+            <input type="number" placeholder="vehicle default" value={editing.constraint_overrides.max_route_km ?? ""}
+                   onChange={event => setConstraintOverride("max_route_km", event.target.value === "" ? null : Number(event.target.value))} />
+          </label>
+          <label><span>Max duty minutes</span>
+            <input type="number" placeholder="vehicle default" value={editing.constraint_overrides.max_duty_minutes ?? ""}
+                   onChange={event => setConstraintOverride("max_duty_minutes", event.target.value === "" ? null : Number(event.target.value))} />
+          </label>
+          <label><span>Delivery windows</span>
+            <select value={editing.constraint_overrides.time_windows ?? ""} onChange={event => setConstraintOverride("time_windows", event.target.value || null)}>
+              <option value="">plan default</option>
+              <option value="soft">Soft — penalise a late arrival</option>
+              <option value="hard">Hard — never plan a late arrival</option>
+            </select>
+          </label>
+        </div>
+
+        <p className="eyebrow" style={{ marginTop: 6 }}>FALLBACK — when a matched load cannot be placed on any route</p>
+        <div className="form-grid">
+          <label>Fallback action<select value={editing.fallback_action} onChange={event => setField("fallback_action", event.target.value)}>
+            <option value="outsource">Buy on the spot market</option>
+            <option value="relax">Retry once under a fallback profile</option>
+            <option value="defer">Defer to the next plan</option>
+            <option value="hold">Hold for manual review</option>
+          </select></label>
+          {editing.fallback_action === "relax" && <label>Fallback profile
+            <select value={editing.fallback_profile} onChange={event => setField("fallback_profile", event.target.value)}>
+              <option value="">Select a profile…</option>
+              {profiles.filter(p => p.id !== editing.id).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </label>}
+        </div>
+
+        {editing.id && <div className="compare-panel">
+          <p className="eyebrow">PREVIEW AGAINST A PLAN</p>
+          <div className="form-grid">
+            <label>Plan<select value={previewPlan} onChange={event => setPreviewPlan(event.target.value)}>
+              <option value="">Select a plan…</option>
+              {plans.map(plan => <option key={plan.id} value={plan.id}>{plan.code} — {plan.plan_date}</option>)}
+            </select></label>
+          </div>
+          <button className="secondary" type="button" disabled={!previewPlan || previewBusy} onClick={runPreview}>
+            {previewBusy ? "Checking…" : "Preview matching loads"}
+          </button>
+          {previewResult && <p style={{ marginTop: 10, fontSize: 11 }}>
+            Matches <strong>{previewResult.matched_clusters}</strong> load(s) on that plan's pending demand — <strong>{previewResult.matched_tasks}</strong> task(s) total.
+            {!!previewResult.sample?.length && <span> E.g. {previewResult.sample.slice(0, 3).map((s: any) => `${s.pickup} (${s.drops} drop${s.drops === 1 ? "" : "s"})`).join(", ")}.</span>}
+          </p>}
+        </div>}
+
+        {error && <div className="form-error">{error}</div>}
+        <div className="form-actions">
+          <button type="button" className="secondary" onClick={() => setEditing(null)}>Cancel</button>
+          <button className="primary" disabled={busy || !editing.name} onClick={save}>{busy ? "Saving…" : editing.id ? "Save changes" : "Create profile"}</button>
+        </div>
+      </div>
+    </section></div>}
   </div>;
 }
 
@@ -2020,7 +2631,7 @@ function HiresView({ reloadKey, onAction, openAction }: { reloadKey: number; onA
   const totalPayable = hires.reduce((sum, hire) => sum + Number(hire.agreed_rate || 0), 0);
 
   return <div className="module-page">
-    <div className="module-title"><div><p className="eyebrow">OUTSIDE-SOURCED CAPACITY</p><h2>Vendor hires</h2><p>The commercial terms agreed with a transport owner for one outside-sourced trip, and its settlement.</p></div><button className="primary module-action" onClick={() => openAction("hire")}>＋ Add hire</button></div>
+    <div className="module-title"><div><p className="eyebrow">OUTSIDE-SOURCED CAPACITY</p><h2>Vendor hires</h2><p>The commercial terms agreed with a transport owner for one outside-sourced trip, and its settlement.</p></div><div className="assign-row"><button className="secondary module-action" onClick={() => openAction("vendor-lane-rate")}>＋ Lane rate</button><button className="primary module-action" onClick={() => openAction("hire")}>＋ Add hire</button></div></div>
     <div className="module-stats">
       <div className="module-stat"><span>Total hires</span><strong>{loading ? "—" : total}</strong><small>Across all statuses</small></div>
       <div className="module-stat"><span>Open</span><strong>{loading ? "—" : pending.length}</strong><small>Not yet settled or cancelled</small></div>
@@ -2632,6 +3243,146 @@ function FleetMap({ vehicles, selectedReg, onSelect }: {
           <button onClick={fitAll} title="Zoom to fit every vehicle">Fit</button>
         </div>}
   </div>;
+}
+
+// Dispatch planning route map (docs/DISPATCH-PLANNER-V2.md §6.2) - the same
+// Leaflet setup as FleetMap (dynamic import, basemap switcher), drawing one
+// polyline per route in a stable colour, numbered pickup/drop markers, and
+// unrouted/outsourced tasks as dashed grey pickup->drop lines so the loads
+// the plan could not serve are as visible as the ones it did.
+function PlanMap({ routes, unroutedTasks, highlightRoute, onSelectRoute }: {
+  routes: any[]; unroutedTasks: any[]; highlightRoute: number | null; onSelectRoute: (id: number | null) => void;
+}) {
+  const container = useRef<HTMLDivElement | null>(null);
+  const map = useRef<any>(null);
+  const leaflet = useRef<any>(null);
+  const layerGroup = useRef<any>(null);
+  const selectRef = useRef(onSelectRoute);
+  const [layer, setLayer] = useState(MAP_LAYERS[0].id);
+  const [ready, setReady] = useState(false);
+  const [failed, setFailed] = useState("");
+  const [showUnrouted, setShowUnrouted] = useState(true);
+  const [showDeadLegs, setShowDeadLegs] = useState(true);
+
+  selectRef.current = onSelectRoute;
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const L = (await import("leaflet")).default;
+        if (cancelled || !container.current || map.current) return;
+        leaflet.current = L;
+        const instance = L.map(container.current, { center: INDIA_CENTRE, zoom: 5, zoomControl: true,
+                                                    worldCopyJump: true, minZoom: 3, maxZoom: 19 });
+        map.current = instance;
+        layerGroup.current = L.layerGroup().addTo(instance);
+        setReady(true);
+      } catch (e) {
+        if (!cancelled) setFailed(e instanceof Error ? e.message : String(e));
+      }
+    })();
+    return () => { cancelled = true; map.current?.remove(); map.current = null; };
+  }, []);
+
+  useEffect(() => {
+    const L = leaflet.current;
+    if (!ready || !L || !map.current) return;
+    const chosen = MAP_LAYERS.find(l => l.id === layer) || MAP_LAYERS[0];
+    const tiles = L.tileLayer(chosen.url, { attribution: chosen.attribution, maxZoom: chosen.maxZoom });
+    tiles.addTo(map.current);
+    tiles.bringToBack();
+    const previous = map.current.__basemap;
+    const drop = () => { if (previous) map.current?.removeLayer(previous); };
+    tiles.once("load", drop);
+    setTimeout(drop, 2500);
+    map.current.__basemap = tiles;
+  }, [layer, ready]);
+
+  useEffect(() => {
+    const L = leaflet.current;
+    if (!ready || !L || !layerGroup.current) return;
+    layerGroup.current.clearLayers();
+    const bounds: [number, number][] = [];
+
+    for (const route of routes) {
+      const path: [number, number][] = route.path || [];
+      if (path.length < 2) continue;
+      const dimmed = highlightRoute != null && highlightRoute !== route.id;
+      const colour = route.colour || "#0d5f45";
+      // The very first leg (vehicle start -> first stop) is the dead-km run;
+      // drawn dashed and separately so it reads as different from a laden leg.
+      if (showDeadLegs && path.length > 1) {
+        L.polyline([path[0], path[1]], { color: colour, weight: 3, opacity: dimmed ? 0.15 : 0.6, dashArray: "2,7" }).addTo(layerGroup.current);
+      }
+      L.polyline(path.slice(1), { color: colour, weight: dimmed ? 2 : 4, opacity: dimmed ? 0.18 : 0.85 })
+        .addTo(layerGroup.current)
+        .on("click", () => selectRef.current(highlightRoute === route.id ? null : route.id));
+      path.forEach(p => bounds.push(p));
+
+      (route.stops || []).forEach((stop: any, index: number) => {
+        if (stop.latitude == null || stop.longitude == null) return;
+        const isPickup = stop.stop_type === "pickup";
+        const marker = L.marker([Number(stop.latitude), Number(stop.longitude)], {
+          icon: L.divIcon({
+            className: "", iconSize: [22, 22], iconAnchor: [11, 11],
+            html: `<div class="plan-stop-pin ${isPickup ? "pickup" : "drop"}" style="--pin:${colour};opacity:${dimmed ? 0.35 : 1}">${isPickup ? "▲" : index}</div>`,
+          }),
+        });
+        marker.bindPopup(planStopPopup(stop), { closeButton: false, minWidth: 200 });
+        marker.on("click", () => selectRef.current(highlightRoute === route.id ? null : route.id));
+        marker.addTo(layerGroup.current);
+      });
+    }
+
+    if (showUnrouted) {
+      for (const task of unroutedTasks) {
+        if (task.pickup_lat == null || task.dropoff_lat == null) continue;
+        const from: [number, number] = [task.pickup_lat, task.pickup_lng];
+        const to: [number, number] = [task.dropoff_lat, task.dropoff_lng];
+        L.polyline([from, to], { color: "#8a938e", weight: 2, opacity: 0.7, dashArray: "1,6" }).addTo(layerGroup.current);
+        [from, to].forEach((point, index) => {
+          const marker = L.marker(point, {
+            icon: L.divIcon({ className: "", iconSize: [16, 16], iconAnchor: [8, 8],
+                             html: `<div class="plan-stop-pin unrouted">${index === 0 ? "▲" : "▼"}</div>` }),
+          });
+          marker.bindPopup(`<div class="gps-popup"><h4>${escapeHtml(task.order_number || "Unrouted")}</h4>
+            <dl><dt>Status</dt><dd>${escapeHtml(task.status)}</dd>${task.reason ? `<dt>Reason</dt><dd>${escapeHtml(task.reason)}</dd>` : ""}
+            ${task.outsource_estimate != null ? `<dt>Market est.</dt><dd>₹${escapeHtml(String(task.outsource_estimate))} (${escapeHtml(task.outsource_confidence || "fallback")})</dd>` : ""}</dl></div>`,
+            { closeButton: false, minWidth: 190 });
+          marker.addTo(layerGroup.current);
+        });
+        bounds.push(from, to);
+      }
+    }
+
+    if (bounds.length) map.current.fitBounds(L.latLngBounds(bounds), { padding: [36, 36] });
+  }, [routes, unroutedTasks, ready, highlightRoute, showUnrouted, showDeadLegs]);
+
+  return <div className="fleet-map plan-map">
+    <div ref={container} style={{ height: "100%" }} />
+    {failed
+      ? <div className="fleet-map-overlay"><div className="data-state">The map could not be loaded.<br /><small>{failed}</small></div></div>
+      : <div className="fleet-map-layers">
+          {MAP_LAYERS.map(l => <button key={l.id} className={l.id === layer ? "active" : ""} onClick={() => setLayer(l.id)}>{l.label}</button>)}
+          <button className={showUnrouted ? "active" : ""} onClick={() => setShowUnrouted(!showUnrouted)}>Outsourced</button>
+          <button className={showDeadLegs ? "active" : ""} onClick={() => setShowDeadLegs(!showDeadLegs)}>Dead legs</button>
+        </div>}
+  </div>;
+}
+
+function planStopPopup(stop: any) {
+  const row = (label: string, value: string) => value ? `<dt>${label}</dt><dd>${escapeHtml(value)}</dd>` : "";
+  return `<div class="gps-popup">
+    <h4>${escapeHtml(stop.place_name || stop.city || "Stop")}</h4>
+    <dl>
+      ${row("Type", stop.stop_type === "pickup" ? "Pickup" : "Drop")}
+      ${row("Order", stop.order_number)}
+      ${row("Customer", stop.customer_name)}
+      ${row("Load after", stop.load_after_kg != null ? `${stop.load_after_kg} kg` : "")}
+      ${row("ETA", stop.planned_arrival ? new Date(stop.planned_arrival).toLocaleString() : "")}
+    </dl>
+  </div>`;
 }
 
 const escapeHtml = (value: string) =>
@@ -3970,6 +4721,7 @@ export default function Home() {
             <div className="section-heading"><div><p className="eyebrow">ACTIVE MOVEMENT</p><h2>Recent trips</h2></div><button className="link-button" onClick={() => show("All trips opened")}>View all trips →</button></div>
             <div className="table-wrap"><table><thead><tr><th>Trip & route</th><th>Vehicle</th><th>Driver</th><th>Status</th><th>ETA / POD</th><th>Revenue</th></tr></thead><tbody>{(dashboard?.recent_trips || []).map((t: any) => <tr key={t.id}><td><strong>{t.number}</strong><small>{t.origin} → {t.destination}</small></td><td>{t.vehicle_number}</td><td>{t.driver_name}</td><td><span className={`status ${t.status.toLowerCase().replaceAll("_","-")}`}>{t.status.replaceAll("_"," ")}</span></td><td>{t.planned_departure ? new Date(t.planned_departure).toLocaleString("en-IN") : "—"}</td><td><strong>₹{Number(t.estimated_cost || 0).toLocaleString("en-IN")}</strong></td></tr>)}</tbody></table></div>
           </section>
+
         </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Planning" ? <DispatchPlanningView onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Hires" ? <HiresView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Fleet" ? <FleetVehiclesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Tracking" ? <TrackingView reloadKey={dataVersion} onAction={show} /> : active === "Fleets" ? <FleetsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : active === "Driver & Availability" ? <DriverAvailabilityReport reloadKey={dataVersion} onAction={show} /> : active === "Fleet Report" ? <FleetReport reloadKey={dataVersion} onAction={show} /> : active === "Customer Invoices" ? <CustomerInvoicesReport reloadKey={dataVersion} onAction={show} /> : active === "Vehicle Settlement" ? <VehicleSettlementReport reloadKey={dataVersion} onAction={show} /> : active === "Sales Report" ? <SalesReport reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
       </section>
       {action && <ActionPanel type={action} onClose={() => setAction("")} onCreated={() => setDataVersion(v => v + 1)} />}
