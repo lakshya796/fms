@@ -6,7 +6,7 @@ own-vs-outsource), and API-level tests for the collect -> solve -> commit round
 trip that actually lands orders on trips.
 """
 import sys
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 from importlib.util import find_spec
 from unittest import mock, skipUnless
@@ -1090,7 +1090,14 @@ class DemandCollectionTests(BaseDispatchTest):
         from dispatch.solver.inputs import _pickup_window
         self.pickup.loading_hours = "09:00-18:00"
         self.pickup.save()
-        deadline = timezone.now() + timedelta(days=1)
+        # Anchor the deadline to a fixed late hour instead of "now + 24h". The
+        # vehicle waits for the 09:00 opening, loads, then needs ~3.5h on the
+        # road, so a deadline that carried the *current* time of day made this
+        # test pass or fail purely on what o'clock the suite ran at: before
+        # ~13:00 the drop missed its window, which cost the route a penalty and
+        # tipped the load onto the spot market, leaving no route to assert on.
+        deadline = timezone.make_aware(
+            datetime.combine(timezone.localdate() + timedelta(days=1), time(18, 0)))
         self.make_order("ORD-DC-11", self.dropA, 2000, scheduled_at=deadline)
         expected_start, _ = _pickup_window(self.pickup, deadline)
         inputs.collect_tasks(self.plan)
