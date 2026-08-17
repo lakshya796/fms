@@ -861,6 +861,7 @@ const liveModules: Record<string, { endpoint: string; map: (record: any) => stri
 
 function ModuleView({ name, onAction, reloadKey, openAction }: { name: string; onAction: Notify; reloadKey: number; openAction: (type: string) => void }) {
   const data = modules[name];
+  const feed = liveModules[name];
   const [query, setQuery] = useState("");
   const [records, setRecords] = useState<any[]>([]);
   const [total, setTotal] = useState(0);
@@ -868,11 +869,12 @@ function ModuleView({ name, onAction, reloadKey, openAction }: { name: string; o
   const [loadError, setLoadError] = useState("");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [editing, setEditing] = useState(false);
-  const editSpec = data.actionType ? recordForms[data.actionType] : undefined;
+  const editSpec = data?.actionType ? recordForms[data.actionType] : undefined;
 
   const load = () => {
+    if (!feed) { setLoading(false); return; }
     let active = true; setLoading(true); setLoadError("");
-    fmsRequest<any>(wholeSet(liveModules[name].endpoint)).then(payload => {
+    fmsRequest<any>(wholeSet(feed.endpoint)).then(payload => {
       if (!active) return;
       const items = asList(payload);
       setRecords(items);
@@ -883,22 +885,36 @@ function ModuleView({ name, onAction, reloadKey, openAction }: { name: string; o
   };
   useEffect(load, [name, reloadKey]);
 
-  const rows = records.map(record => ({ record, cells: liveModules[name].map(record) }));
+  // ModuleView is the catch-all for any sidebar entry without its own branch,
+  // so a screen added to `navGroups` whose route was never wired up lands here
+  // with no spec at all. Say so plainly rather than taking the whole page down
+  // on `undefined.actionType` (which is exactly what a dropped route did once).
+  if (!data || !feed) return <div className="module-page">
+    <div className="module-title"><div><p className="eyebrow">NOT WIRED UP</p><h2>{name}</h2>
+      <p>This screen is listed in the sidebar but has no view connected to it yet.</p></div></div>
+  </div>;
+
+  const rows = records.map(record => ({ record, cells: feed.map(record) }));
   const visibleRows = rows.filter(row => row.cells.join(" ").toLowerCase().includes(query.toLowerCase()));
   const selected = records.find(record => record.id === selectedId) || null;
-  const selectedCells = selected ? liveModules[name].map(selected) : null;
+  const selectedCells = selected ? feed.map(selected) : null;
 
   const closeDrawer = () => { setSelectedId(null); setEditing(false); };
+
+  // The last cell of every module row is rendered as a status pill. A record
+  // whose status column is null in the database used to take the whole page
+  // down here, so coerce rather than trust it.
+  const statusClass = (cell: any) => "status " + String(cell ?? "").toLowerCase().replaceAll(" ", "-");
 
   return <div className="module-page">
     <div className="module-title"><div><p className="eyebrow">{data.eyebrow}</p><h2>{data.title}</h2><p>{data.blurb || "Live records from the Phloz fleet database."}</p></div>{data.action ? <button className="primary module-action" onClick={() => data.actionType ? openAction(data.actionType) : onAction(data.action.replace("+ ", "") + " opened")}>{data.action}</button> : null}</div>
     <div className="module-stats"><div className="module-stat"><span>Total records</span><strong>{loading ? "—" : total}</strong><small>{!loading && total > rows.length ? `Showing the first ${rows.length}` : "Stored in the live database"}</small></div><div className="module-stat"><span>Data source</span><strong>Live</strong><small>EC2 fleet API</small></div><div className="module-stat"><span>Last synchronised</span><strong>Now</strong><small>Refreshes after every save</small></div></div>
     <section className="module-table-card"><div className="module-toolbar"><div><strong>All {name.toLowerCase()}</strong><span>{loading ? "Loading live records…" : visibleRows.length + " live records"}</span></div><div className="toolbar-actions"><input aria-label={"Search " + name} placeholder={"Search " + name.toLowerCase() + "..."} value={query} onChange={e => setQuery(e.target.value)} /><button onClick={load}>↻ Refresh</button><button onClick={() => onAction("Report exported")}>⇩ Export</button></div></div>
       {loadError ? <div className="data-state error">{loadError}</div> : loading ? <div className="data-state">Loading records from EC2…</div> : visibleRows.length === 0 ? <div className="data-state">No records found. Use the action button to create one.</div> :
-      <div className="table-wrap"><table><thead><tr>{data.columns.map(col => <th key={col}>{col}</th>)}<th>Action</th></tr></thead><tbody>{visibleRows.map(row => <tr key={row.record.id}>{row.cells.map((cell, j) => <td key={j}>{j === 0 ? <strong>{cell}</strong> : j === row.cells.length - 1 ? <span className={"status " + cell.toLowerCase().replaceAll(" ", "-")}>{cell}</span> : cell}</td>)}<td><button className="row-action" onClick={() => { setSelectedId(row.record.id); setEditing(false); }}>View →</button></td></tr>)}</tbody></table></div>}
+      <div className="table-wrap"><table><thead><tr>{data.columns.map(col => <th key={col}>{col}</th>)}<th>Action</th></tr></thead><tbody>{visibleRows.map(row => <tr key={row.record.id}>{row.cells.map((cell, j) => <td key={j}>{j === 0 ? <strong>{cell}</strong> : j === row.cells.length - 1 ? <span className={statusClass(cell)}>{cell}</span> : cell}</td>)}<td><button className="row-action" onClick={() => { setSelectedId(row.record.id); setEditing(false); }}>View →</button></td></tr>)}</tbody></table></div>}
     </section>
     {selected && selectedCells && <div className="record-backdrop" onMouseDown={closeDrawer}><aside className="record-drawer" onMouseDown={e => e.stopPropagation()}>
-      <div className="record-head"><div><p className="eyebrow">{data.eyebrow}</p><h2>{selectedCells[0]}</h2><span className={"status " + selectedCells[selectedCells.length - 1].toLowerCase().replaceAll(" ", "-")}>{selectedCells[selectedCells.length - 1]}</span></div><button className="panel-close" onClick={closeDrawer}>×</button></div>
+      <div className="record-head"><div><p className="eyebrow">{data.eyebrow}</p><h2>{selectedCells[0]}</h2><span className={statusClass(selectedCells[selectedCells.length - 1])}>{selectedCells[selectedCells.length - 1]}</span></div><button className="panel-close" onClick={closeDrawer}>×</button></div>
       {editing && editSpec ? <RecordForm spec={editSpec} record={selected} onClose={() => setEditing(false)}
         onSaved={() => { onAction(`${selectedCells[0]} updated`); setEditing(false); load(); }} /> : <>
         <div className="record-fields">{data.columns.map((column, index) => <div className="record-field" key={column}><span>{column}</span><strong>{selectedCells[index] || "—"}</strong></div>)}
@@ -4722,7 +4738,7 @@ export default function Home() {
             <div className="table-wrap"><table><thead><tr><th>Trip & route</th><th>Vehicle</th><th>Driver</th><th>Status</th><th>ETA / POD</th><th>Revenue</th></tr></thead><tbody>{(dashboard?.recent_trips || []).map((t: any) => <tr key={t.id}><td><strong>{t.number}</strong><small>{t.origin} → {t.destination}</small></td><td>{t.vehicle_number}</td><td>{t.driver_name}</td><td><span className={`status ${t.status.toLowerCase().replaceAll("_","-")}`}>{t.status.replaceAll("_"," ")}</span></td><td>{t.planned_departure ? new Date(t.planned_departure).toLocaleString("en-IN") : "—"}</td><td><strong>₹{Number(t.estimated_cost || 0).toLocaleString("en-IN")}</strong></td></tr>)}</tbody></table></div>
           </section>
 
-        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Planning" ? <DispatchPlanningView onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Hires" ? <HiresView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Fleet" ? <FleetVehiclesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Tracking" ? <TrackingView reloadKey={dataVersion} onAction={show} /> : active === "Fleets" ? <FleetsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : active === "Driver & Availability" ? <DriverAvailabilityReport reloadKey={dataVersion} onAction={show} /> : active === "Fleet Report" ? <FleetReport reloadKey={dataVersion} onAction={show} /> : active === "Customer Invoices" ? <CustomerInvoicesReport reloadKey={dataVersion} onAction={show} /> : active === "Vehicle Settlement" ? <VehicleSettlementReport reloadKey={dataVersion} onAction={show} /> : active === "Sales Report" ? <SalesReport reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
+        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Planning" ? <DispatchPlanningView onAction={show} /> : active === "Scenario Profiles" ? <ScenarioProfilesView reloadKey={dataVersion} onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Hires" ? <HiresView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Fleet" ? <FleetVehiclesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Tracking" ? <TrackingView reloadKey={dataVersion} onAction={show} /> : active === "Fleets" ? <FleetsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : active === "Driver & Availability" ? <DriverAvailabilityReport reloadKey={dataVersion} onAction={show} /> : active === "Fleet Report" ? <FleetReport reloadKey={dataVersion} onAction={show} /> : active === "Customer Invoices" ? <CustomerInvoicesReport reloadKey={dataVersion} onAction={show} /> : active === "Vehicle Settlement" ? <VehicleSettlementReport reloadKey={dataVersion} onAction={show} /> : active === "Sales Report" ? <SalesReport reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
       </section>
       {action && <ActionPanel type={action} onClose={() => setAction("")} onCreated={() => setDataVersion(v => v + 1)} />}
       {toast && <div className={"toast " + toast.tone}>{toast.tone === "warn" ? "⚠" : "✓"} {toast.text}</div>}
