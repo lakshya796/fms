@@ -1487,3 +1487,230 @@ def order_profitability(request, pk):
         "margin_percent": float(round(profit / revenue * 100, 2)) if revenue else 0.0,
         "cost_per_km": float(money(cost / order.distance_km)) if order.distance_km else 0.0,
     })
+
+
+# ---------------------------------------------------------------------------
+# Reports
+# ---------------------------------------------------------------------------
+
+@requires("reports.view")
+@api_view(["GET"])
+def report_driver_availability(request):
+    """Driver roster with current availability and licence expiry status."""
+    from datetime import timedelta
+    today = timezone.localdate()
+    qs = Driver.objects.all().order_by("status", "name")
+    rows = []
+    for d in qs:
+        expiry = d.licence_expiry
+        if expiry is None:
+            expiry_status = "unknown"
+        elif expiry < today:
+            expiry_status = "expired"
+        elif expiry <= today + timedelta(days=30):
+            expiry_status = "expiring_soon"
+        else:
+            expiry_status = "valid"
+        rows.append({
+            "id": d.id,
+            "name": d.name,
+            "phone": d.phone,
+            "licence_number": d.licence_number,
+            "licence_expiry": str(expiry) if expiry else None,
+            "licence_expiry_status": expiry_status,
+            "status": d.status,
+            "home_city": d.home_city,
+            "date_of_joining": str(d.date_of_joining) if d.date_of_joining else None,
+            "monthly_salary": float(d.monthly_salary),
+            "active_trips": Trip.objects.filter(driver=d).exclude(status__in=["closed", "cancelled"]).count(),
+        })
+    summary = {
+        "total": len(rows),
+        "available": sum(1 for r in rows if r["status"] == "available"),
+        "on_trip": sum(1 for r in rows if r["status"] in ("on_trip", "running")),
+        "licences_expired": sum(1 for r in rows if r["licence_expiry_status"] == "expired"),
+        "licences_expiring_soon": sum(1 for r in rows if r["licence_expiry_status"] == "expiring_soon"),
+    }
+    return Response({"summary": summary, "drivers": rows})
+
+
+@requires("reports.view")
+@api_view(["GET"])
+def report_fleet(request):
+    """Fleet-wide vehicle status, utilisation and compliance snapshot."""
+    from datetime import timedelta
+    today = timezone.localdate()
+    qs = Vehicle.objects.select_related("vendor", "current_place").all().order_by("status", "registration_number")
+    rows = []
+    for v in qs:
+        ins_exp = v.insurance_expiry
+        per_exp = v.permit_expiry
+        def exp_status(date):
+            if date is None:
+                return "unknown"
+            if date < today:
+                return "expired"
+            if date <= today + timedelta(days=30):
+                return "expiring_soon"
+            return "valid"
+        rows.append({
+            "id": v.id,
+            "registration_number": v.registration_number,
+            "vehicle_type": v.vehicle_type,
+            "ownership": v.ownership,
+            "capacity_kg": v.capacity_kg,
+            "status": v.status,
+            "fuel_type": v.fuel_type,
+            "insurance_expiry": str(ins_exp) if ins_exp else None,
+            "insurance_status": exp_status(ins_exp),
+            "permit_expiry": str(per_exp) if per_exp else None,
+            "permit_status": exp_status(per_exp),
+            "current_odometer_km": v.current_odometer_km,
+            "vendor_name": v.vendor.name if v.vendor else "",
+            "current_place": v.current_place.name if v.current_place else "",
+            "trips_total": Trip.objects.filter(vehicle=v).count(),
+        })
+    summary = {
+        "total": len(rows),
+        "available": sum(1 for r in rows if r["status"] == "available"),
+        "on_trip": sum(1 for r in rows if r["status"] in ("on_trip", "running")),
+        "under_maintenance": sum(1 for r in rows if r["status"] == "under_maintenance"),
+        "inactive": sum(1 for r in rows if r["status"] == "inactive"),
+        "insurance_expired": sum(1 for r in rows if r["insurance_status"] == "expired"),
+        "permit_expired": sum(1 for r in rows if r["permit_status"] == "expired"),
+    }
+    return Response({"summary": summary, "vehicles": rows})
+
+
+@requires("reports.view")
+@api_view(["GET"])
+def report_customer_invoices(request):
+    """Customer-wise invoice ageing and outstanding summary."""
+    from_date = request.query_params.get("from")
+    to_date = request.query_params.get("to")
+    today = timezone.localdate()
+    qs = Invoice.objects.select_related("customer").order_by("-created_at")
+    if from_date:
+        qs = qs.filter(created_at__date__gte=from_date)
+    if to_date:
+        qs = qs.filter(created_at__date__lte=to_date)
+    rows = []
+    for inv in qs:
+        days_overdue = (today - inv.due_date).days if inv.status != "paid" else 0
+        rows.append({
+            "id": inv.id,
+            "number": inv.number,
+            "customer": inv.customer.name,
+            "customer_gstin": inv.customer.gstin,
+            "freight_amount": float(inv.freight_amount),
+            "additional_charges": float(inv.additional_charges),
+            "tax_amount": float(inv.tax_amount),
+            "total_amount": float(inv.total_amount),
+            "due_date": str(inv.due_date),
+            "status": inv.status,
+            "days_overdue": max(0, days_overdue) if inv.status != "paid" else 0,
+            "gst_percent": float(inv.gst_percent),
+            "reverse_charge": inv.reverse_charge,
+            "created_at": inv.created_at.strftime("%Y-%m-%d"),
+        })
+    # Customer-level aggregation
+    from collections import defaultdict
+    by_customer: dict = defaultdict(lambda: {"total": 0.0, "paid": 0.0, "outstanding": 0.0, "count": 0})
+    for r in rows:
+        c = by_customer[r["customer"]]
+        c["count"] += 1
+        c["total"] += r["total_amount"]
+        if r["status"] == "paid":
+            c["paid"] += r["total_amount"]
+        else:
+            c["outstanding"] += r["total_amount"]
+    summary = {
+        "total_invoiced": sum(r["total_amount"] for r in rows),
+        "total_paid": sum(r["total_amount"] for r in rows if r["status"] == "paid"),
+        "total_outstanding": sum(r["total_amount"] for r in rows if r["status"] != "paid"),
+        "invoice_count": len(rows),
+        "overdue_count": sum(1 for r in rows if r["days_overdue"] > 0),
+    }
+    customer_summary = [{"customer": k, **v} for k, v in by_customer.items()]
+    return Response({"summary": summary, "invoices": rows, "by_customer": customer_summary})
+
+
+@requires("reports.view")
+@api_view(["GET"])
+def report_vehicle_settlement(request):
+    """Trip-level settlement register: advance, expenses, and net payable per driver."""
+    from_date = request.query_params.get("from")
+    to_date = request.query_params.get("to")
+    qs = Settlement.objects.select_related("trip__vehicle", "driver").order_by("-created_at")
+    if from_date:
+        qs = qs.filter(created_at__date__gte=from_date)
+    if to_date:
+        qs = qs.filter(created_at__date__lte=to_date)
+    rows = []
+    for s in qs:
+        rows.append({
+            "id": s.id,
+            "driver": s.driver.name,
+            "driver_phone": s.driver.phone,
+            "trip": s.trip.number,
+            "vehicle": s.trip.vehicle.registration_number,
+            "route": f"{s.trip.origin} → {s.trip.destination}",
+            "advance_amount": float(s.advance_amount),
+            "approved_expenses": float(s.approved_expenses),
+            "net_payable": float(s.net_payable),
+            "status": s.status,
+            "trip_status": s.trip.status,
+            "created_at": s.created_at.strftime("%Y-%m-%d"),
+        })
+    summary = {
+        "total_advance": sum(r["advance_amount"] for r in rows),
+        "total_approved_expenses": sum(r["approved_expenses"] for r in rows),
+        "total_net_payable": sum(r["net_payable"] for r in rows),
+        "pending_count": sum(1 for r in rows if r["status"] == "pending"),
+        "settled_count": sum(1 for r in rows if r["status"] == "settled"),
+        "settlement_count": len(rows),
+    }
+    return Response({"summary": summary, "settlements": rows})
+
+
+@requires("reports.view")
+@api_view(["GET"])
+def report_sales(request):
+    """Sales pipeline: quotes, conversions, and revenue by customer and period."""
+    from_date = request.query_params.get("from")
+    to_date = request.query_params.get("to")
+    qs = SalesQuote.objects.select_related("customer").order_by("-created_at")
+    if from_date:
+        qs = qs.filter(created_at__date__gte=from_date)
+    if to_date:
+        qs = qs.filter(created_at__date__lte=to_date)
+    rows = []
+    for q in qs:
+        rows.append({
+            "id": q.id,
+            "number": q.number,
+            "customer": q.customer.name,
+            "customer_gstin": q.customer.gstin,
+            "origin": q.origin,
+            "destination": q.destination,
+            "lane": f"{q.origin} → {q.destination}",
+            "freight_amount": float(q.freight_amount),
+            "valid_until": str(q.valid_until),
+            "status": q.status,
+            "created_at": q.created_at.strftime("%Y-%m-%d"),
+        })
+    by_status: dict = {}
+    for r in rows:
+        by_status.setdefault(r["status"], {"count": 0, "value": 0.0})
+        by_status[r["status"]]["count"] += 1
+        by_status[r["status"]]["value"] += r["freight_amount"]
+    total_value = sum(r["freight_amount"] for r in rows)
+    won_value = by_status.get("accepted", {}).get("value", 0.0) + by_status.get("won", {}).get("value", 0.0)
+    summary = {
+        "total_quotes": len(rows),
+        "total_value": total_value,
+        "won_value": won_value,
+        "conversion_rate": round(won_value / total_value * 100, 1) if total_value else 0.0,
+        "by_status": [{"status": k, **v} for k, v in by_status.items()],
+    }
+    return Response({"summary": summary, "quotes": rows})

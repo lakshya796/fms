@@ -1,0 +1,343 @@
+/* MAIR Voucher Portal — design tokens and base.
+ *
+ * The whole palette hangs off --mair-green below; change that one value and
+ * the buttons, focus rings, selection highlights and brand marks follow.
+ * --voucher-accent aliases it so the component styles below, which are shared
+ * with the other voucher surfaces, name the role rather than the colour.
+ */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: #F5F8F6;
+  color: #12211C;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+               "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 { letter-spacing: -.4px; }
+button { font-family: inherit; }
+
+/* Shared controls the portal screens rely on. */
+button.primary, button.secondary {
+  width: 100%; height: 40px; border-radius: 10px; font-size: 12px; font-weight: 700;
+  cursor: pointer; border: 1px solid transparent; transition: background .15s, border-color .15s;
+}
+button.primary { background: var(--mair-green); color: #fff; }
+button.primary:hover:not(:disabled) { background: var(--mair-green-dark); }
+button.secondary { background: #fff; color: var(--mair-green); border-color: var(--voucher-line); }
+button.secondary:hover:not(:disabled) { border-color: var(--mair-green); }
+button:disabled { opacity: .55; cursor: not-allowed; }
+
+.link-button { border: 0; background: transparent; color: var(--mair-green); font-size: 11px;
+  font-weight: 700; cursor: pointer; padding: 0; }
+.link-button:disabled { opacity: .45; cursor: not-allowed; }
+
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; text-align: left; }
+th { padding: 10px 12px; background: #F1F6F3; color: var(--voucher-muted); font-size: 9px;
+  text-transform: uppercase; letter-spacing: .6px; font-weight: 800; }
+td { padding: 13px 12px; border-bottom: 1px solid var(--voucher-line); font-size: 11px;
+  color: #3E4E47; white-space: nowrap; }
+td:first-child { display: flex; flex-direction: column; gap: 3px; color: var(--voucher-ink); }
+td:first-child small { color: #86958E; }
+
+.status { font-size: 9px; font-weight: 700; padding: 5px 8px; border-radius: 12px;
+  text-transform: capitalize; display: inline-block; }
+.status.approved, .status.issued, .status.generated { background: #E3F1E9; color: #1C6B4B; }
+.status.open, .status.assigned, .status.in-transit { background: #FFF4DF; color: #9A6B22; }
+.status.unassigned { background: #E8EEF3; color: #3F6488; }
+.status.cancelled, .status.expired { background: #FFEBE7; color: #B95544; }
+
+.chip { border: 1px solid var(--voucher-line); background: #fff; border-radius: 20px;
+  padding: 7px 12px; font-size: 10px; font-weight: 700; cursor: pointer; color: #4C5A54; }
+.chip.active { background: var(--mair-green); color: #fff; border-color: var(--mair-green); }
+
+.data-state { padding: 22px; text-align: center; color: var(--voucher-muted); font-size: 11px; }
+.data-state.error { color: #B95544; }
+.form-error { background: #FFEBE7; border: 1px solid #F3CBC2; color: #A8402F;
+  border-radius: 9px; padding: 10px 12px; font-size: 11px; }
+.checkbox-row { flex-direction: row !important; align-items: center; gap: 8px !important; }
+.checkbox-row input { width: auto !important; }
+
+/* Sign-in */
+.login-page { min-height: 100vh; display: grid; place-items: center; padding: 24px;
+  background: linear-gradient(160deg, #F5F8F6, #E7F1EB); }
+.login-card { width: min(400px, 100%); background: #fff; border: 1px solid var(--voucher-line);
+  border-radius: 18px; padding: 32px; box-shadow: 0 18px 50px rgba(10, 74, 58, .10); }
+.login-card h1 { margin: 6px 0 8px; font-size: 26px; }
+.login-card > p { margin: 0 0 20px; font-size: 11px; color: var(--voucher-muted); line-height: 1.6; }
+.login-card form { display: flex; flex-direction: column; gap: 14px; }
+.login-card label { display: flex; flex-direction: column; gap: 6px; font-size: 10px;
+  font-weight: 700; color: var(--voucher-muted); }
+.login-card input { border: 1px solid var(--voucher-line); border-radius: 9px; padding: 11px 12px;
+  font-size: 12px; font-family: inherit; color: var(--voucher-ink); outline: none; }
+.login-card input:focus { border-color: var(--mair-green); box-shadow: 0 0 0 3px #0a4a3a1f; }
+.login-error { background: #FFEBE7; color: #A8402F; border-radius: 8px; padding: 9px 11px; font-size: 11px; }
+.eyebrow { margin: 0; font-size: 9px; font-weight: 800; letter-spacing: 1.6px; color: var(--mair-green); }
+
+/* Brand lockup. Swap public/mair-logo.svg for the official asset; nothing
+   else needs to change. */
+.brand { display: flex; align-items: center; gap: 10px; font-size: 17px; font-weight: 800;
+  color: var(--mair-green); letter-spacing: -.3px; }
+.login-brand { margin-bottom: 18px; }
+.brand img, .brand-logo { height: 34px; width: auto; display: block; }
+.brand-mark { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%;
+  background: var(--mair-green); color: #fff; font-weight: 800; }
+
+:root{--mair-green:#0A4A3A;--mair-green-dark:#063429;--mair-green-soft:#E7F1EB;
+  --voucher-accent:var(--mair-green);
+  --voucher-lime:#CDE7DC;--voucher-ink:#12211C;--voucher-muted:#5C6F67;--voucher-line:#DCE7E1}
+.voucher-page{min-height:100vh;padding:32px 20px 60px;max-width:1080px;margin:0 auto;background:#F5F8F6}
+.voucher-topbar{display:flex;align-items:center;gap:16px;margin-bottom:24px;flex-wrap:wrap}
+.voucher-logo{height:44px;width:auto}
+.voucher-eyebrow{margin:0 0 4px;color:var(--voucher-accent);font-size:9px;letter-spacing:1.6px;font-weight:800}
+.voucher-topbar h1{margin:0;font-size:24px;letter-spacing:-.6px;color:var(--voucher-ink)}
+.voucher-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+.voucher-stats div{background:#fff;border:1px solid var(--voucher-line);border-radius:14px;padding:16px}
+.voucher-stats span{display:block;font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:var(--voucher-muted);margin-bottom:6px}
+.voucher-stats strong{font-size:22px;color:var(--voucher-ink)}
+.voucher-card{background:#fff;border:1px solid var(--voucher-line);border-radius:16px;padding:20px 22px;margin-bottom:18px}
+.voucher-card-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.voucher-card-head h2{margin:0;font-size:15px;color:var(--voucher-ink)}
+.voucher-form{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.voucher-form label{display:flex;flex-direction:column;gap:6px;font-size:10px;font-weight:700;color:var(--voucher-muted)}
+.voucher-form label small{font-weight:500;text-transform:none;letter-spacing:0}
+.voucher-form input,.voucher-form select,.voucher-form textarea{border:1px solid var(--voucher-line);border-radius:9px;padding:10px 11px;font-size:12px;outline:none;color:var(--voucher-ink);font-family:inherit;background:#fff}
+.voucher-form textarea{resize:vertical}
+.voucher-form input:focus,.voucher-form select:focus,.voucher-form textarea:focus{border-color:var(--voucher-accent);box-shadow:0 0 0 3px #0a4a3a1f}
+.voucher-topbar button.secondary,.voucher-topbar button.primary{width:auto;padding:0 16px;height:38px}
+.voucher-artwork-preview{display:flex;align-items:center;gap:14px;margin-top:8px}
+.voucher-artwork-preview img{width:180px;height:auto;aspect-ratio:2.74/1;object-fit:cover;border-radius:8px;border:1px solid var(--voucher-line)}
+
+/* Phase 2/3: nav, notifications, workflow actions, templates library, team access */
+/* flex-direction is explicit because the global `nav { flex-direction: column }`
+   above (the fleet console's sidebar) would otherwise win over this class. */
+.voucher-nav{display:flex;flex-direction:row;align-items:center;gap:18px;margin-left:28px;flex-wrap:wrap}
+.voucher-nav .link-button{color:var(--voucher-muted);font-size:11px;letter-spacing:.3px;padding:4px 0;border-bottom:2px solid transparent}
+.voucher-nav .link-button.active{color:var(--voucher-accent);border-bottom-color:var(--voucher-accent)}
+.voucher-page .voucher-notif-wrap .link-button,.voucher-page .voucher-notif-item .link-button{color:var(--voucher-accent)}
+.voucher-notif-wrap{position:relative}
+.voucher-notif-bell{position:relative;width:auto;padding:0 14px;height:38px}
+.voucher-notif-badge{position:absolute;top:-6px;right:-6px;background:#b95544;color:#fff;border-radius:10px;font-size:9px;font-weight:800;padding:1px 6px;line-height:1.4}
+.voucher-notif-dropdown{position:absolute;top:44px;right:0;width:320px;max-height:400px;overflow-y:auto;background:#fff;border:1px solid var(--voucher-line);border-radius:12px;box-shadow:0 12px 30px rgba(18,33,28,.15);z-index:20}
+.voucher-notif-head{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;border-bottom:1px solid var(--voucher-line);font-size:12px}
+.voucher-notif-item{padding:10px 14px;border-bottom:1px solid var(--voucher-line);cursor:pointer;display:flex;flex-direction:column;gap:3px}
+.voucher-notif-item:last-child{border-bottom:0}
+.voucher-notif-item span{font-size:11px;color:var(--voucher-ink)}
+.voucher-notif-item time{font-size:9px;color:var(--voucher-muted)}
+.voucher-notif-item.unread{background:#EEF5F1}
+.voucher-download-link{display:inline-block;padding:8px 14px;border-radius:8px;text-decoration:none;margin-top:10px}
+/* The two approval sign-offs. Both steps always render, so an outstanding one
+   shows as a gap in a sequence rather than as something simply not there. */
+.approval-trail{display:flex;flex-direction:column;gap:6px;margin:10px 0 4px;font-size:11px;color:var(--voucher-muted)}
+.approval-step{display:flex;align-items:baseline;gap:8px}
+.approval-step-mark{display:inline-grid;place-items:center;width:16px;height:16px;flex:0 0 16px;
+  border-radius:50%;border:1px solid var(--voucher-line);font-size:9px;line-height:1}
+.approval-step.done{color:var(--voucher-ink)}
+.approval-step.done .approval-step-mark{background:var(--mair-green);border-color:var(--mair-green);color:#fff}
+.approval-step.awaiting{color:var(--voucher-accent)}
+.approval-step.awaiting .approval-step-mark{border-color:var(--voucher-accent);color:var(--voucher-accent)}
+.access-hint{margin:0 0 6px;font-size:10px;color:var(--voucher-muted)}
+.voucher-workflow-actions{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
+.voucher-workflow-actions button{width:auto;padding:0 16px;height:38px}
+.voucher-inline-form{margin-top:12px;padding:14px;background:#F2F7F4;border-radius:10px;display:flex;flex-direction:column;gap:8px}
+.voucher-inline-form textarea,.voucher-inline-form input,.voucher-inline-form select{border:1px solid var(--voucher-line);border-radius:8px;padding:9px 11px;font-size:12px;font-family:inherit;resize:vertical}
+.voucher-template-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px}
+.voucher-template-card{border:1px solid var(--voucher-line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:8px}
+.voucher-template-card img{width:100%;aspect-ratio:2.74/1;object-fit:cover;border-radius:8px}
+.voucher-template-placeholder{width:100%;aspect-ratio:2.74/1;border-radius:8px;background:var(--voucher-accent);opacity:.15;display:grid;place-items:center;font-size:10px;color:var(--voucher-accent)}
+.voucher-template-badges{display:flex;gap:6px}
+.voucher-template-actions{display:flex;gap:10px;margin-top:auto;flex-wrap:wrap}
+
+/* Dashboard charts. Series colours live in the component (validated categorical
+   palette); everything here is chrome and layout only. */
+.voucher-filter-row{display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap}
+.voucher-filter-row label{display:flex;flex-direction:column;gap:5px;font-size:10px;font-weight:700;color:var(--voucher-muted)}
+.voucher-filter-row select,.voucher-filter-row input{border:1px solid var(--voucher-line);border-radius:8px;padding:8px 10px;font-size:11px;font-family:inherit;background:#fff;color:var(--voucher-ink);outline:none}
+.voucher-filter-row select:focus,.voucher-filter-row input:focus{border-color:var(--voucher-accent);box-shadow:0 0 0 3px #0a4a3a1f}
+.viz-wrap{position:relative}
+.viz-svg{width:100%;height:auto;display:block;overflow:visible}
+.viz-legend{display:flex;gap:14px;list-style:none;margin:0;padding:0}
+.viz-legend li{display:flex;align-items:center;gap:6px;font-size:10.5px;font-weight:600;color:var(--voucher-muted)}
+.viz-legend i{width:10px;height:10px;border-radius:3px;flex:none}
+.viz-tooltip{position:absolute;top:8px;transform:translateX(-50%);background:#fff;border:1px solid var(--voucher-line);border-radius:9px;
+  box-shadow:0 8px 22px rgba(18,33,28,.14);padding:9px 11px;font-size:10.5px;pointer-events:none;min-width:132px;z-index:5}
+.viz-tooltip strong{display:block;margin-bottom:6px;color:var(--voucher-ink);font-size:11px}
+.viz-tooltip span{display:flex;align-items:center;gap:6px;color:var(--voucher-muted);line-height:1.9}
+.viz-tooltip span i{width:8px;height:8px;border-radius:2px;flex:none}
+.viz-tooltip span b{margin-left:auto;color:var(--voucher-ink);font-variant-numeric:tabular-nums}
+
+/* Voucher card designer. The canvas is the card's own coordinate space (points
+   from its top-left corner) scaled to fit, so a dragged position maps 1:1 onto
+   what the PDF renderer draws - and every element is drawn the way it prints,
+   not as a placeholder chip. */
+.designer-head{align-items:flex-start;gap:16px;flex-wrap:wrap}
+.designer-sub{margin:4px 0 0;font-size:10.5px;color:var(--voucher-muted)}
+.designer-actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-left:auto}
+.designer-btn{width:auto!important;padding:0 16px;height:34px}
+.designer-zoom{display:flex;align-items:center;gap:7px;font-size:10px;font-weight:700;color:var(--voucher-muted)}
+.designer-zoom input{width:96px}
+.designer-zoom span{font-variant-numeric:tabular-nums;min-width:34px}
+.designer-warning{margin-bottom:12px;padding:9px 12px;border-radius:9px;background:#fff6e9;border:1px solid #f0d8b4;color:#8a5a12;font-size:11px}
+
+.designer-layout{display:grid;grid-template-columns:minmax(0,1fr) 292px;gap:22px;align-items:start}
+@media(max-width:1180px){.designer-layout{grid-template-columns:1fr}}
+.designer-stage{min-width:0}
+
+.designer-toolbar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin-bottom:12px}
+.designer-toolbar-label{font-size:9px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--voucher-muted)}
+.designer-menu-wrap{position:relative}
+.designer-menu{position:absolute;top:calc(100% + 6px);left:0;z-index:6;width:260px;max-height:320px;overflow-y:auto;
+  background:#fff;border:1px solid var(--voucher-line);border-radius:10px;box-shadow:0 12px 30px rgba(18,33,28,.16);padding:8px}
+.designer-menu p{margin:2px 6px 8px;font-size:9px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--voucher-muted)}
+.designer-menu button{display:flex;flex-direction:column;gap:2px;width:100%;text-align:left;border:0;background:transparent;
+  padding:7px 8px;border-radius:7px;cursor:pointer}
+.designer-menu button:hover{background:#EEF5F1}
+.designer-menu button strong{font-size:11px;color:var(--voucher-ink);font-weight:600}
+.designer-menu button small{font-size:9.5px;color:var(--voucher-muted)}
+
+.designer-canvas-wrap{overflow:auto;padding-bottom:4px}
+.designer-canvas{position:relative;display:inline-block;touch-action:none;
+  background:repeating-conic-gradient(#EDF3F0 0% 25%,#fff 0% 50%) 50%/16px 16px}
+.designer-hint{margin:9px 0 0;font-size:10px;color:var(--voucher-muted)}
+
+/* The card as it prints: shared by the designer canvas and the library
+   thumbnails, so a preview can never disagree with the editor. */
+.card-surface{position:relative;overflow:hidden;border:1px solid var(--voucher-line);border-radius:6px}
+.card-artwork{position:absolute;object-fit:fill;pointer-events:none}
+.card-el-box{position:absolute;pointer-events:none}
+.card-el-text{position:absolute;pointer-events:none}
+
+.designer-hit{position:absolute;cursor:grab;border:1px solid transparent;border-radius:2px;min-width:8px;min-height:8px}
+.designer-hit:hover{border-color:rgba(10,74,58,.45);background:rgba(10,74,58,.06)}
+.designer-hit.selected{border-color:var(--voucher-accent);background:rgba(10,74,58,.08);z-index:4}
+.designer-hit.hidden{opacity:.4;border-style:dashed}
+.designer-hit:active{cursor:grabbing}
+.designer-handle{position:absolute;width:8px;height:8px;background:#fff;border:1.5px solid var(--voucher-accent);border-radius:2px}
+.designer-handle.h-nw{left:-5px;top:-5px;cursor:nwse-resize}
+.designer-handle.h-n{left:calc(50% - 4px);top:-5px;cursor:ns-resize}
+.designer-handle.h-ne{right:-5px;top:-5px;cursor:nesw-resize}
+.designer-handle.h-e{right:-5px;top:calc(50% - 4px);cursor:ew-resize}
+.designer-handle.h-se{right:-5px;bottom:-5px;cursor:nwse-resize}
+.designer-handle.h-s{left:calc(50% - 4px);bottom:-5px;cursor:ns-resize}
+.designer-handle.h-sw{left:-5px;bottom:-5px;cursor:nesw-resize}
+.designer-handle.h-w{left:-5px;top:calc(50% - 4px);cursor:ew-resize}
+
+.designer-proof{margin-top:18px;border-top:1px solid var(--voucher-line);padding-top:14px}
+.designer-proof-head{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px;font-size:10.5px;color:var(--voucher-muted)}
+.designer-proof-head .checkbox-row{margin-top:0;font-size:10.5px;font-weight:700;color:var(--voucher-ink)}
+.designer-proof-head em{font-style:normal;color:var(--voucher-muted);font-weight:400}
+.designer-proof-frame{width:100%;height:340px;border:1px solid var(--voucher-line);border-radius:10px;background:#fff}
+
+.designer-panel{display:flex;flex-direction:column;gap:16px;border:1px solid var(--voucher-line);border-radius:10px;padding:14px}
+.designer-section+.designer-section{border-top:1px solid var(--voucher-line);padding-top:14px}
+.designer-panel .geo-panel-title small{font-weight:600;letter-spacing:0;text-transform:none}
+.designer-layers{list-style:none;margin:0 0 10px;padding:0;display:flex;flex-direction:column;gap:2px;max-height:280px;overflow-y:auto}
+.designer-layers li{display:flex;align-items:center;gap:2px;border-radius:7px}
+.designer-layers li.selected{background:var(--voucher-accent)}
+.designer-layers li.selected .designer-layer-name,.designer-layers li.selected .designer-layer-icon{color:#fff}
+.designer-layer-name{flex:1;min-width:0;display:flex;align-items:center;gap:7px;text-align:left;border:0;background:transparent;
+  padding:6px 8px;font-size:11px;color:var(--voucher-ink);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.designer-layer-type{display:grid;place-items:center;width:16px;height:16px;flex:none;border-radius:4px;
+  background:rgba(10,74,58,.12);color:var(--voucher-accent);font-size:8.5px;font-weight:800}
+.designer-layers li.selected .designer-layer-type{background:rgba(255,255,255,.24);color:#fff}
+.designer-layer-icon{border:0;background:transparent;color:var(--voucher-muted);font-size:11px;padding:5px 4px;cursor:pointer;line-height:1}
+.designer-layer-icon:hover{color:var(--voucher-accent)}
+.designer-row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-top:4px}
+.designer-pair{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.designer-note{margin:0;font-size:10px;line-height:1.5;color:var(--voucher-muted)}
+.designer-field{display:flex;flex-direction:column;gap:5px;font-size:10px;font-weight:700;color:var(--voucher-muted);margin-bottom:10px}
+.designer-field small{font-weight:600;color:var(--voucher-muted)}
+.link-button.danger{color:#b95544}
+
+.geo-panel-title{font-size:9px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--voucher-muted);margin:0 0 10px}
+.geo-props{display:flex;flex-direction:column;gap:9px}
+.geo-props label{display:flex;flex-direction:column;gap:4px;font-size:10px;font-weight:700;color:var(--voucher-muted)}
+.geo-props small{font-weight:600;text-transform:none;letter-spacing:0}
+.geo-props input,.geo-props select,.geo-props textarea{border:1px solid var(--voucher-line);border-radius:7px;padding:7px 9px;
+  font-size:11px;font-family:inherit;color:var(--voucher-ink);outline:none;background:#fff;width:100%;box-sizing:border-box}
+.geo-props textarea{resize:vertical;min-height:56px}
+.geo-props input[type=color]{padding:2px;height:30px}
+.geo-props input[type=range]{padding:0;border:0}
+.geo-props input[type=file]{padding:5px;font-size:10px}
+.geo-props input:focus,.geo-props select:focus,.geo-props textarea:focus{border-color:var(--voucher-accent);box-shadow:0 0 0 3px #0a4a3a1f}
+
+/* Card-design picker inside the create-batch form: the same miniature the
+   library shows, so choosing a design means looking at it, not at a name. */
+.voucher-picker{border:1px solid var(--voucher-line);border-radius:10px;padding:12px 14px}
+.voucher-picker-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+.voucher-picker-head>span{font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--voucher-muted)}
+.voucher-picker-actions{display:flex;gap:14px}
+.voucher-picker-row{display:flex;gap:12px;overflow-x:auto;padding-bottom:4px}
+.voucher-picker-card{flex:none;display:flex;flex-direction:column;align-items:center;gap:6px;width:166px;
+  border:1.5px solid var(--voucher-line);border-radius:10px;background:#fff;padding:8px;cursor:pointer;text-align:center}
+.voucher-picker-card:hover{border-color:#AFCCC0}
+.voucher-picker-card.selected{border-color:var(--voucher-accent);box-shadow:0 0 0 3px #0a4a3a1f}
+.voucher-picker-card>span{font-size:11px;font-weight:600;color:var(--voucher-ink);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.voucher-picker-card>small{font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--voucher-accent)}
+.voucher-picker-card .card-surface{pointer-events:none}
+/* "You typed this, the card has nowhere to print it" - the one thing the batch
+   form can tell you that the designer can't. */
+.voucher-picker-coverage{margin-top:12px;border-top:1px solid var(--voucher-line);padding-top:10px}
+.voucher-picker-coverage p{margin:0;font-size:10.5px;line-height:1.7}
+.voucher-picker-coverage p.ok{color:var(--voucher-muted)}
+.voucher-picker-coverage p.warn{color:#8a5a12;background:#fff6e9;border:1px solid #f0d8b4;border-radius:8px;padding:9px 11px}
+.voucher-picker-coverage .link-button{color:var(--voucher-accent);font-size:10.5px}
+
+/* Reference-data setup: departments, voucher types, numbering prefixes. */
+.setup-form{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px;padding:14px;
+  border:1px solid var(--voucher-line);border-radius:10px;background:#F9FBFA}
+.setup-form label{display:flex;flex-direction:column;gap:5px;font-size:10px;font-weight:700;color:var(--voucher-muted)}
+.setup-form small{font-weight:600;text-transform:none;letter-spacing:0}
+.setup-form input,.setup-form select{border:1px solid var(--voucher-line);border-radius:8px;padding:8px 10px;
+  font-size:11px;font-family:inherit;color:var(--voucher-ink);outline:none;background:#fff;min-width:150px}
+.setup-form input:focus,.setup-form select:focus{border-color:var(--voucher-accent);box-shadow:0 0 0 3px #0a4a3a1f}
+.setup-form button.primary{width:auto;padding:0 18px;height:35px}
+
+.voucher-template-thumb{display:flex;justify-content:center;align-items:center;background:#EEF5F1;border-radius:8px;padding:10px;overflow:hidden}
+.voucher-form-wide{grid-column:1 / -1}
+.voucher-form button.primary{background:var(--voucher-accent);height:42px}
+.voucher-success{margin-top:14px;padding:12px 14px;border-radius:10px;background:#E7F1EB;color:var(--voucher-accent);font-size:11px}
+.voucher-search{display:flex;gap:8px}
+.voucher-search input{border:1px solid var(--voucher-line);border-radius:9px;padding:9px 11px;font-size:11px;outline:none;min-width:200px}
+.voucher-tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.voucher-page .chip.active{background:var(--voucher-accent);color:#fff;border-color:var(--voucher-accent)}
+.voucher-actions{display:flex;align-items:center;gap:10px;white-space:nowrap}
+.voucher-issue-inline{display:flex;align-items:center;gap:6px;position:relative}
+.voucher-issue-inline input{border:1px solid var(--voucher-line);border-radius:8px;padding:7px 9px;font-size:11px;width:140px;outline:none}
+.voucher-issue-error{position:absolute;top:100%;left:0;margin-top:4px;color:#b95544;font-size:9px;white-space:normal;width:180px}
+.voucher-pagination{display:flex;justify-content:center;align-items:center;gap:14px;margin-top:16px;font-size:11px;color:var(--voucher-muted)}
+.voucher-footer{display:block;text-align:center;margin-top:10px;color:var(--voucher-muted);font-size:9px}
+.status.unassigned{background:#fff4df;color:#9a6b22}
+@media(max-width:700px){.voucher-stats{grid-template-columns:repeat(2,1fr)}.voucher-form{grid-template-columns:1fr}}
+.assign-row button{white-space:nowrap;width:auto;height:auto;padding:9px 14px}
+
+/* --- Live GPS map (Leaflet) ------------------------------------------------ */
+.fleet-map{position:relative;height:min(60vh,560px);width:100%;overflow:hidden;background:#e8eef3}
+.fleet-map .leaflet-container{height:100%;width:100%;font:inherit;background:#e8eef3}
+/* Leaflet stacks its panes at z-index 400-700, which would otherwise sit over
+   the app's own drawers and toasts. */
+.fleet-map .leaflet-pane,.fleet-map .leaflet-top,.fleet-map .leaflet-bottom{z-index:1}
+.fleet-map .leaflet-control-attribution{font-size:9px;background:rgba(255,255,255,.8)}
+
+.gps-pin{position:relative;width:16px;height:16px}
+.gps-pin i{position:absolute;inset:0;border-radius:50%;background:var(--pin);border:2px solid #fff;box-shadow:0 1px 4px rgba(16,25,21,.4)}
+/* A moving vehicle points where it is going; a stopped one is just a dot. */
+.gps-pin.moving i{border-radius:50% 50% 50% 0;transform:rotate(calc(var(--heading,0) * 1deg - 45deg))}
+.gps-pin.selected::after{content:"";position:absolute;inset:-9px;border-radius:50%;border:2px solid var(--pin);opacity:.75;animation:gps-ping 1.6s ease-out infinite}
+@keyframes gps-ping{0%{transform:scale(.6);opacity:.8}100%{transform:scale(1.3);opacity:0}}
+.gps-pin b{position:absolute;left:50%;top:19px;transform:translateX(-50%);font-size:9px;font-weight:700;white-space:nowrap;color:#17211d;background:rgba(255,255,255,.86);border-radius:4px;padding:0 3px;letter-spacing:-.2px}
+
+.gps-cluster{background:rgba(13,95,69,.9);color:#fff;border:2px solid #fff;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:12px;box-shadow:0 1px 6px rgba(16,25,21,.45)}
+.gps-popup h4{margin:0 0 4px;font-size:13px}
+.gps-popup dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:11px}
+.gps-popup dt{color:var(--muted)}
+.gps-popup dd{margin:0;font-weight:600}
+.gps-popup .excursion{color:#c0342b}
+.fleet-map-layers{position:absolute;top:10px;right:10px;z-index:2;display:flex;gap:4px;background:rgba(255,255,255,.92);padding:4px;border-radius:9px;box-shadow:0 1px 6px rgba(16,25,21,.2)}
+.fleet-map-layers button{border:0;background:transparent;border-radius:6px;padding:4px 9px;font-size:11px;cursor:pointer;color:var(--muted)}
+.fleet-map-layers button.active{background:var(--green);color:#fff}
+.fleet-map-overlay{position:absolute;inset:0;z-index:3;display:grid;place-items:center;padding:20px;background:rgba(232,238,243,.94);text-align:center}

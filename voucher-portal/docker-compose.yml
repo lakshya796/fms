@@ -1,0 +1,58 @@
+# Local run of the whole portal: Postgres, the API, and the UI.
+#
+# This mirrors the ECS topology (two services, one database) so what works here
+# is what gets deployed. It is not the deployment itself - see deploy/ecs/.
+#
+#   cp .env.example .env && docker compose up --build
+#   docker compose run --rm api python manage.py migrate
+#   docker compose run --rm api python manage.py createsuperuser
+#   docker compose run --rm api python manage.py seed_voucher_portal
+#
+# Then open http://localhost:3000/voucher-portal
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - portal_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: db
+    ports:
+      - "8000:8000"
+    volumes:
+      # Artwork has to outlive the container, exactly as it must on ECS.
+      - portal_media:/app/media
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        # Next inlines NEXT_PUBLIC_* at build time, so it is a build arg here
+        # rather than a runtime environment variable.
+        NEXT_PUBLIC_FMS_API_URL: ${NEXT_PUBLIC_FMS_API_URL:-http://localhost:8000}
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  portal_db:
+  portal_media:

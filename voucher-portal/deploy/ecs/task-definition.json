@@ -1,0 +1,109 @@
+{
+  "_comment": [
+    "MAIR Voucher Portal - ECS Fargate task definition (API + UI in one task).",
+    "Replace every <PLACEHOLDER>. Register with:",
+    "  aws ecs register-task-definition --cli-input-json file://task-definition.json",
+    "Secrets are Secrets Manager ARNs, never literal values: anything in",
+    "'environment' is visible to anyone who can describe the task."
+  ],
+  "family": "mair-voucher-portal",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "runtimePlatform": {
+    "cpuArchitecture": "X86_64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "executionRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/mair-voucher-portal-task",
+  "volumes": [
+    {
+      "_comment": "Card artwork must survive a deploy. A container filesystem does not.",
+      "name": "media",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "<EFS_FILESYSTEM_ID>",
+        "transitEncryption": "ENABLED",
+        "authorizationConfig": {
+          "accessPointId": "<EFS_ACCESS_POINT_ID>",
+          "iam": "ENABLED"
+        }
+      }
+    }
+  ],
+  "containerDefinitions": [
+    {
+      "name": "api",
+      "image": "<ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/mair-voucher-portal-api:<TAG>",
+      "essential": true,
+      "portMappings": [{ "containerPort": 8000, "protocol": "tcp", "name": "api" }],
+      "mountPoints": [{ "sourceVolume": "media", "containerPath": "/app/media", "readOnly": false }],
+      "environment": [
+        {
+          "name": "DJANGO_ALLOWED_HOSTS",
+          "value": "*"
+        },
+        { "name": "CORS_ALLOWED_ORIGINS", "value": "https://vouchers.<YOUR_DOMAIN>" },
+        { "name": "CORS_ALLOWED_ORIGIN_REGEXES", "value": "" },
+        { "name": "DJANGO_DEBUG", "value": "false" },
+        { "name": "DJANGO_TIME_ZONE", "value": "Asia/Dubai" },
+        { "name": "DJANGO_LOG_LEVEL", "value": "INFO" },
+        { "name": "MEDIA_ROOT", "value": "/app/media" },
+        { "name": "POSTGRES_HOST", "value": "<RDS_ENDPOINT>" },
+        { "name": "POSTGRES_PORT", "value": "5432" },
+        { "name": "POSTGRES_DB", "value": "voucher_portal" }
+      ],
+      "secrets": [
+        { "name": "DJANGO_SECRET_KEY", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:mair/voucher-portal/django-secret-key" },
+        { "name": "POSTGRES_USER", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:mair/voucher-portal/db:username::" },
+        { "name": "POSTGRES_PASSWORD", "valueFrom": "arn:aws:secretsmanager:<REGION>:<ACCOUNT_ID>:secret:mair/voucher-portal/db:password::" }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/api/v1/health/ || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 30
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/mair-voucher-portal",
+          "awslogs-region": "<REGION>",
+          "awslogs-stream-prefix": "api",
+          "awslogs-create-group": "true"
+        }
+      }
+    },
+    {
+      "name": "web",
+      "image": "<ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/mair-voucher-portal-web:<TAG>",
+      "essential": true,
+      "portMappings": [{ "containerPort": 3000, "protocol": "tcp", "name": "web" }],
+      "environment": [
+        {
+          "_comment": "The API URL the browser uses is compiled into the bundle at image build time (NEXT_PUBLIC_*). This is here only so the running container reports what it was built against.",
+          "name": "NEXT_PUBLIC_FMS_API_URL",
+          "value": "https://api.vouchers.<YOUR_DOMAIN>"
+        },
+        { "name": "NODE_ENV", "value": "production" }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/voucher-portal || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 20
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/mair-voucher-portal",
+          "awslogs-region": "<REGION>",
+          "awslogs-stream-prefix": "web",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

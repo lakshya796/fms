@@ -15,6 +15,7 @@ const navGroups: { label: string; items: [string, string][] }[] = [
   { label: "ACCOUNTS", items: [["Ledger", "▦"], ["Vouchers", "▤"], ["Vendor bills", "◳"], ["Payments", "⇄"], ["Financials", "◫"]] },
   { label: "ADMIN", items: [["Users", "♟"], ["Roles", "⚿"], ["Branches", "⌸"], ["Audit trail", "◷"]] },
   { label: "PLATFORM", items: [["Modules", "⊞"]] },
+  { label: "REPORTS", items: [["Driver & Availability", "♙"], ["Fleet Report", "▱"], ["Customer Invoices", "▥"], ["Vehicle Settlement", "₹"], ["Sales Report", "↗"]] },
 ];
 const nav = navGroups.flatMap(group => group.items.map(item => item[0]));
 
@@ -4157,6 +4158,469 @@ function IndentsView({ reloadKey, onAction, openAction }: { reloadKey: number; o
   </div>;
 }
 
+// ---------------------------------------------------------------------------
+// Report views
+// ---------------------------------------------------------------------------
+
+function downloadCSV(filename: string, headers: string[], rows: (string | number | null | undefined)[][]) {
+  const escape = (v: string | number | null | undefined) => {
+    const s = String(v ?? "");
+    return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const lines = [headers, ...rows].map(row => row.map(escape).join(",")).join("\r\n");
+  const blob = new Blob(["﻿" + lines], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function ReportDateRange({ range, setRange, onApply }: { range: { from: string; to: string }; setRange: (r: { from: string; to: string }) => void; onApply: () => void }) {
+  return (
+    <div className="report-range">
+      <label>From<input type="date" value={range.from} onChange={e => setRange({ ...range, from: e.target.value })} /></label>
+      <label>To<input type="date" value={range.to} onChange={e => setRange({ ...range, to: e.target.value })} /></label>
+      <button className="chip" onClick={onApply}>Apply</button>
+    </div>
+  );
+}
+
+function DriverAvailabilityReport({ reloadKey, onAction }: { reloadKey: number; onAction: Notify }) {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState("");
+
+  const load = () => {
+    setLoading(true); setData(null);
+    fmsRequest<any>("reports/driver-availability/").then(setData).catch(() => setData(null)).finally(() => setLoading(false));
+  };
+  useEffect(load, [reloadKey]);
+
+  const drivers: any[] = data?.drivers || [];
+  const visible = drivers.filter(d =>
+    (d.name + d.phone + d.licence_number + d.status + d.home_city).toLowerCase().includes(query.toLowerCase())
+  );
+
+  const statusBadge = (s: string) => <span className={"status " + s.toLowerCase().replaceAll(" ", "-").replaceAll("_", "-")}>{s.replaceAll("_", " ")}</span>;
+  const expiryBadge = (s: string) => {
+    const cls = s === "expired" ? "expired" : s === "expiring_soon" ? "pending" : s === "valid" ? "active" : "idle";
+    return <span className={"status " + cls}>{s.replaceAll("_", " ")}</span>;
+  };
+
+  const handleDownload = () => {
+    const headers = ["Driver", "Phone", "Licence Number", "Licence Expiry", "Expiry Status", "Status", "Home City", "Active Trips"];
+    const rows = visible.map((d: any) => [d.name, d.phone, d.licence_number, d.licence_expiry || "", d.licence_expiry_status.replaceAll("_", " "), d.status, d.home_city || "", d.active_trips]);
+    downloadCSV("driver-availability.csv", headers, rows);
+    onAction("Driver availability report downloaded");
+  };
+
+  return (
+    <div className="module-page">
+      <div className="module-title">
+        <div><p className="eyebrow">REPORTS</p><h2>Driver &amp; Availability</h2><p>Licence status, current availability and trip count for every driver in the fleet.</p></div>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button className="secondary module-action" onClick={handleDownload} disabled={!data || loading}>⇩ Download CSV</button>
+          <button className="primary module-action" onClick={load}>↻ Refresh</button>
+        </div>
+      </div>
+      {data && (
+        <div className="module-stats">
+          <div className="module-stat"><span>Total drivers</span><strong>{data.summary.total}</strong><small>Registered</small></div>
+          <div className="module-stat"><span>Available</span><strong>{data.summary.available}</strong><small>Ready to dispatch</small></div>
+          <div className="module-stat"><span>On trip</span><strong>{data.summary.on_trip}</strong><small>Currently running</small></div>
+          <div className="module-stat"><span>Licence issues</span><strong>{data.summary.licences_expired + data.summary.licences_expiring_soon}</strong><small>{data.summary.licences_expired} expired · {data.summary.licences_expiring_soon} expiring</small></div>
+        </div>
+      )}
+      <section className="module-table-card">
+        <div className="module-toolbar">
+          <div><strong>All drivers</strong><span>{loading ? "Loading…" : `${visible.length} drivers`}</span></div>
+          <div className="toolbar-actions">
+            <input placeholder="Search drivers…" value={query} onChange={e => setQuery(e.target.value)} />
+            <button onClick={load}>↻ Refresh</button>
+            <button onClick={handleDownload} disabled={!data || loading}>⇩ Export</button>
+          </div>
+        </div>
+        {loading ? <div className="data-state">Loading report…</div> : !data ? <div className="data-state error">Could not load the report.</div> : visible.length === 0 ? <div className="data-state">No drivers found.</div> : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Driver</th><th>Phone</th><th>Licence</th><th>Licence expiry</th><th>Expiry status</th><th>Status</th><th>Home city</th><th>Active trips</th></tr></thead>
+              <tbody>
+                {visible.map((d: any) => (
+                  <tr key={d.id}>
+                    <td><strong>{d.name}</strong></td>
+                    <td>{d.phone}</td>
+                    <td>{d.licence_number}</td>
+                    <td>{d.licence_expiry || "—"}</td>
+                    <td>{expiryBadge(d.licence_expiry_status)}</td>
+                    <td>{statusBadge(d.status)}</td>
+                    <td>{d.home_city || "—"}</td>
+                    <td>{d.active_trips}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function FleetReport({ reloadKey, onAction }: { reloadKey: number; onAction: Notify }) {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState("");
+
+  const load = () => {
+    setLoading(true); setData(null);
+    fmsRequest<any>("reports/fleet/").then(setData).catch(() => setData(null)).finally(() => setLoading(false));
+  };
+  useEffect(load, [reloadKey]);
+
+  const vehicles: any[] = data?.vehicles || [];
+  const visible = vehicles.filter(v =>
+    (v.registration_number + v.vehicle_type + v.status + v.ownership + v.current_place).toLowerCase().includes(query.toLowerCase())
+  );
+
+  const statusBadge = (s: string) => <span className={"status " + s.toLowerCase().replaceAll("_", "-")}>{s.replaceAll("_", " ")}</span>;
+  const complianceBadge = (s: string) => {
+    const cls = s === "expired" ? "expired" : s === "expiring_soon" ? "pending" : s === "valid" ? "active" : "idle";
+    return <span className={"status " + cls}>{s.replaceAll("_", " ")}</span>;
+  };
+
+  const handleDownload = () => {
+    const headers = ["Registration", "Type", "Ownership", "Capacity (kg)", "Status", "Insurance Expiry", "Insurance Status", "Permit Expiry", "Permit Status", "Odometer (km)", "Total Trips"];
+    const rows = visible.map((v: any) => [v.registration_number, v.vehicle_type, v.ownership, v.capacity_kg, v.status, v.insurance_expiry || "", v.insurance_status.replaceAll("_", " "), v.permit_expiry || "", v.permit_status.replaceAll("_", " "), v.current_odometer_km, v.trips_total]);
+    downloadCSV("fleet-report.csv", headers, rows);
+    onAction("Fleet report downloaded");
+  };
+
+  return (
+    <div className="module-page">
+      <div className="module-title">
+        <div><p className="eyebrow">REPORTS</p><h2>Fleet Report</h2><p>Vehicle-by-vehicle status, utilisation, and insurance &amp; permit compliance across the entire fleet.</p></div>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button className="secondary module-action" onClick={handleDownload} disabled={!data || loading}>⇩ Download CSV</button>
+          <button className="primary module-action" onClick={load}>↻ Refresh</button>
+        </div>
+      </div>
+      {data && (
+        <div className="module-stats">
+          <div className="module-stat"><span>Total vehicles</span><strong>{data.summary.total}</strong><small>In fleet master</small></div>
+          <div className="module-stat"><span>Available</span><strong>{data.summary.available}</strong><small>Ready to allocate</small></div>
+          <div className="module-stat"><span>On trip</span><strong>{data.summary.on_trip}</strong><small>Currently moving</small></div>
+          <div className="module-stat"><span>Compliance issues</span><strong>{data.summary.insurance_expired + data.summary.permit_expired}</strong><small>{data.summary.insurance_expired} ins · {data.summary.permit_expired} permit expired</small></div>
+        </div>
+      )}
+      <section className="module-table-card">
+        <div className="module-toolbar">
+          <div><strong>All vehicles</strong><span>{loading ? "Loading…" : `${visible.length} vehicles`}</span></div>
+          <div className="toolbar-actions">
+            <input placeholder="Search vehicles…" value={query} onChange={e => setQuery(e.target.value)} />
+            <button onClick={load}>↻ Refresh</button>
+            <button onClick={handleDownload} disabled={!data || loading}>⇩ Export</button>
+          </div>
+        </div>
+        {loading ? <div className="data-state">Loading report…</div> : !data ? <div className="data-state error">Could not load the report.</div> : visible.length === 0 ? <div className="data-state">No vehicles found.</div> : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Registration</th><th>Type</th><th>Ownership</th><th>Capacity (kg)</th><th>Status</th><th>Insurance</th><th>Permit</th><th>Odometer (km)</th><th>Total trips</th></tr></thead>
+              <tbody>
+                {visible.map((v: any) => (
+                  <tr key={v.id}>
+                    <td><strong>{v.registration_number}</strong></td>
+                    <td>{v.vehicle_type}</td>
+                    <td>{v.ownership}</td>
+                    <td>{Number(v.capacity_kg).toLocaleString("en-IN")}</td>
+                    <td>{statusBadge(v.status)}</td>
+                    <td>{complianceBadge(v.insurance_status)}<small> {v.insurance_expiry || "—"}</small></td>
+                    <td>{complianceBadge(v.permit_status)}<small> {v.permit_expiry || "—"}</small></td>
+                    <td>{Number(v.current_odometer_km).toLocaleString("en-IN")}</td>
+                    <td>{v.trips_total}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function CustomerInvoicesReport({ reloadKey, onAction }: { reloadKey: number; onAction: Notify }) {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [range, setRange] = useState({ from: "", to: "" });
+  const [query, setQuery] = useState("");
+  const [tab, setTab] = useState(0);
+
+  const load = () => {
+    setLoading(true); setData(null);
+    const q = range.from || range.to ? `?from=${range.from}&to=${range.to}` : "";
+    fmsRequest<any>("reports/customer-invoices/" + q).then(setData).catch(() => setData(null)).finally(() => setLoading(false));
+  };
+  useEffect(load, [reloadKey]);
+
+  const invoices: any[] = data?.invoices || [];
+  const byCustomer: any[] = data?.by_customer || [];
+  const visibleInvoices = invoices.filter(i =>
+    (i.number + i.customer + i.status).toLowerCase().includes(query.toLowerCase())
+  );
+  const visibleCustomers = byCustomer.filter(c => c.customer.toLowerCase().includes(query.toLowerCase()));
+
+  const statusBadge = (s: string) => <span className={"status " + (s === "paid" ? "active" : s === "overdue" ? "expired" : "pending")}>{s}</span>;
+
+  const handleDownload = () => {
+    if (tab === 0) {
+      const headers = ["Invoice", "Customer", "GSTIN", "Freight", "GST", "Total", "Due Date", "Days Overdue", "Status", "Date"];
+      const rows = visibleInvoices.map((i: any) => [i.number, i.customer, i.customer_gstin, i.freight_amount, i.tax_amount, i.total_amount, i.due_date, i.days_overdue, i.status, i.created_at]);
+      downloadCSV("customer-invoices.csv", headers, rows);
+    } else {
+      const headers = ["Customer", "Invoice Count", "Total Billed", "Paid", "Outstanding"];
+      const rows = visibleCustomers.map((c: any) => [c.customer, c.count, c.total, c.paid, c.outstanding]);
+      downloadCSV("customer-invoices-by-customer.csv", headers, rows);
+    }
+    onAction("Customer invoice report downloaded");
+  };
+
+  return (
+    <div className="module-page">
+      <div className="module-title">
+        <div><p className="eyebrow">REPORTS</p><h2>Customer Invoice Report</h2><p>Invoice-level detail and customer-wise outstanding with ageing.</p></div>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button className="secondary module-action" onClick={handleDownload} disabled={!data || loading}>⇩ Download CSV</button>
+          <button className="primary module-action" onClick={load}>↻ Refresh</button>
+        </div>
+      </div>
+      {data && (
+        <div className="module-stats">
+          <div className="module-stat"><span>Total invoiced</span><strong>{rupees(data.summary.total_invoiced)}</strong><small>{data.summary.invoice_count} invoices</small></div>
+          <div className="module-stat"><span>Collected</span><strong>{rupees(data.summary.total_paid)}</strong><small>Paid invoices</small></div>
+          <div className="module-stat"><span>Outstanding</span><strong>{rupees(data.summary.total_outstanding)}</strong><small>Pending collection</small></div>
+          <div className="module-stat"><span>Overdue</span><strong>{data.summary.overdue_count}</strong><small>Past due date</small></div>
+        </div>
+      )}
+      <ReportDateRange range={range} setRange={setRange} onApply={load} />
+      <div className="report-tabs">
+        <button className={tab === 0 ? "chip active" : "chip"} onClick={() => setTab(0)}>Invoice detail</button>
+        <button className={tab === 1 ? "chip active" : "chip"} onClick={() => setTab(1)}>By customer</button>
+      </div>
+      <section className="module-table-card">
+        <div className="module-toolbar">
+          <div><strong>{tab === 0 ? "All invoices" : "Customer summary"}</strong><span>{loading ? "Loading…" : tab === 0 ? `${visibleInvoices.length} invoices` : `${visibleCustomers.length} customers`}</span></div>
+          <div className="toolbar-actions"><input placeholder="Search…" value={query} onChange={e => setQuery(e.target.value)} /><button onClick={handleDownload} disabled={!data || loading}>⇩ Export</button></div>
+        </div>
+        {loading ? <div className="data-state">Loading report…</div> : !data ? <div className="data-state error">Could not load the report.</div> : tab === 0 ? (
+          visibleInvoices.length === 0 ? <div className="data-state">No invoices in this period.</div> : (
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Invoice</th><th>Customer</th><th>Freight</th><th>GST</th><th>Total</th><th>Due date</th><th>Days overdue</th><th>Status</th></tr></thead>
+                <tbody>
+                  {visibleInvoices.map((i: any) => (
+                    <tr key={i.id}>
+                      <td><strong>{i.number}</strong></td>
+                      <td>{i.customer}</td>
+                      <td>{rupees(i.freight_amount)}</td>
+                      <td>{rupees(i.tax_amount)}</td>
+                      <td><strong>{rupees(i.total_amount)}</strong></td>
+                      <td>{i.due_date}</td>
+                      <td>{i.days_overdue > 0 ? <span className="status expired">{i.days_overdue}d</span> : "—"}</td>
+                      <td>{statusBadge(i.status)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        ) : (
+          visibleCustomers.length === 0 ? <div className="data-state">No customer data.</div> : (
+            <div className="table-wrap">
+              <table>
+                <thead><tr><th>Customer</th><th>Invoices</th><th>Total billed</th><th>Paid</th><th>Outstanding</th></tr></thead>
+                <tbody>
+                  {visibleCustomers.map((c: any) => (
+                    <tr key={c.customer}>
+                      <td><strong>{c.customer}</strong></td>
+                      <td>{c.count}</td>
+                      <td>{rupees(c.total)}</td>
+                      <td>{rupees(c.paid)}</td>
+                      <td><strong>{rupees(c.outstanding)}</strong></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        )}
+      </section>
+    </div>
+  );
+}
+
+function VehicleSettlementReport({ reloadKey, onAction }: { reloadKey: number; onAction: Notify }) {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [range, setRange] = useState({ from: "", to: "" });
+  const [query, setQuery] = useState("");
+
+  const load = () => {
+    setLoading(true); setData(null);
+    const q = range.from || range.to ? `?from=${range.from}&to=${range.to}` : "";
+    fmsRequest<any>("reports/vehicle-settlement/" + q).then(setData).catch(() => setData(null)).finally(() => setLoading(false));
+  };
+  useEffect(load, [reloadKey]);
+
+  const settlements: any[] = data?.settlements || [];
+  const visible = settlements.filter(s =>
+    (s.driver + s.trip + s.vehicle + s.route + s.status).toLowerCase().includes(query.toLowerCase())
+  );
+
+  const statusBadge = (s: string) => <span className={"status " + (s === "settled" ? "active" : "pending")}>{s}</span>;
+
+  const handleDownload = () => {
+    const headers = ["Driver", "Phone", "Trip", "Vehicle", "Route", "Advance (INR)", "Approved Expenses (INR)", "Net Payable (INR)", "Status", "Trip Status", "Date"];
+    const rows = visible.map((s: any) => [s.driver, s.driver_phone, s.trip, s.vehicle, s.route, s.advance_amount, s.approved_expenses, s.net_payable, s.status, s.trip_status, s.created_at]);
+    downloadCSV("vehicle-settlement.csv", headers, rows);
+    onAction("Vehicle settlement report downloaded");
+  };
+
+  return (
+    <div className="module-page">
+      <div className="module-title">
+        <div><p className="eyebrow">REPORTS</p><h2>Vehicle Settlement Report</h2><p>Trip-wise driver advance, approved expenses and net payable for every settlement.</p></div>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button className="secondary module-action" onClick={handleDownload} disabled={!data || loading}>⇩ Download CSV</button>
+          <button className="primary module-action" onClick={load}>↻ Refresh</button>
+        </div>
+      </div>
+      {data && (
+        <div className="module-stats">
+          <div className="module-stat"><span>Total advance paid</span><strong>{rupees(data.summary.total_advance)}</strong><small>{data.summary.settlement_count} settlements</small></div>
+          <div className="module-stat"><span>Total expenses</span><strong>{rupees(data.summary.total_approved_expenses)}</strong><small>Approved on-road costs</small></div>
+          <div className="module-stat"><span>Net payable</span><strong>{rupees(data.summary.total_net_payable)}</strong><small>Advance difference</small></div>
+          <div className="module-stat"><span>Pending</span><strong>{data.summary.pending_count}</strong><small>{data.summary.settled_count} settled</small></div>
+        </div>
+      )}
+      <ReportDateRange range={range} setRange={setRange} onApply={load} />
+      <section className="module-table-card">
+        <div className="module-toolbar">
+          <div><strong>All settlements</strong><span>{loading ? "Loading…" : `${visible.length} records`}</span></div>
+          <div className="toolbar-actions"><input placeholder="Search…" value={query} onChange={e => setQuery(e.target.value)} /><button onClick={load}>↻ Refresh</button><button onClick={handleDownload} disabled={!data || loading}>⇩ Export</button></div>
+        </div>
+        {loading ? <div className="data-state">Loading report…</div> : !data ? <div className="data-state error">Could not load the report.</div> : visible.length === 0 ? <div className="data-state">No settlements in this period.</div> : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Driver</th><th>Trip</th><th>Vehicle</th><th>Route</th><th>Advance</th><th>Expenses</th><th>Net payable</th><th>Status</th></tr></thead>
+              <tbody>
+                {visible.map((s: any) => (
+                  <tr key={s.id}>
+                    <td><strong>{s.driver}</strong><small>{s.driver_phone}</small></td>
+                    <td>{s.trip}</td>
+                    <td>{s.vehicle}</td>
+                    <td>{s.route}</td>
+                    <td>{rupees(s.advance_amount)}</td>
+                    <td>{rupees(s.approved_expenses)}</td>
+                    <td><strong className={s.net_payable < 0 ? "text-green" : ""}>{rupees(Math.abs(s.net_payable))}{s.net_payable < 0 ? " recover" : " pay"}</strong></td>
+                    <td>{statusBadge(s.status)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function SalesReport({ reloadKey, onAction }: { reloadKey: number; onAction: Notify }) {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [range, setRange] = useState({ from: "", to: "" });
+  const [query, setQuery] = useState("");
+
+  const load = () => {
+    setLoading(true); setData(null);
+    const q = range.from || range.to ? `?from=${range.from}&to=${range.to}` : "";
+    fmsRequest<any>("reports/sales/" + q).then(setData).catch(() => setData(null)).finally(() => setLoading(false));
+  };
+  useEffect(load, [reloadKey]);
+
+  const quotes: any[] = data?.quotes || [];
+  const visible = quotes.filter(q =>
+    (q.number + q.customer + q.lane + q.status).toLowerCase().includes(query.toLowerCase())
+  );
+
+  const statusBadge = (s: string) => {
+    const cls = s === "accepted" || s === "won" ? "active" : s === "draft" ? "idle" : s === "expired" || s === "lost" ? "expired" : "pending";
+    return <span className={"status " + cls}>{s}</span>;
+  };
+
+  const handleDownload = () => {
+    const headers = ["Quote Number", "Customer", "GSTIN", "Origin", "Destination", "Freight (INR)", "Valid Until", "Status", "Date"];
+    const rows = visible.map((q: any) => [q.number, q.customer, q.customer_gstin, q.origin, q.destination, q.freight_amount, q.valid_until, q.status, q.created_at]);
+    downloadCSV("sales-report.csv", headers, rows);
+    onAction("Sales report downloaded");
+  };
+
+  return (
+    <div className="module-page">
+      <div className="module-title">
+        <div><p className="eyebrow">REPORTS</p><h2>Sales Report</h2><p>Quotation pipeline, conversion rate and freight value by customer and lane.</p></div>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button className="secondary module-action" onClick={handleDownload} disabled={!data || loading}>⇩ Download CSV</button>
+          <button className="primary module-action" onClick={load}>↻ Refresh</button>
+        </div>
+      </div>
+      {data && (
+        <div className="module-stats">
+          <div className="module-stat"><span>Total quotes</span><strong>{data.summary.total_quotes}</strong><small>In selected period</small></div>
+          <div className="module-stat"><span>Pipeline value</span><strong>{rupees(data.summary.total_value)}</strong><small>All quotes</small></div>
+          <div className="module-stat"><span>Won value</span><strong>{rupees(data.summary.won_value)}</strong><small>Accepted / won</small></div>
+          <div className="module-stat"><span>Conversion</span><strong>{data.summary.conversion_rate}%</strong><small>Won ÷ total</small></div>
+        </div>
+      )}
+      {data?.summary?.by_status && (
+        <div className="module-stats" style={{ marginTop: 0 }}>
+          {(data.summary.by_status as any[]).map((s: any) => (
+            <div className="module-stat" key={s.status}>
+              <span>{s.status}</span><strong>{rupees(s.value)}</strong><small>{s.count} quotes</small>
+            </div>
+          ))}
+        </div>
+      )}
+      <ReportDateRange range={range} setRange={setRange} onApply={load} />
+      <section className="module-table-card">
+        <div className="module-toolbar">
+          <div><strong>All quotations</strong><span>{loading ? "Loading…" : `${visible.length} quotes`}</span></div>
+          <div className="toolbar-actions"><input placeholder="Search…" value={query} onChange={e => setQuery(e.target.value)} /><button onClick={load}>↻ Refresh</button><button onClick={handleDownload} disabled={!data || loading}>⇩ Export</button></div>
+        </div>
+        {loading ? <div className="data-state">Loading report…</div> : !data ? <div className="data-state error">Could not load the report.</div> : visible.length === 0 ? <div className="data-state">No quotations in this period.</div> : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>Quote</th><th>Customer</th><th>Lane</th><th>Freight</th><th>Valid until</th><th>Status</th><th>Date</th></tr></thead>
+              <tbody>
+                {visible.map((q: any) => (
+                  <tr key={q.id}>
+                    <td><strong>{q.number}</strong></td>
+                    <td>{q.customer}</td>
+                    <td>{q.lane}</td>
+                    <td><strong>{rupees(q.freight_amount)}</strong></td>
+                    <td>{q.valid_until}</td>
+                    <td>{statusBadge(q.status)}</td>
+                    <td>{q.created_at}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 export default function Home() {
   const [active, setActive] = useState("Overview");
   const [toast, setToast] = useState<{ text: string; tone: string } | null>(null);
@@ -4257,7 +4721,8 @@ export default function Home() {
             <div className="section-heading"><div><p className="eyebrow">ACTIVE MOVEMENT</p><h2>Recent trips</h2></div><button className="link-button" onClick={() => show("All trips opened")}>View all trips →</button></div>
             <div className="table-wrap"><table><thead><tr><th>Trip & route</th><th>Vehicle</th><th>Driver</th><th>Status</th><th>ETA / POD</th><th>Revenue</th></tr></thead><tbody>{(dashboard?.recent_trips || []).map((t: any) => <tr key={t.id}><td><strong>{t.number}</strong><small>{t.origin} → {t.destination}</small></td><td>{t.vehicle_number}</td><td>{t.driver_name}</td><td><span className={`status ${t.status.toLowerCase().replaceAll("_","-")}`}>{t.status.replaceAll("_"," ")}</span></td><td>{t.planned_departure ? new Date(t.planned_departure).toLocaleString("en-IN") : "—"}</td><td><strong>₹{Number(t.estimated_cost || 0).toLocaleString("en-IN")}</strong></td></tr>)}</tbody></table></div>
           </section>
-        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Planning" ? <DispatchPlanningView onAction={show} /> : active === "Scenario Profiles" ? <ScenarioProfilesView reloadKey={dataVersion} onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Hires" ? <HiresView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Fleet" ? <FleetVehiclesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Tracking" ? <TrackingView reloadKey={dataVersion} onAction={show} /> : active === "Fleets" ? <FleetsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
+
+        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Planning" ? <DispatchPlanningView onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Hires" ? <HiresView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Fleet" ? <FleetVehiclesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Tracking" ? <TrackingView reloadKey={dataVersion} onAction={show} /> : active === "Fleets" ? <FleetsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : active === "Driver & Availability" ? <DriverAvailabilityReport reloadKey={dataVersion} onAction={show} /> : active === "Fleet Report" ? <FleetReport reloadKey={dataVersion} onAction={show} /> : active === "Customer Invoices" ? <CustomerInvoicesReport reloadKey={dataVersion} onAction={show} /> : active === "Vehicle Settlement" ? <VehicleSettlementReport reloadKey={dataVersion} onAction={show} /> : active === "Sales Report" ? <SalesReport reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
       </section>
       {action && <ActionPanel type={action} onClose={() => setAction("")} onCreated={() => setDataVersion(v => v + 1)} />}
       {toast && <div className={"toast " + toast.tone}>{toast.tone === "warn" ? "⚠" : "✓"} {toast.text}</div>}

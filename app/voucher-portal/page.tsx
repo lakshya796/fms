@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fmsRequest, fmsRequestRaw, login, logout, UNAUTHORISED_EVENT } from "../lib/fms-api";
 
-// Authenticated ADCOOP Voucher Portal. Unlike /vouchers (deliberately public),
+// Authenticated MAIR Voucher Portal. Unlike /vouchers (deliberately public),
 // every call here goes through fmsRequest/fmsRequestRaw with the same
 // fms_token session the rest of the console uses, and every screen is gated
 // by the caller's role + department scope (see /access/me/).
@@ -19,7 +19,9 @@ type Batch = {
   id: number; name: string; department: number; department_name: string; voucher_type_name: string; quantity: number;
   discount_type: string; display_value: string; currency: string; valid_from: string; valid_to: string;
   restrictions: string; terms: string; prefix_snapshot: string; status: string; combined_pdf_url: string;
-  generation_error: string; created_by_username: string; approved_by_username: string; approved_at: string | null;
+  generation_error: string; created_by_username: string;
+  first_approved_by_username: string; first_approved_at: string | null;
+  approved_by_username: string; approved_at: string | null;
   rejection_reason: string; cancelled_at: string | null; generated_count: number; issued_count: number; created_at: string;
 };
 type Voucher = {
@@ -27,13 +29,15 @@ type Voucher = {
   recipient_name: string; recipient_phone: string; recipient_email: string; recipient_reference: string;
   pdf_url: string; issued_at: string | null;
 };
-type Access = { role: string; actions: string[]; department_ids: number[] | null; is_django_staff: boolean };
+type Access = { role: string; actions: string[]; department_ids: number[] | null;
+  sees_others_vouchers: boolean; is_django_staff: boolean };
 type Notice = { id: number; batch: number; batch_name: string; kind: string; message: string; read_at: string | null; created_at: string };
 type DesignIntent =
   | { mode: "edit"; template: Template; previewArtwork?: File | null }
   | { mode: "new"; previewArtwork?: File | null }
   | null;
-type AccessGrant = { id: number; user: string; username: string; role: string; department_ids: number[]; department_names: string[]; is_active: boolean };
+type AccessGrant = { id: number; user: string; username: string; role: string; department_ids: number[];
+  department_names: string[]; can_view_others_vouchers: boolean; is_active: boolean };
 
 const EMPTY_FORM = {
   name: "", department: "", voucher_type: "", description: "", quantity: "10",
@@ -75,20 +79,57 @@ function printedSources(document: CardDocument | null): Set<string> {
     .map(element => element.source as string));
 }
 
+// Mirrors CROSS_USER_ACTIONS in backend/voucher_portal/services/access.py:
+// roles whose actions mean the per-user visibility flag is never consulted.
+const ALWAYS_SEES_OTHERS = ["administrator", "approver", "report_viewer"];
+
 const ROLE_LABELS: Record<string, string> = {
   administrator: "Administrator", requester: "Requester", approver: "Approver", report_viewer: "Report Viewer",
 };
 
 function statusClass(status: string) {
   const map: Record<string, string> = {
-    draft: "open", pending_approval: "open", generating: "assigned", generated: "unassigned",
+    draft: "open", pending_approval: "open", pending_second_approval: "open",
+    generating: "assigned", generated: "unassigned",
     partially_issued: "in-transit", fully_issued: "issued", rejected: "cancelled", failed: "expired",
   };
   return map[status] || status; // approved, cancelled, issued, expired already match CSS class names directly
 }
 
 function statusLabel(status: string) {
+  // The two approval stages read as "pending approval" and "pending second
+  // approval" from the raw value alone, but spelling out which of the two
+  // sign-offs is outstanding is the whole point of showing the status.
+  if (status === "pending_approval") return "awaiting 1st approval";
+  if (status === "pending_second_approval") return "awaiting 2nd approval";
   return status.replaceAll("_", " ");
+}
+
+/* Both sign-offs, always both rows, so an outstanding one is visible as a gap
+   rather than as an absence you have to notice. A rejection clears the first
+   approval server-side, which is why a rejected batch shows neither. */
+function ApprovalTrail({ batch }: { batch: Batch }) {
+  const stages: { label: string; who: string; when: string | null; pendingAt: string }[] = [
+    { label: "1st approval", who: batch.first_approved_by_username, when: batch.first_approved_at, pendingAt: "pending_approval" },
+    { label: "2nd approval", who: batch.approved_by_username, when: batch.approved_at, pendingAt: "pending_second_approval" },
+  ];
+  if (!stages.some(s => s.who) && !stages.some(s => batch.status === s.pendingAt)) return null;
+
+  return <div className="approval-trail">
+    {stages.map(stage => {
+      const done = Boolean(stage.who);
+      const awaiting = batch.status === stage.pendingAt;
+      return <div key={stage.label} className={"approval-step" + (done ? " done" : awaiting ? " awaiting" : "")}>
+        <span className="approval-step-mark">{done ? "✓" : awaiting ? "•" : "–"}</span>
+        <span>
+          <strong>{stage.label}</strong>
+          {done
+            ? <> — {stage.who}{stage.when ? ` · ${new Date(stage.when).toLocaleString()}` : ""}</>
+            : awaiting ? " — awaiting sign-off" : " — not reached"}
+        </span>
+      </div>;
+    })}
+  </div>;
 }
 
 function unwrap<T>(data: { results: T[] } | T[]): T[] {
@@ -160,8 +201,10 @@ export default function VoucherPortal() {
   if (!authenticated) {
     return <main className="login-page">
       <section className="login-card">
-        <div className="brand login-brand"><span className="brand-mark">p</span><span>phloz</span></div>
-        <p className="eyebrow">ADCOOP VOUCHER PORTAL</p>
+        {/* Swap public/mair-logo.svg for the official asset - this card, the
+            header below and /vouchers are the only places it is referenced. */}
+        <div className="brand login-brand"><img src="/mair-logo.svg" alt="MAIR" /></div>
+        <p className="eyebrow">VOUCHER PORTAL</p>
         <h1>Sign in</h1>
         <p>Staff login required - this is separate from the public voucher desk.</p>
         <form onSubmit={signIn}>
@@ -444,6 +487,7 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
   if (!access) return <main className="voucher-page"><div className="data-state">Loading…</div></main>;
 
   const nav = <header className="voucher-topbar">
+    <img src="/mair-logo.svg" alt="MAIR" className="voucher-logo" />
     <div>
       <p className="voucher-eyebrow">{ROLE_LABELS[access.role] || "STAFF"}</p>
       <h1>Voucher Portal</h1>
@@ -523,7 +567,7 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
           Valid until {activeBatch.valid_to} · {activeBatch.issued_count} issued
         </p>
         {activeBatch.created_by_username && <p style={{ fontSize: 11, color: "var(--voucher-muted)" }}>Requested by {activeBatch.created_by_username}</p>}
-        {activeBatch.approved_by_username && <p style={{ fontSize: 11, color: "var(--voucher-muted)" }}>Approved by {activeBatch.approved_by_username}{activeBatch.approved_at ? ` · ${new Date(activeBatch.approved_at).toLocaleString()}` : ""}</p>}
+        <ApprovalTrail batch={activeBatch} />
         {activeBatch.rejection_reason && <div className="form-error">Rejected: {activeBatch.rejection_reason}</div>}
         {activeBatch.status === "generating" && <div className="data-state">Assembling PDFs in the background — this refreshes automatically.</div>}
         {activeBatch.status === "failed" && <div className="data-state error">Generation failed: {activeBatch.generation_error}</div>}
@@ -546,8 +590,12 @@ function Portal({ onSignOut }: { onSignOut: () => void }) {
             <button type="button" className="primary" disabled={workflowBusy} onClick={() => runWorkflowAction("submit")}>Submit for approval</button>}
           {activeBatch.status === "rejected" && access.actions.includes("create") &&
             <button type="button" className="primary" disabled={workflowBusy} onClick={() => runWorkflowAction("submit")}>Resubmit for approval</button>}
-          {activeBatch.status === "pending_approval" && access.actions.includes("approve") && <>
-            <button type="button" className="primary" disabled={workflowBusy} onClick={() => runWorkflowAction("approve")}>Approve</button>
+          {["pending_approval", "pending_second_approval"].includes(activeBatch.status) && access.actions.includes("approve") && <>
+            {/* One endpoint for both sign-offs - the server decides which one
+                this is from the batch's status, including the rule that the
+                second cannot come from whoever gave the first. */}
+            <button type="button" className="primary" disabled={workflowBusy} onClick={() => runWorkflowAction("approve")}>
+              {activeBatch.status === "pending_approval" ? "Give 1st approval" : "Give 2nd approval"}</button>
             <button type="button" className="secondary" disabled={workflowBusy} onClick={() => setShowReject(v => !v)}>Reject</button>
           </>}
           {activeBatch.status === "approved" && access.actions.includes("create") &&
@@ -806,10 +854,12 @@ const SERIES = [
   { key: "redeemed", label: "Redeemed", color: "#1baf7a" },
 ] as const;
 
-const CHART_INK = "#231B36";
-const CHART_MUTED = "#6B6480";
-const CHART_GRID = "#E6E1F0";
-const CHART_AXIS = "#CFC7DF";
+// Charts are SVG, so they cannot read the CSS custom properties the rest of the
+// portal is themed with - these mirror the :root brand tokens by hand.
+const CHART_INK = "#12211C";
+const CHART_MUTED = "#5C6F67";
+const CHART_GRID = "#DCE7E1";
+const CHART_AXIS = "#B9CFC4";
 
 /** Clean axis steps only (1 / 2 / 5 / 10 × a power of ten). A 2.5 step would
  *  round to a label that doesn't sit where the gridline is - "3" drawn at 2.5. */
@@ -1246,14 +1296,14 @@ function ElementView({ element, scale, values }: { element: CardElement; scale: 
       left, top, width: (element.w || 0) * scale, height: (element.h || 0) * scale,
       background: element.fill || "#FFFFFF", opacity: element.opacity ?? 1,
       borderRadius: (element.radius || 0) * scale,
-      border: element.border_width ? `${Math.max(element.border_width * scale, 1)}px solid ${element.border_color || "#DCD7E8"}` : undefined,
+      border: element.border_width ? `${Math.max(element.border_width * scale, 1)}px solid ${element.border_color || "#DCE7E1"}` : undefined,
     }} />;
   }
 
   if (element.type === "line") {
     return <div className="card-el-box" style={{
       left, top, width: (element.w || 0) * scale, height: Math.max((element.h || 1) * scale, 1),
-      background: element.color || "#DCD7E8",
+      background: element.color || "#DCE7E1",
     }} />;
   }
 
@@ -1264,7 +1314,7 @@ function ElementView({ element, scale, values }: { element: CardElement; scale: 
       <div style={{ height: (element.h || 0) * scale, backgroundImage: barcodePattern(value, element.color || "#000000") }} />
       {element.show_value !== false && <div style={{
         ...fontStyle(element.value_font || "Courier"), fontSize: captionSize, lineHeight: `${captionSize * 1.3}px`,
-        color: element.value_color || "#231B36", textAlign: "center", marginTop: scale,
+        color: element.value_color || "#12211C", textAlign: "center", marginTop: scale,
       }}>{value}</div>}
     </div>;
   }
@@ -1288,7 +1338,7 @@ function ElementView({ element, scale, values }: { element: CardElement; scale: 
     top: top - (lineHeight - size * 1.117) / 2 - size * 0.128,
     width: width || undefined,
     transform: width ? undefined : align === "center" ? "translateX(-50%)" : align === "right" ? "translateX(-100%)" : undefined,
-    textAlign: align, color: element.color || "#231B36",
+    textAlign: align, color: element.color || "#12211C",
     fontSize: size, lineHeight: `${lineHeight}px`,
     whiteSpace: width ? "pre-wrap" : "pre",
     maxHeight: element.max_lines ? lineHeight * element.max_lines : undefined,
@@ -1937,7 +1987,7 @@ function TemplateDesigner({ template, canAdmin, previewArtwork, onClose, onSaved
               </select>
             </label>
             <div className="designer-pair">
-              <label>Colour<input type="color" value={active.color || "#231B36"}
+              <label>Colour<input type="color" value={active.color || "#12211C"}
                 onChange={e => setProp(active.id, { color: e.target.value }, `color:${active.id}`)} /></label>
               <label>Align
                 <select value={active.align || "left"} onChange={e => setProp(active.id, { align: e.target.value as Align }, "")}>
@@ -1963,14 +2013,14 @@ function TemplateDesigner({ template, canAdmin, previewArtwork, onClose, onSaved
                      onChange={e => setProp(active.id, { opacity: Number(e.target.value) }, `opacity:${active.id}`)} />
             </label>
             <div className="designer-pair">
-              <label>Border<input type="color" value={active.border_color || "#DCD7E8"}
+              <label>Border<input type="color" value={active.border_color || "#DCE7E1"}
                 onChange={e => setProp(active.id, { border_color: e.target.value }, `bc:${active.id}`)} /></label>
               <label>Border width<input type="number" min={0} step={0.25} value={active.border_width ?? 0}
                 onChange={e => setProp(active.id, { border_width: Number(e.target.value) }, `bw:${active.id}`)} /></label>
             </div>
           </>}
 
-          {active.type === "line" && <label>Colour<input type="color" value={active.color || "#DCD7E8"}
+          {active.type === "line" && <label>Colour<input type="color" value={active.color || "#DCE7E1"}
             onChange={e => setProp(active.id, { color: e.target.value }, `color:${active.id}`)} /></label>}
 
           {active.type === "barcode" && <>
@@ -1987,7 +2037,7 @@ function TemplateDesigner({ template, canAdmin, previewArtwork, onClose, onSaved
             {active.show_value !== false && <div className="designer-pair">
               <label>Number size<input type="number" min={4} step={0.5} value={active.value_size ?? 7}
                 onChange={e => setProp(active.id, { value_size: Number(e.target.value) }, `vs:${active.id}`)} /></label>
-              <label>Number colour<input type="color" value={active.value_color || "#231B36"}
+              <label>Number colour<input type="color" value={active.value_color || "#12211C"}
                 onChange={e => setProp(active.id, { value_color: e.target.value }, `vc:${active.id}`)} /></label>
             </div>}
           </>}
@@ -2080,7 +2130,7 @@ function TemplatesScreen({ canAdmin, intent, onIntentDone }: {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [showNew, setShowNew] = useState(false);
-  const [form, setForm] = useState({ name: "", preset: "adcoop" });
+  const [form, setForm] = useState({ name: "", preset: "classic" });
   const [file, setFile] = useState<File | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState("");
@@ -2148,7 +2198,7 @@ function TemplatesScreen({ canAdmin, intent, onIntentDone }: {
       }
       if (file) body.append("artwork", file);
       const created = await fmsRequest<Template>("voucher-portal/templates/", { method: "POST", body });
-      setShowNew(false); setForm({ name: "", preset: "adcoop" }); setFile(null);
+      setShowNew(false); setForm({ name: "", preset: "classic" }); setFile(null);
       await load();
       setEditing(created);  // straight into the designer - that's what they came for
     } catch (error: any) { setCreateError(parseApiError(error)); }
@@ -2446,7 +2496,7 @@ function SetupScreen({ onChanged }: { onChanged: () => Promise<void> | void }) {
 function AccessScreen({ departments }: { departments: Department[] }) {
   const [grants, setGrants] = useState<AccessGrant[]>([]);
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState({ username: "", role: "requester", departmentIds: [] as number[] });
+  const [form, setForm] = useState({ username: "", role: "requester", departmentIds: [] as number[], seeOthers: false });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -2462,9 +2512,12 @@ function AccessScreen({ departments }: { departments: Department[] }) {
     try {
       await fmsRequest("voucher-portal/access/", {
         method: "POST",
-        body: JSON.stringify({ user: form.username, role: form.role, department_ids: form.departmentIds }),
+        body: JSON.stringify({
+          user: form.username, role: form.role, department_ids: form.departmentIds,
+          can_view_others_vouchers: form.seeOthers,
+        }),
       });
-      setForm({ username: "", role: "requester", departmentIds: [] });
+      setForm({ username: "", role: "requester", departmentIds: [], seeOthers: false });
       await load();
     } catch (err: any) { setError(parseApiError(err)); }
     finally { setSaving(false); }
@@ -2489,11 +2542,23 @@ function AccessScreen({ departments }: { departments: Department[] }) {
         <option value="report_viewer">Report Viewer</option>
         <option value="administrator">Administrator</option>
       </select>
+      <p className="access-hint">Departments — tick every one this person works for.</p>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
         {departments.map(d => <label key={d.id} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11 }}>
           <input type="checkbox" checked={form.departmentIds.includes(d.id)} onChange={() => toggleDept(d.id)} />{d.name}
         </label>)}
       </div>
+      {/* Approvers and report viewers have to see other people's work to do
+          their job at all, so for them the server ignores this and always
+          grants it - showing it as forced-on beats letting someone set a
+          value that would be quietly overridden. */}
+      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, marginBottom: 8 }}>
+        <input type="checkbox" disabled={ALWAYS_SEES_OTHERS.includes(form.role)}
+               checked={ALWAYS_SEES_OTHERS.includes(form.role) || form.seeOthers}
+               onChange={e => setForm({ ...form, seeOthers: e.target.checked })} />
+        Can see other users&apos; batches and vouchers
+        {ALWAYS_SEES_OTHERS.includes(form.role) && <span className="access-hint"> (always, for this role)</span>}
+      </label>
       {error && <div className="form-error" style={{ marginBottom: 8 }}>{error}</div>}
       <button type="button" className="primary" disabled={saving || !form.username.trim()} onClick={grantAccess}>Grant access</button>
     </div>
@@ -2501,16 +2566,17 @@ function AccessScreen({ departments }: { departments: Department[] }) {
     {loading && <div className="data-state">Loading…</div>}
     {!loading && <div className="table-wrap">
       <table>
-        <thead><tr><th>User</th><th>Role</th><th>Departments</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>User</th><th>Role</th><th>Departments</th><th>Sees others</th><th>Status</th><th></th></tr></thead>
         <tbody>
           {grants.map(g => <tr key={g.id}>
             <td><strong>{g.username}</strong></td>
             <td>{ROLE_LABELS[g.role] || g.role}</td>
             <td>{g.department_names.length ? g.department_names.join(", ") : "All"}</td>
+            <td>{ALWAYS_SEES_OTHERS.includes(g.role) ? "Yes (role)" : g.can_view_others_vouchers ? "Yes" : "Own only"}</td>
             <td><span className={"status " + (g.is_active ? "approved" : "cancelled")}>{g.is_active ? "active" : "inactive"}</span></td>
             <td><button type="button" className="link-button" onClick={() => toggleActive(g)}>{g.is_active ? "Deactivate" : "Reactivate"}</button></td>
           </tr>)}
-          {grants.length === 0 && <tr><td colSpan={5}><div className="data-state">No grants yet.</div></td></tr>}
+          {grants.length === 0 && <tr><td colSpan={6}><div className="data-state">No grants yet.</div></td></tr>}
         </tbody>
       </table>
     </div>}
