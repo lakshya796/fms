@@ -42,7 +42,7 @@ class DispatchPlan(Timestamped):
                                                     "places, temperature class, a date window or explicit order ids")
     solver = models.CharField(max_length=10, choices=SOLVERS, default="greedy")
     solver_seconds = models.DecimalField(max_digits=8, decimal_places=2, default=0)
-    solver_status = models.CharField(max_length=40, blank=True)
+    solver_status = models.CharField(max_length=240, blank=True)
     parent_plan = models.ForeignKey("self", on_delete=models.SET_NULL, null=True, blank=True, related_name="replans")
     is_scenario = models.BooleanField(default=False,
                                       help_text="A what-if child plan from `compare` - not shown as a first-class "
