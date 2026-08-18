@@ -1,0 +1,1001 @@
+<title>Phloz Fleet OS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..800&family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Sans:wght@400;500;600&display=swap">
+
+<style>
+:root{
+  color-scheme: dark;
+  --ink:        #0A0E1A;
+  --ink-2:      #0D1424;
+  --raised:     #101728;
+  --raised-2:   #162034;
+  --line:       #1E2942;
+  --line-soft:  #172033;
+  --signal:     #FFB020;
+  --signal-dp:  #E8890A;
+  --tele:       #4ED0C0;
+  --alert:      #FF6B5A;
+  --paper:      #E8ECF5;
+  --muted:      #8494B0;
+  --muted-dim:  #5C6B87;
+
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body:    "Instrument Sans", "Helvetica Neue", Arial, sans-serif;
+  --mono:    "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --pad: clamp(1.75rem, 5vw, 6rem);
+  --maxw: 1400px;
+}
+
+*{ box-sizing: border-box; }
+
+body{
+  margin:0;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--body);
+  font-size: clamp(0.95rem, 0.85rem + 0.3vw, 1.075rem);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ─── deck shell ─────────────────────────────────────────── */
+.deck{
+  height: 100vh;
+  overflow-y: auto;
+  scroll-snap-type: y mandatory;
+  scroll-behavior: smooth;
+}
+@media (prefers-reduced-motion: reduce){
+  .deck{ scroll-behavior: auto; }
+}
+
+.slide{
+  min-height: 100vh;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+  padding: clamp(2.5rem, 6vh, 4.5rem) var(--pad) clamp(4.5rem, 9vh, 6rem);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  position: relative;
+  border-bottom: 1px solid var(--line-soft);
+}
+.slide > .inner{
+  width: 100%;
+  max-width: var(--maxw);
+  margin: 0 auto;
+}
+
+/* alternating grounds keep 15 slides from flattening out */
+.slide--raised{ background: var(--ink-2); }
+
+/* ─── the lane rail motif: hairline + km ticks ───────────── */
+.rail{
+  height: 9px;
+  background:
+    repeating-linear-gradient(to right, var(--line) 0 1px, transparent 1px 34px) top left / 100% 9px no-repeat,
+    linear-gradient(to right, var(--line), var(--line)) bottom left / 100% 1px no-repeat;
+  width: 100%;
+}
+.rail--lit{
+  background:
+    repeating-linear-gradient(to right, var(--signal) 0 1px, transparent 1px 34px) top left / 100% 9px no-repeat,
+    linear-gradient(to right, var(--signal), transparent) bottom left / 100% 1px no-repeat;
+  opacity: .55;
+}
+
+/* ─── type roles ─────────────────────────────────────────── */
+.eyebrow{
+  font-family: var(--mono);
+  font-size: .68rem;
+  font-weight: 500;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--signal);
+  margin: 0;
+}
+.eyebrow--quiet{ color: var(--muted-dim); }
+
+h1.hook{
+  font-family: var(--display);
+  font-variation-settings: "wdth" 112, "wght" 700;
+  font-size: clamp(2.1rem, 1.1rem + 3.7vw, 4.6rem);
+  line-height: 1.02;
+  letter-spacing: -.02em;
+  text-wrap: balance;
+  margin: .5em 0 0;
+}
+h2.hook{
+  font-family: var(--display);
+  font-variation-settings: "wdth" 108, "wght" 700;
+  font-size: clamp(1.7rem, 1rem + 2.3vw, 3.1rem);
+  line-height: 1.06;
+  letter-spacing: -.018em;
+  text-wrap: balance;
+  margin: .45em 0 0;
+}
+h3{
+  font-family: var(--display);
+  font-variation-settings: "wdth" 100, "wght" 650;
+  font-size: 1.02rem;
+  letter-spacing: -.005em;
+  margin: 0;
+}
+.lede{
+  color: var(--muted);
+  font-size: clamp(1rem, .93rem + .35vw, 1.2rem);
+  line-height: 1.55;
+  max-width: 62ch;
+  margin: 1.1rem 0 0;
+}
+.amber{ color: var(--signal); }
+.aqua{ color: var(--tele); }
+strong{ color: var(--paper); font-weight: 600; }
+
+.num{
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── slide 1 · cover ────────────────────────────────────── */
+.cover{ justify-content: space-between; }
+.cover .top{ display:flex; justify-content: space-between; align-items: flex-start; gap: 2rem; flex-wrap: wrap; }
+.wordmark{
+  font-family: var(--display);
+  font-variation-settings: "wdth" 125, "wght" 800;
+  font-size: clamp(3.4rem, 1rem + 11vw, 10.5rem);
+  line-height: .84;
+  letter-spacing: -.045em;
+  margin: 0;
+}
+.wordmark .dot{ color: var(--signal); }
+.cover-mid{ padding: clamp(1.5rem,4vh,3rem) 0; }
+.cover-claim{
+  font-family: var(--display);
+  font-variation-settings: "wdth" 100, "wght" 500;
+  font-size: clamp(1.15rem, .8rem + 1.5vw, 2.15rem);
+  line-height: 1.25;
+  letter-spacing: -.01em;
+  max-width: 22ch;
+  margin: 1.4rem 0 0;
+  text-wrap: balance;
+}
+.cover-foot{
+  display: flex; flex-wrap: wrap; gap: .75rem 2.5rem;
+  align-items: baseline;
+  font-family: var(--mono); font-size: .78rem;
+  color: var(--muted);
+  padding-top: 1.5rem;
+}
+.cover-foot a{ color: var(--paper); text-decoration: none; border-bottom: 1px solid var(--line); }
+.cover-foot a:hover{ color: var(--signal); border-color: var(--signal); }
+
+/* ─── generic grids ─────────────────────────────────────── */
+.split{
+  display: grid;
+  grid-template-columns: minmax(0,.92fr) minmax(0,1.08fr);
+  gap: clamp(2rem, 5vw, 5rem);
+  align-items: center;
+}
+.grid-3{ display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 1px; }
+.grid-4{ display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 1px; }
+.stack{ display: flex; flex-direction: column; }
+
+/* ─── panels ─────────────────────────────────────────────── */
+.panel{
+  background: var(--raised);
+  border: 1px solid var(--line);
+  padding: clamp(1.1rem, 2vw, 1.6rem);
+}
+.panel-head{
+  display:flex; align-items:center; justify-content: space-between; gap: 1rem;
+  padding-bottom: .85rem; margin-bottom: .95rem;
+  border-bottom: 1px solid var(--line);
+}
+.tile{
+  background: var(--raised);
+  padding: clamp(1.1rem, 2vw, 1.55rem);
+  display:flex; flex-direction: column; gap: .5rem;
+  outline: 1px solid var(--line);
+}
+.tile p{ margin:0; color: var(--muted); font-size: .89rem; line-height: 1.5; }
+.tile .k{
+  font-family: var(--mono); font-size: .66rem; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--muted-dim);
+}
+
+/* ─── slide 2 · the nine tools ───────────────────────────── */
+.tools{ display:flex; flex-wrap: wrap; gap: .6rem; }
+.tool{
+  font-family: var(--mono); font-size: .8rem;
+  border: 1px dashed var(--line);
+  background: var(--raised);
+  color: var(--muted);
+  padding: .62rem .9rem;
+}
+.tool span{ color: var(--muted-dim); font-size: .72rem; }
+.cost-note{
+  margin-top: 2rem; padding-left: 1.1rem;
+  border-left: 2px solid var(--alert);
+  color: var(--muted); max-width: 48ch;
+}
+
+/* ─── slide 4 · the chain ────────────────────────────────── */
+.chain{
+  display:grid;
+  grid-template-columns: repeat(9, minmax(0,1fr));
+  gap: 1px;
+  margin-top: clamp(1.5rem,4vh,2.75rem);
+  background: var(--line);
+  border: 1px solid var(--line);
+}
+.link{
+  background: var(--raised);
+  padding: 1.05rem .85rem 1.15rem;
+  display:flex; flex-direction: column; gap:.5rem;
+  min-height: 100%;
+}
+.link .n{
+  font-family: var(--mono); font-size: .68rem; color: var(--signal);
+  font-variant-numeric: tabular-nums;
+}
+.link .t{
+  font-family: var(--display);
+  font-variation-settings: "wdth" 100, "wght" 600;
+  font-size: .93rem; line-height: 1.2;
+}
+.link .d{ color: var(--muted-dim); font-size: .76rem; line-height: 1.4; }
+.chain-foot{
+  display:flex; gap: 1.25rem; align-items:center; margin-top: 1.4rem;
+  font-family: var(--mono); font-size: .74rem; color: var(--muted);
+  flex-wrap: wrap;
+}
+.pip{ width:7px; height:7px; background: var(--tele); display:inline-block; margin-right:.5rem; }
+
+/* ─── mock UI bits ───────────────────────────────────────── */
+.row{
+  display:grid; align-items:center; gap: 1rem;
+  padding: .62rem 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: .84rem;
+}
+.row:last-child{ border-bottom: 0; }
+.row .label{ font-family: var(--mono); font-size: .78rem; color: var(--muted); }
+.bar{ height: 6px; background: var(--raised-2); position: relative; overflow: hidden; }
+.bar i{ position:absolute; inset: 0 auto 0 0; display:block; background: var(--tele); }
+.bar i.warn{ background: var(--signal); }
+.bar i.bad{ background: var(--alert); }
+.val{ font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: .82rem; text-align: right; }
+
+.chip{
+  font-family: var(--mono); font-size: .66rem; letter-spacing: .08em;
+  text-transform: uppercase; padding: .22rem .5rem;
+  border: 1px solid currentColor;
+}
+.chip--ok{ color: var(--tele); }
+.chip--warn{ color: var(--signal); }
+.chip--bad{ color: var(--alert); }
+
+.caption{
+  font-family: var(--mono); font-size: .68rem; color: var(--muted-dim);
+  margin: .85rem 0 0; letter-spacing: .04em;
+}
+
+/* ─── slide 9 · the P&L ladder ───────────────────────────── */
+.ladder{ display:flex; flex-direction: column; gap: 1px; background: var(--line); border:1px solid var(--line); }
+.rung{
+  background: var(--raised);
+  display:grid;
+  grid-template-columns: 2.4rem minmax(0,1.05fr) minmax(0,1fr) 10rem 5.5rem;
+  gap: clamp(.75rem,1.6vw,1.5rem);
+  align-items: center;
+  padding: .95rem clamp(.9rem,1.6vw,1.35rem);
+}
+.rung .depth{ font-family: var(--mono); font-size: .7rem; color: var(--muted-dim); }
+.rung .lvl{
+  font-family: var(--display); font-variation-settings: "wdth" 100, "wght" 650;
+  font-size: 1rem;
+}
+.rung .src{ color: var(--muted-dim); font-size: .8rem; line-height:1.35; }
+.rung .fig{ font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: .95rem; text-align: right; white-space: nowrap; }
+.rung .mgn{ font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: .82rem; text-align: right; }
+.rung--sum{ background: var(--raised-2); }
+.pos{ color: var(--tele); }
+.neg{ color: var(--alert); }
+
+/* ─── ledger table ───────────────────────────────────────── */
+.tbl-wrap{ overflow-x: auto; }
+table{ border-collapse: collapse; width: 100%; min-width: 480px; }
+th{
+  font-family: var(--mono); font-size: .65rem; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--muted-dim); text-align: left;
+  font-weight: 500; padding: 0 1rem .6rem 0; border-bottom: 1px solid var(--line);
+}
+td{
+  padding: .6rem 1rem .6rem 0; border-bottom: 1px solid var(--line-soft);
+  font-size: .85rem; vertical-align: top;
+}
+td.dr{ font-family: var(--mono); font-size: .79rem; color: var(--muted); }
+
+/* ─── module map ─────────────────────────────────────────── */
+.map{ display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 1px; background: var(--line); border:1px solid var(--line); }
+.dept{ background: var(--raised); padding: 1.05rem 1.1rem 1.25rem; display:flex; flex-direction:column; gap:.7rem; }
+.dept h4{
+  font-family: var(--mono); font-size: .66rem; letter-spacing: .15em;
+  text-transform: uppercase; color: var(--signal); margin:0; font-weight:500;
+}
+.dept ul{ margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:.34rem; }
+.dept li{ font-size: .82rem; color: var(--muted); line-height:1.35; }
+
+/* ─── contact ────────────────────────────────────────────── */
+.cta-grid{ display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap:1px; background: var(--line); border:1px solid var(--line); margin-top: clamp(1.75rem,4vh,2.75rem); }
+.cta{ background: var(--raised); padding: clamp(1.2rem,2.2vw,1.75rem); display:flex; flex-direction:column; gap:.45rem; }
+.cta .k{ font-family: var(--mono); font-size: .65rem; letter-spacing:.16em; text-transform:uppercase; color: var(--muted-dim); }
+.cta a, .cta .v{
+  font-family: var(--display); font-variation-settings:"wdth" 100,"wght" 600;
+  font-size: clamp(1rem,.9rem+.5vw,1.35rem);
+  color: var(--paper); text-decoration:none; letter-spacing:-.01em; word-break: break-word;
+}
+.cta a:hover{ color: var(--signal); }
+
+/* ─── fixed chrome: progress rail + counter ─────────────── */
+.chrome{
+  position: fixed; left: 0; right: 0; bottom: 0;
+  padding: 0 var(--pad) 1.05rem;
+  display: flex; align-items: flex-end; gap: 1.25rem;
+  pointer-events: none;
+  z-index: 20;
+  background: linear-gradient(to top, var(--ink) 32%, transparent);
+}
+.chrome .ticks{ flex: 1; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 3px; }
+.chrome .ticks b{ height: 2px; background: var(--line); display:block; transition: background .35s ease; }
+.chrome .ticks b.on{ background: var(--signal); }
+.chrome .count{
+  font-family: var(--mono); font-size: .7rem; color: var(--muted-dim);
+  font-variant-numeric: tabular-nums; letter-spacing: .06em;
+}
+.chrome .count em{ color: var(--paper); font-style: normal; }
+.chrome .brand{
+  font-family: var(--mono); font-size: .7rem; letter-spacing:.16em;
+  text-transform: uppercase; color: var(--muted-dim);
+}
+
+/* ─── entrance ───────────────────────────────────────────── */
+.slide .inner > *{ opacity: 0; transform: translateY(14px); }
+.slide.live .inner > *{
+  opacity: 1; transform: none;
+  transition: opacity .55s ease, transform .55s cubic-bezier(.22,.7,.3,1);
+}
+.slide.live .inner > *:nth-child(2){ transition-delay: .06s; }
+.slide.live .inner > *:nth-child(3){ transition-delay: .12s; }
+.slide.live .inner > *:nth-child(4){ transition-delay: .18s; }
+.slide.live .inner > *:nth-child(5){ transition-delay: .24s; }
+@media (prefers-reduced-motion: reduce){
+  .slide .inner > *{ opacity:1; transform:none; }
+  .slide.live .inner > *{ transition: none; }
+}
+
+:focus-visible{ outline: 2px solid var(--signal); outline-offset: 3px; }
+
+/* ─── responsive ─────────────────────────────────────────── */
+@media (max-width: 1080px){
+  .chain{ grid-template-columns: repeat(3, minmax(0,1fr)); }
+  .map{ grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .grid-4{ grid-template-columns: repeat(2, minmax(0,1fr)); }
+}
+@media (max-width: 820px){
+  .split{ grid-template-columns: 1fr; gap: 2rem; }
+  .grid-3{ grid-template-columns: 1fr; }
+  .cta-grid{ grid-template-columns: 1fr; }
+  .rung{ grid-template-columns: 1.9rem 1fr 5.5rem; }
+  .rung .src{ display: none; }
+  .slide{ justify-content: flex-start; padding-top: clamp(3rem,8vh,5rem); }
+}
+@media (max-width: 560px){
+  .chain{ grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .grid-4{ grid-template-columns: 1fr; }
+  .map{ grid-template-columns: 1fr; }
+}
+</style>
+
+<main class="deck" id="deck">
+
+<!-- 01 · COVER -->
+<section class="slide cover" aria-label="Phloz">
+  <div class="inner stack" style="gap:0;flex:1;justify-content:space-between">
+    <div class="top">
+      <p class="eyebrow">Fleet Operating System · Company Profile</p>
+      <p class="eyebrow eyebrow--quiet">phloz.app</p>
+    </div>
+
+    <div class="cover-mid">
+      <h1 class="wordmark">Phloz<span class="dot">.</span></h1>
+      <div class="rail rail--lit" style="margin-top:1.75rem;max-width:640px"></div>
+      <p class="cover-claim">Every truck, every trip and every rupee — running on <span class="amber">one system</span>.</p>
+    </div>
+
+    <div>
+      <div class="rail"></div>
+      <div class="cover-foot">
+        <span>Fleet ERP for operators who run <span class="num" style="color:var(--paper)">10</span> trucks or <span class="num" style="color:var(--paper)">1,000</span></span>
+        <a href="https://phloz.app">phloz.app</a>
+        <a href="mailto:hi@tbplabs.tech">hi@tbplabs.tech</a>
+        <a href="tel:+918802241740">+91 88022 41740</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 02 · THE PROBLEM -->
+<section class="slide slide--raised" aria-label="The problem">
+  <div class="inner">
+    <p class="eyebrow">The problem</p>
+    <h2 class="hook">Your fleet already has software.<br>It's just <span class="amber">nine different ones</span>, and none of them talk.</h2>
+
+    <div class="split" style="margin-top:clamp(2rem,5vh,3.25rem);align-items:start">
+      <div class="tools">
+        <div class="tool">Trip sheets <span>· Excel</span></div>
+        <div class="tool">Diesel register <span>· notebook</span></div>
+        <div class="tool">Dispatch <span>· WhatsApp group</span></div>
+        <div class="tool">Books <span>· Tally, month-end</span></div>
+        <div class="tool">Tracking <span>· GPS vendor portal</span></div>
+        <div class="tool">Lorry receipts <span>· carbon copy</span></div>
+        <div class="tool">Driver khata <span>· munshi's diary</span></div>
+        <div class="tool">Maintenance <span>· workshop register</span></div>
+        <div class="tool">Hire &amp; brokers <span>· phone calls</span></div>
+      </div>
+
+      <div class="stack" style="gap:1.35rem">
+        <p class="lede" style="margin:0">Every handover between them is re-typing, and every re-typing is a place the number changes. So the questions that decide the business get answered late, or by feel:</p>
+        <div class="stack" style="gap:.7rem">
+          <p style="margin:0"><span class="num amber">→</span> Did <strong>MH 12 AB 1234</strong> make money last month, or did diesel and tyres eat it?</p>
+          <p style="margin:0"><span class="num amber">→</span> Which of my lanes is quietly running at a loss?</p>
+          <p style="margin:0"><span class="num amber">→</span> How many trucks stood idle this week, and whose?</p>
+        </div>
+        <p class="cost-note">The books close six weeks after the month does. By the time a bad lane shows up in the P&amp;L, you have already run it forty more times.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 03 · THESIS -->
+<section class="slide" aria-label="What Phloz is">
+  <div class="inner">
+    <p class="eyebrow">What Phloz is</p>
+    <h2 class="hook">One software for <span class="amber">everything</span> a fleet operator does — from the indent to the ledger entry.</h2>
+    <p class="lede">Phloz is a fleet ERP built for Indian transport operations. Demand capture, dispatch planning, trip execution, ePOD, billing, driver settlements, maintenance, compliance and double-entry accounting are not integrations. They are the same system, writing to the same rows.</p>
+
+    <div class="grid-3" style="margin-top:clamp(2rem,5vh,3.25rem);background:var(--line);border:1px solid var(--line)">
+      <div class="tile">
+        <span class="k">Entered once</span>
+        <h3>The trip is the record</h3>
+        <p>A consignment booked in operations is the same object that gets tracked, proved, invoiced and posted. Nobody re-keys it into accounts.</p>
+      </div>
+      <div class="tile">
+        <span class="k">Priced from the start</span>
+        <h3>Costed before it moves</h3>
+        <p>Rate card, lane distance, fuel surcharge and GST resolve at booking — so the margin on a load is known before a driver is assigned to it.</p>
+      </div>
+      <div class="tile">
+        <span class="k">Closed the same day</span>
+        <h3>Books that keep up</h3>
+        <p>Invoices, vendor bills, trip expenses and fuel purchases post themselves to a real double-entry ledger as they happen.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 04 · END-TO-END WORKFLOW -->
+<section class="slide slide--raised" aria-label="End to end workflow">
+  <div class="inner">
+    <p class="eyebrow">End-to-end workflow</p>
+    <h2 class="hook">Indent to receipt, without <span class="amber">re-typing anything</span>.</h2>
+    <p class="lede">One unbroken chain. Each step inherits everything the last one knew, and each step leaves an audit trail behind it.</p>
+
+    <div class="chain">
+      <div class="link"><span class="n">01</span><span class="t">Indent</span><span class="d">Customer demand captured before a truck is committed</span></div>
+      <div class="link"><span class="n">02</span><span class="t">Plan</span><span class="d">Costed allocation across own, attached and hired capacity</span></div>
+      <div class="link"><span class="n">03</span><span class="t">Order</span><span class="d">Consignment priced off the rate card, e-way bill on it</span></div>
+      <div class="link"><span class="n">04</span><span class="t">Allocate</span><span class="d">Vehicle and driver assigned, both moved to on-trip</span></div>
+      <div class="link"><span class="n">05</span><span class="t">Dispatch</span><span class="d">Trip sheet opened, advance released to the driver</span></div>
+      <div class="link"><span class="n">06</span><span class="t">Track</span><span class="d">Activity feed the consignee can follow on a public link</span></div>
+      <div class="link"><span class="n">07</span><span class="t">ePOD</span><span class="d">OTP to consignee, driver capture, office verification</span></div>
+      <div class="link"><span class="n">08</span><span class="t">Invoice</span><span class="d">Freight and GST from the rate card, posted to the ledger</span></div>
+      <div class="link"><span class="n">09</span><span class="t">Receipt</span><span class="d">Collection allocated against the bill, ageing updated</span></div>
+    </div>
+
+    <div class="chain-foot">
+      <span><i class="pip"></i>Shortage and damage are fields on the ePOD, not an argument on the phone</span>
+      <span><i class="pip"></i>Billing the same consignment twice returns the existing entry — revenue never double-counts</span>
+    </div>
+  </div>
+</section>
+
+<!-- 05 · DISPATCH PLANNING -->
+<section class="slide" aria-label="Dispatch planning">
+  <div class="inner">
+    <p class="eyebrow">Planning</p>
+    <h2 class="hook">Tomorrow's plan, <span class="amber">costed before the trucks move</span>.</h2>
+
+    <div class="split" style="margin-top:clamp(1.75rem,4vh,2.75rem)">
+      <div class="stack" style="gap:1.5rem">
+        <p class="lede" style="margin:0">The dispatcher loads the day's demand and gets back a feasible, priced plan instead of a whiteboard. The solver respects capacity, temperature class, body type and time windows — and prices the decision every operator makes a hundred times a month: <strong>run it on my own truck, or hire it out?</strong></p>
+        <div class="stack" style="gap:.65rem">
+          <p style="margin:0"><span class="num amber">01</span> &nbsp;<strong>Collect</strong> — pull tomorrow's indents and open orders into one plan</p>
+          <p style="margin:0"><span class="num amber">02</span> &nbsp;<strong>Solve</strong> — route own dry, own reefer and attached capacity against a costed objective</p>
+          <p style="margin:0"><span class="num amber">03</span> &nbsp;<strong>Commit</strong> — one action turns the plan into real orders, trips and hire requirements</p>
+        </div>
+        <p style="margin:0;color:var(--muted);font-size:.9rem">Anything the solver can't serve profitably in-house surfaces as a hire requirement you can send out for quotes, rather than disappearing.</p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Plan · Tomorrow · Bhiwandi hub</h3>
+          <span class="chip chip--ok">Solved</span>
+        </div>
+        <div class="row" style="grid-template-columns:1fr 5.5rem"><span class="label">Loads to serve</span><span class="val">48</span></div>
+        <div class="row" style="grid-template-columns:1fr 5.5rem"><span class="label">Own vehicles used</span><span class="val">31</span></div>
+        <div class="row" style="grid-template-columns:1fr 5.5rem"><span class="label">Hire requirements raised</span><span class="val amber">6</span></div>
+        <div class="row" style="grid-template-columns:1fr 5.5rem"><span class="label">Planned distance</span><span class="val">9,412 km</span></div>
+        <div class="row" style="grid-template-columns:1fr 5.5rem"><span class="label">Own-run cost</span><span class="val">₹ 7,84,300</span></div>
+        <div class="row" style="grid-template-columns:1fr 5.5rem"><span class="label">Hire cost</span><span class="val">₹ 2,16,000</span></div>
+        <div class="row" style="grid-template-columns:1fr 5.5rem"><span class="label" style="color:var(--paper)">Projected margin</span><span class="val pos">+₹ 3,42,900</span></div>
+        <p class="caption">Illustrative plan output. Commit lands every route on a real trip sheet.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 06 · VEHICLE UTILISATION -->
+<section class="slide slide--raised" aria-label="Vehicle utilisation">
+  <div class="inner">
+    <p class="eyebrow">Vehicle utilisation</p>
+    <h2 class="hook">The most expensive truck you own is the one <span class="amber">standing still</span>.</h2>
+
+    <div class="split" style="margin-top:clamp(1.75rem,4vh,2.75rem)">
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Fleet utilisation · last 30 days</h3>
+          <span class="eyebrow eyebrow--quiet">All branches</span>
+        </div>
+        <div class="row" style="grid-template-columns:8.5rem 1fr 4rem"><span class="label">Own dry</span><span class="bar"><i style="width:86%"></i></span><span class="val">86%</span></div>
+        <div class="row" style="grid-template-columns:8.5rem 1fr 4rem"><span class="label">Own reefer</span><span class="bar"><i style="width:71%"></i></span><span class="val">71%</span></div>
+        <div class="row" style="grid-template-columns:8.5rem 1fr 4rem"><span class="label">Attached</span><span class="bar"><i class="warn" style="width:58%"></i></span><span class="val">58%</span></div>
+        <div class="row" style="grid-template-columns:8.5rem 1fr 4rem"><span class="label">Leased</span><span class="bar"><i class="bad" style="width:34%"></i></span><span class="val">34%</span></div>
+        <div class="row" style="grid-template-columns:8.5rem 1fr 4rem"><span class="label">Avg volume fill</span><span class="bar"><i style="width:78%"></i></span><span class="val">78%</span></div>
+        <p class="caption">Illustrative. Utilisation is derived from trip and order history, not entered by hand.</p>
+      </div>
+
+      <div class="stack" style="gap:1.5rem">
+        <p class="lede" style="margin:0">A truck earns on the days it moves and costs on all of them. Phloz measures utilisation off the trips themselves — so idle days, empty return legs and half-filled bodies are visible while you can still do something about them.</p>
+        <div class="grid-3" style="background:var(--line);border:1px solid var(--line);grid-template-columns:1fr 1fr">
+          <div class="tile"><span class="k">Standing time</span><h3>Idle days per vehicle</h3><p>Which trucks aren't turning, in which branch, and since when.</p></div>
+          <div class="tile"><span class="k">Fill rate</span><h3>Weight and volume used</h3><p>Capacity actually sold against capacity dispatched.</p></div>
+          <div class="tile"><span class="k">Km per litre</span><h3>Mileage by vehicle</h3><p>Computed from each fill-up against the previous odometer reading.</p></div>
+          <div class="tile"><span class="k">Return legs</span><h3>Empty running</h3><p>The kilometres you pay for twice and bill for once.</p></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 07 · DRIVERS -->
+<section class="slide" aria-label="Driver management">
+  <div class="inner">
+    <p class="eyebrow">Driver management</p>
+    <h2 class="hook">Advances, bhatta and settlements — <span class="amber">closed to the rupee</span>, not the diary.</h2>
+    <p class="lede">The driver's account is a ledger, not a page in the munshi's notebook. Advances released on dispatch, on-road spends captured against the trip, and the settlement that nets them off at the end of it.</p>
+
+    <div class="grid-4" style="margin-top:clamp(1.75rem,4vh,2.75rem);background:var(--line);border:1px solid var(--line)">
+      <div class="tile">
+        <span class="k">Driver master</span><h3>The whole file</h3>
+        <p>Licence and its expiry, Aadhaar, police verification, reporting branch and current trip status — one record per driver.</p>
+      </div>
+      <div class="tile">
+        <span class="k">Money on the road</span><h3>Advance &amp; expense</h3>
+        <p>Cash released on dispatch, then toll, bhatta, loading, unloading, parking, halting, RTO and police spends booked against the trip.</p>
+      </div>
+      <div class="tile">
+        <span class="k">Settlement</span><h3>Netted, then posted</h3>
+        <p>Trip closes, expenses net against the advance, the balance is payable or recoverable — and the ledger entry writes itself.</p>
+      </div>
+      <div class="tile">
+        <span class="k">Accountability</span><h3>Issues from the cab</h3>
+        <p>Breakdowns, tyre failures, accidents and check-post delays reported against the vehicle and the trip they happened on.</p>
+      </div>
+    </div>
+
+    <div class="chain-foot" style="margin-top:1.5rem">
+      <span><i class="pip"></i>Expenses the driver paid credit driver advances; expenses the office paid credit cash — the distinction the books need, captured at entry</span>
+    </div>
+  </div>
+</section>
+
+<!-- 08 · ASSETS & COMPLIANCE -->
+<section class="slide slide--raised" aria-label="Asset management">
+  <div class="inner">
+    <p class="eyebrow">Asset management</p>
+    <h2 class="hook">No truck leaves the yard on an <span class="amber">expired fitness certificate</span>.</h2>
+
+    <div class="split" style="margin-top:clamp(1.75rem,4vh,2.75rem)">
+      <div class="stack" style="gap:1.4rem">
+        <p class="lede" style="margin:0">Every vehicle carries its papers, its service history and its running costs in one record. Statutory documents sit on a renewal watchlist; preventive maintenance is scheduled by odometer <em>and</em> calendar, so a service is due when the truck says so, not when someone remembers.</p>
+        <div class="stack" style="gap:.55rem;font-size:.89rem;color:var(--muted)">
+          <p style="margin:0"><strong>Papers tracked:</strong> RC, insurance, fitness, national and state permits, PUC, road tax, FASTag KYC, GPS certificate</p>
+          <p style="margin:0"><strong>Per vehicle:</strong> diesel and mileage, tyres, maintenance jobs, on-road expenses, loan and EMI head</p>
+          <p style="margin:0"><strong>Fleet shapes:</strong> own, attached, leased and hired — grouped into fleets, optionally owned by a vendor</p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Renewal watchlist · next 30 days</h3>
+          <span class="chip chip--warn">4 due</span>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Vehicle</th><th>Document</th><th>Expires</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr><td class="dr">MH 12 AB 1234</td><td>Fitness certificate</td><td class="dr">04 Sep</td><td><span class="chip chip--bad">Blocked</span></td></tr>
+              <tr><td class="dr">MH 43 CG 8871</td><td>Insurance</td><td class="dr">11 Sep</td><td><span class="chip chip--warn">Due</span></td></tr>
+              <tr><td class="dr">GJ 01 KT 4502</td><td>National permit</td><td class="dr">19 Sep</td><td><span class="chip chip--warn">Due</span></td></tr>
+              <tr><td class="dr">MH 46 BQ 0097</td><td>PUC</td><td class="dr">02 Oct</td><td><span class="chip chip--ok">Renewed</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="caption">Illustrative. A blocked vehicle can be kept out of the dispatch plan.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 09 · P&L AT EVERY LEVEL -->
+<section class="slide" aria-label="P and L at every level">
+  <div class="inner">
+    <p class="eyebrow">Profitability</p>
+    <h2 class="hook">P&amp;L at every level you actually <span class="amber">manage</span> — not just the one you file.</h2>
+    <p class="lede">A company-level P&amp;L tells you the year went well. It never tells you which truck, which lane or which customer paid for it. Because every operational document posts to the ledger with a cost centre on it, the same books answer all six questions.</p>
+
+    <div class="ladder" style="margin-top:clamp(1.5rem,3.5vh,2.25rem)">
+      <div class="rung">
+        <span class="depth num">01</span>
+        <span class="lvl">Trip</span>
+        <span class="src">Freight earned less diesel, tolls, bhatta and handling on that trip sheet</span>
+        <span class="fig">₹ 48,200</span>
+        <span class="mgn pos">+18.4%</span>
+      </div>
+      <div class="rung">
+        <span class="depth num">02</span>
+        <span class="lvl">Vehicle</span>
+        <span class="src">Order revenue netted against diesel and on-road spend per truck — the number a fleet owner lives by</span>
+        <span class="fig">₹ 9,74,000</span>
+        <span class="mgn pos">+22.1%</span>
+      </div>
+      <div class="rung">
+        <span class="depth num">03</span>
+        <span class="lvl">Lane</span>
+        <span class="src">Rate-card projection against actual running cost on the corridor</span>
+        <span class="fig">₹ 41,20,000</span>
+        <span class="mgn pos">+16.8%</span>
+      </div>
+      <div class="rung">
+        <span class="depth num">04</span>
+        <span class="lvl">Customer</span>
+        <span class="src">Billed revenue, realisation and what is still sitting in ageing</span>
+        <span class="fig">₹ 1,84,00,000</span>
+        <span class="mgn pos">+14.2%</span>
+      </div>
+      <div class="rung">
+        <span class="depth num">05</span>
+        <span class="lvl">Branch</span>
+        <span class="src">Every ledger line carries its branch, so the trial balance and P&amp;L filter down to a depot</span>
+        <span class="fig">₹ 6,42,00,000</span>
+        <span class="mgn pos">+11.6%</span>
+      </div>
+      <div class="rung rung--sum">
+        <span class="depth num">06</span>
+        <span class="lvl">Company</span>
+        <span class="src">Consolidated for the Indian April–March fiscal year</span>
+        <span class="fig">₹ 24,80,00,000</span>
+        <span class="mgn pos">+9.8%</span>
+      </div>
+    </div>
+
+    <div class="chain-foot">
+      <span><i class="pip"></i>Illustrative figures, each at its own scope and period</span>
+      <span><i class="pip"></i>Cost centres tag any line to a <strong>truck, branch, route or driver</strong> — so a new cut doesn't need a new report</span>
+    </div>
+  </div>
+</section>
+
+<!-- 10 · ACCOUNTING -->
+<section class="slide slide--raised" aria-label="Accounting">
+  <div class="inner">
+    <p class="eyebrow">Accounting</p>
+    <h2 class="hook">Operations <span class="amber">post themselves</span>. The books are never a month behind.</h2>
+
+    <div class="split" style="margin-top:clamp(1.75rem,4vh,2.75rem);grid-template-columns:1.1fr .9fr">
+      <div class="panel">
+        <div class="panel-head">
+          <h3>What happens, and what it posts</h3>
+          <span class="eyebrow eyebrow--quiet">Double entry</span>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Event in operations</th><th>Entry in the ledger</th></tr></thead>
+            <tbody>
+              <tr><td>Customer invoice</td><td class="dr">Dr Sundry debtors · Cr Freight income · Cr Output GST</td></tr>
+              <tr><td>Vendor bill</td><td class="dr">Dr Expense head · Dr Input GST · Cr Sundry creditors · Cr TDS payable</td></tr>
+              <tr><td>Receipt</td><td class="dr">Dr Bank · Cr Sundry debtors</td></tr>
+              <tr><td>Payment</td><td class="dr">Dr Sundry creditors or Driver advances · Cr Bank</td></tr>
+              <tr><td>Trip expense</td><td class="dr">Dr the matching head · Cr Driver advances, else Cash</td></tr>
+              <tr><td>Fuel purchase</td><td class="dr">Dr Diesel · Cr the wallet it was bought on</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="stack" style="gap:1.35rem">
+        <p class="lede" style="margin:0">Real double entry, not a summary table. Every financial event becomes a balanced journal entry, and the reports are derived from those lines — which is what keeps the books consistent when eleven people are entering data at once.</p>
+
+        <div class="panel" style="padding:1.1rem 1.3rem">
+          <span class="eyebrow eyebrow--quiet" style="display:block;margin-bottom:.75rem">Seven reports, out of the box</span>
+          <div class="stack" style="gap:.32rem;font-size:.87rem;color:var(--muted)">
+            <span>Trial balance <span style="color:var(--muted-dim)">· by branch</span></span>
+            <span>Profit &amp; loss <span style="color:var(--muted-dim)">· any period</span></span>
+            <span>Ledger <span style="color:var(--muted-dim)">· any account</span></span>
+            <span>Receivable ageing <span style="color:var(--muted-dim)">· current / 30 / 60 / 90 / 90+</span></span>
+            <span>Payable ageing</span>
+            <span class="amber">Vehicle profitability</span>
+            <span>GST summary</span>
+          </div>
+        </div>
+
+        <div class="stack" style="gap:.45rem;font-size:.85rem;color:var(--muted-dim)">
+          <span><span class="num">29</span> ledger heads seeded for an Indian transporter · <span class="num">GST</span> and <span class="num">TDS</span> on vendor bills</span>
+          <span>Two guards: an unbalanced entry is rejected, and nothing posts to a group heading</span>
+          <span>Posting is idempotent per document — the same invoice never books revenue twice</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 11 · BUILT FOR INDIA -->
+<section class="slide" aria-label="Built for India">
+  <div class="inner">
+    <p class="eyebrow">Built for India</p>
+    <h2 class="hook">Freight here doesn't move like freight anywhere else. <span class="amber">Neither does Phloz.</span></h2>
+    <p class="lede">Not a global fleet product with a rupee symbol bolted on. The rules Indian transport actually runs on are modelled in the data, not worked around in a comments field.</p>
+
+    <div class="grid-4" style="margin-top:clamp(1.75rem,4vh,2.75rem);background:var(--line);border:1px solid var(--line)">
+      <div class="tile"><span class="k">Tax</span><h3>GST &amp; reverse charge</h3><p>5% GTA without ITC or 12% with it, and an RCM flag that returns zero tax and marks the consignee liable.</p></div>
+      <div class="tile"><span class="k">Paperwork</span><h3>E-way bill &amp; LR</h3><p>E-way bill number on every order; lorry receipt conventions — to-pay, paid, to-be-billed and COD.</p></div>
+      <div class="tile"><span class="k">Contracts</span><h3>Diesel escalation</h3><p>Fuel surcharge as a percentage on freight before tax, the way Indian rate contracts are written.</p></div>
+      <div class="tile"><span class="k">On the road</span><h3>Cash the driver spends</h3><p>Toll and FASTag, bhatta, loading, unloading, RTO fine, police, parking, permit and halting.</p></div>
+      <div class="tile"><span class="k">Pricing</span><h3>Per ton-km and four more</h3><p>Per km, per ton-km, per kg, per hour and fixed per trip — priced off the lane, with a freight estimator.</p></div>
+      <div class="tile"><span class="k">Statutory</span><h3>The RTO file</h3><p>Fitness, national and state permits, road tax, PUC, FASTag KYC — each with its renewal date watched.</p></div>
+      <div class="tile"><span class="k">Calendar</span><h3>April to March</h3><p>Indian fiscal years, <span class="num">Asia/Kolkata</span>, and lakh–crore rupee formatting throughout.</p></div>
+      <div class="tile"><span class="k">Capacity</span><h3>Attached &amp; hired trucks</h3><p>Brokers and attached transporters are first-class: vendors with GSTIN, PAN, MSME, TDS % and payment terms.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- 12 · MODULE MAP -->
+<section class="slide slide--raised" aria-label="Module map">
+  <div class="inner">
+    <p class="eyebrow">One software for all needs</p>
+    <h2 class="hook">One login. <span class="amber">Every department.</span></h2>
+    <p class="lede">Sales books the load, operations runs it, the workshop keeps it legal and accounts closes it — all inside the same system, each seeing only what their role allows.</p>
+
+    <div class="map" style="margin-top:clamp(1.5rem,3.5vh,2.5rem)">
+      <div class="dept">
+        <h4>Sales &amp; commercial</h4>
+        <ul>
+          <li>Sales pipeline</li>
+          <li>Customer master &amp; KYC</li>
+          <li>Rate management &amp; lane pricing</li>
+          <li>Freight estimator</li>
+          <li>Lane margin projection</li>
+          <li>Quotations</li>
+        </ul>
+      </div>
+      <div class="dept">
+        <h4>Transport operations</h4>
+        <ul>
+          <li>Demand capture &amp; indents</li>
+          <li>Dispatch planning</li>
+          <li>Consignment booking &amp; waypoints</li>
+          <li>Trip sheets</li>
+          <li>Tracking &amp; public consignment link</li>
+          <li>ePOD with OTP</li>
+          <li>Vendor hire &amp; partner network</li>
+          <li>Operating regions &amp; geofencing</li>
+        </ul>
+      </div>
+      <div class="dept">
+        <h4>Fleet &amp; compliance</h4>
+        <ul>
+          <li>Fleet master &amp; fleet groups</li>
+          <li>Driver master</li>
+          <li>Fuel &amp; mileage</li>
+          <li>Preventive maintenance</li>
+          <li>Incidents &amp; breakdowns</li>
+          <li>Compliance documents</li>
+          <li>Location master</li>
+        </ul>
+      </div>
+      <div class="dept">
+        <h4>Finance &amp; admin</h4>
+        <ul>
+          <li>Freight billing</li>
+          <li>Billing &amp; collections</li>
+          <li>Payables &amp; vendor bills</li>
+          <li>Driver accounts &amp; settlements</li>
+          <li>Trip costing</li>
+          <li>Chart of accounts &amp; vouchers</li>
+          <li>Financial reports</li>
+          <li>Users, roles, branches, audit trail</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 13 · SCALE & GOVERNANCE -->
+<section class="slide" aria-label="Scale and governance">
+  <div class="inner">
+    <p class="eyebrow">Scale &amp; governance</p>
+    <h2 class="hook">Built for the day <span class="amber">no single person</span> touches every module.</h2>
+
+    <div class="split" style="margin-top:clamp(1.75rem,4vh,2.75rem)">
+      <div class="stack" style="gap:1.4rem">
+        <p class="lede" style="margin:0">A ten-truck operator and a thousand-truck operator need the same records — they differ in how many hands are on them. Phloz is architected for the second case and stays usable in the first.</p>
+        <div class="stack" style="gap:.6rem;font-size:.9rem;color:var(--muted)">
+          <p style="margin:0"><span class="num amber">7</span> &nbsp;roles ship ready to use — Administrator, Branch manager, Dispatcher, Accounts executive, Accounts manager, Workshop supervisor, Viewer</p>
+          <p style="margin:0"><span class="num amber">19</span> &nbsp;permissions, with read and write held apart — viewing the ledger, creating a voucher and posting it are three separate rights</p>
+          <p style="margin:0"><span class="num amber">∞</span> &nbsp;branches, depots, warehouses and workshops, each with its own state GST registration</p>
+        </div>
+      </div>
+
+      <div class="grid-3" style="background:var(--line);border:1px solid var(--line);grid-template-columns:1fr 1fr">
+        <div class="tile"><span class="k">Audit trail</span><h3>Who changed what</h3><p>Every create, update and delete, with the person and the IP behind it. Read-only, always.</p></div>
+        <div class="tile"><span class="k">Branch scoping</span><h3>Your depot's data</h3><p>A login carries a role and a branch — reports, ledgers and trips narrow to it automatically.</p></div>
+        <div class="tile"><span class="k">Deployment</span><h3>Cloud or your own server</h3><p>Managed on phloz.app, or on your infrastructure. Postgres, a REST API, no exotic dependencies.</p></div>
+        <div class="tile"><span class="k">Open by design</span><h3>An API for everything</h3><p>Every module is a documented REST resource — GPS vendors, weighbridges and Tally can all be fed from it.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 14 · WHY PHLOZ -->
+<section class="slide slide--raised" aria-label="Why Phloz">
+  <div class="inner">
+    <p class="eyebrow">Why operators choose it</p>
+    <h2 class="hook">Four things most fleet software <span class="amber">makes you give up</span>.</h2>
+
+    <div class="grid-4" style="margin-top:clamp(1.75rem,4vh,2.75rem);background:var(--line);border:1px solid var(--line)">
+      <div class="tile">
+        <span class="k">01 · Instead of</span>
+        <p style="margin:0 0 .3rem">A tracking app, plus Tally, plus Excel</p>
+        <h3 class="amber">Operations and books, one system</h3>
+        <p>The consignment your dispatcher books is the row your accountant closes. No export, no reconciliation, no month-end surprise.</p>
+      </div>
+      <div class="tile">
+        <span class="k">02 · Instead of</span>
+        <p style="margin:0 0 .3rem">A P&amp;L once a quarter</p>
+        <h3 class="amber">Margin per truck, live</h3>
+        <p>Profitability is computed from ledger lines as they post — per trip, vehicle, lane, customer and branch.</p>
+      </div>
+      <div class="tile">
+        <span class="k">03 · Instead of</span>
+        <p style="margin:0 0 .3rem">A global product, localised later</p>
+        <h3 class="amber">Indian rules in the model</h3>
+        <p>RCM, e-way bills, bhatta, FASTag, per ton-km and April–March are data structures here, not workarounds.</p>
+      </div>
+      <div class="tile">
+        <span class="k">04 · Instead of</span>
+        <p style="margin:0 0 .3rem">A six-month implementation</p>
+        <h3 class="amber">Seeded and running</h3>
+        <p>Chart of accounts, roles, permissions and fiscal year are seeded on day one. You start from a working system.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 15 · CONTACT -->
+<section class="slide" aria-label="Get started">
+  <div class="inner">
+    <p class="eyebrow">Get started</p>
+    <h2 class="hook">Bring us one month of your trip sheets. We'll show you <span class="amber">where the margin went</span>.</h2>
+    <p class="lede">A working walkthrough on your own lanes, your own trucks and your own rate cards — not a generic demo tenant.</p>
+
+    <div class="cta-grid">
+      <div class="cta">
+        <span class="k">Write to us</span>
+        <a href="mailto:hi@tbplabs.tech">hi@tbplabs.tech</a>
+      </div>
+      <div class="cta">
+        <span class="k">Call or WhatsApp</span>
+        <a href="tel:+918802241740">+91 88022 41740</a>
+      </div>
+      <div class="cta">
+        <span class="k">On the web</span>
+        <a href="https://phloz.app">phloz.app</a>
+      </div>
+    </div>
+
+    <div style="margin-top:clamp(2rem,5vh,3.5rem)">
+      <div class="rail rail--lit"></div>
+      <div class="cover-foot" style="justify-content:space-between">
+        <span style="font-family:var(--display);font-variation-settings:'wdth' 125,'wght' 800;font-size:1.5rem;letter-spacing:-.03em;color:var(--paper)">Phloz<span class="amber">.</span></span>
+        <span>Fleet Operating System · Company Profile</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<div class="chrome" aria-hidden="true">
+  <span class="brand">Phloz</span>
+  <span class="ticks" id="ticks"></span>
+  <span class="count"><em id="cur">01</em> / <span id="tot">15</span></span>
+</div>
+
+<script>
+(function(){
+  var deck   = document.getElementById('deck');
+  var slides = Array.prototype.slice.call(deck.querySelectorAll('.slide'));
+  var ticks  = document.getElementById('ticks');
+  var cur    = document.getElementById('cur');
+  var pad    = function(n){ return (n < 10 ? '0' : '') + n; };
+
+  document.getElementById('tot').textContent = pad(slides.length);
+  slides.forEach(function(){ ticks.appendChild(document.createElement('b')); });
+  var bars = Array.prototype.slice.call(ticks.children);
+
+  var active = 0;
+  function setActive(i){
+    if (i === active) return;
+    active = i;
+    bars.forEach(function(b, n){ b.classList.toggle('on', n <= i); });
+    cur.textContent = pad(i + 1);
+  }
+  bars[0].classList.add('on');
+
+  var io = new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if (e.isIntersecting){
+        e.target.classList.add('live');
+        if (e.intersectionRatio > 0.5) setActive(slides.indexOf(e.target));
+      }
+    });
+  }, { root: deck, threshold: [0.25, 0.55] });
+
+  slides.forEach(function(s){ io.observe(s); });
+  slides[0].classList.add('live');
+
+  function go(delta){
+    var next = Math.min(slides.length - 1, Math.max(0, active + delta));
+    slides[next].scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  document.addEventListener('keydown', function(ev){
+    var t = ev.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+    switch (ev.key){
+      case 'ArrowRight': case 'ArrowDown': case 'PageDown': case ' ':
+        ev.preventDefault(); go(1); break;
+      case 'ArrowLeft': case 'ArrowUp': case 'PageUp':
+        ev.preventDefault(); go(-1); break;
+      case 'Home':
+        ev.preventDefault(); slides[0].scrollIntoView({ behavior:'smooth', block:'start' }); break;
+      case 'End':
+        ev.preventDefault(); slides[slides.length - 1].scrollIntoView({ behavior:'smooth', block:'start' }); break;
+    }
+  });
+})();
+</script>
