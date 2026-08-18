@@ -69,8 +69,21 @@ jobs:
           KNOWN_HOSTS: ${{ vars.EC2_SSH_KNOWN_HOSTS }}
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$KEY" > ~/.ssh/deploy.pem
+          # Actions secrets are often pasted with Windows CRLFs, escaped \n
+          # characters, or as a one-line base64 value. Normalise those common
+          # representations and validate the key before attempting the host.
+          if printf '%s' "$KEY" | grep -q '\\n'; then
+            printf '%b\n' "$KEY" | tr -d '\r' > ~/.ssh/deploy.pem
+          elif printf '%s' "$KEY" | grep -q -- '-----BEGIN .*PRIVATE KEY-----'; then
+            printf '%s\n' "$KEY" | tr -d '\r' > ~/.ssh/deploy.pem
+          else
+            printf '%s' "$KEY" | tr -d '[:space:]' | base64 --decode > ~/.ssh/deploy.pem
+          fi
           chmod 600 ~/.ssh/deploy.pem
+          ssh-keygen -y -f ~/.ssh/deploy.pem > /dev/null || {
+            echo "::error::EC2_SSH_KEY is not a valid private key after normalisation. Replace the repository secret with the full PEM key."
+            exit 1
+          }
           if [ -n "$KNOWN_HOSTS" ]; then
             printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           else
