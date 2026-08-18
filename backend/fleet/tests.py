@@ -14,7 +14,7 @@ from rest_framework.test import APIClient
 from accounting.models import JournalEntry
 from iam.models import OutboundMessage
 from . import geotrackers
-from .models import (ComplianceDocument, Customer, Driver, Fleet, FuelEntry, Invoice, Issue, MaintenanceSchedule, Order,
+from .models import (ComplianceDocument, Customer, Driver, Fleet, FuelEntry, Indent, Invoice, Issue, MaintenanceSchedule, Order,
                      Place, ProofOfDelivery, ServiceArea, ServiceRate, Trip, TripExpense, Vehicle, VehicleHire, Vendor,
                      Waypoint, Zone, haversine_km)
 
@@ -37,6 +37,40 @@ class BaseFleetOpsTest(TestCase):
                                                rate_type="per_km", base_charge=2500, per_km_rate=48, minimum_charge=8000,
                                                loading_charge=1800, unloading_charge=1500, halting_charge_per_day=2500,
                                                fuel_surcharge_percent=Decimal("3.50"), gst_percent=5)
+
+
+class IndentRequirementMappingTests(BaseFleetOpsTest):
+    def test_indent_requirements_map_to_the_generated_order(self):
+        required_at = timezone.now() + timedelta(hours=2)
+        expected_delivery = required_at + timedelta(hours=8)
+        indent = Indent.objects.create(
+            number="IND-MAP-1", customer=self.customer, pickup=self.pickup, dropoff=self.dropoff,
+            vehicle=self.vehicle, driver=self.driver, status="allocated", indent_type="part_load",
+            delivery_access="no_entry_area", required_at=required_at,
+            expected_delivery_at=expected_delivery, expected_running_km=Decimal("180"),
+            temperature_class="chiller", temp_min_c=Decimal("2"), temp_max_c=Decimal("8"),
+            temp_tolerance_c=Decimal("1"))
+
+        response = self.client.post(f"/api/v1/indents/{indent.id}/convert/", {}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        indent.refresh_from_db()
+        order = indent.order
+        self.assertEqual(order.order_type, "ptl")
+        self.assertEqual(order.delivery_access, "no_entry_area")
+        self.assertEqual(order.expected_delivery_at, expected_delivery)
+        self.assertEqual(order.expected_running_km, Decimal("180"))
+        self.assertEqual(order.temp_min_c, Decimal("2"))
+        self.assertEqual(order.temp_max_c, Decimal("8"))
+        self.assertEqual(order.temp_tolerance_c, Decimal("1"))
+        self.assertEqual(order.temp_set_point_c, Decimal("5"))
+
+    def test_indent_rejects_an_inverted_temperature_range(self):
+        response = self.client.post("/api/v1/indents/", {
+            "customer": self.customer.id, "pickup": self.pickup.id, "dropoff": self.dropoff.id,
+            "temp_min_c": "8", "temp_max_c": "2"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("temp_max_c", response.data)
 
 
 class RateCardTests(BaseFleetOpsTest):
@@ -874,6 +908,43 @@ class LegacyModuleCreationTests(BaseFleetOpsTest):
             "name": "Asian Paints Ltd", "gstin": "27AAACA3622K1ZV", "pan": "AAACA3622K"}, format="json")
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(response.data["gstin"], "27AAACA3622K1ZV")
+
+    def test_customer_kyc_keeps_billing_delivery_and_vendor_vehicle_terms(self):
+        response = self.client.post("/api/v1/customers/", {
+            "name": "Cold Chain Foods", "gstin": "27AACCC1234A1Z1",
+            "billing_party_name": "Cold Chain Foods Accounts",
+            "billing_contact_name": "Priya Shah", "billing_contact_phone": "+919876543210",
+            "billing_contact_email": "accounts@coldchain.example",
+            "billing_address": "Taloja MIDC, Navi Mumbai",
+            "pod_preference": "both", "invoice_delivery_preference": "soft_copy",
+            "customer_type": "reefer", "payment_terms_days": 45,
+            "vendor_vehicle_advance_percent": "90.00",
+            "vendor_vehicle_advance_trigger": "after_loading",
+        }, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["billing_party_name"], "Cold Chain Foods Accounts")
+        self.assertEqual(response.data["pod_preference"], "both")
+        self.assertEqual(response.data["invoice_delivery_preference"], "soft_copy")
+        self.assertEqual(response.data["customer_type"], "reefer")
+        self.assertEqual(response.data["payment_terms_days"], 45)
+        self.assertEqual(response.data["vendor_vehicle_advance_percent"], "90.00")
+        self.assertEqual(response.data["vendor_vehicle_advance_trigger"], "after_loading")
+
+    def test_customer_kyc_rejects_unapproved_payment_terms(self):
+        response = self.client.post("/api/v1/customers/", {
+            "name": "Invalid Terms Customer", "gstin": "27AACCC1234A1Z2",
+            "payment_terms_days": 60,
+        }, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("payment_terms_days", response.data)
+
+    def test_customer_kyc_rejects_vendor_advance_over_one_hundred_percent(self):
+        response = self.client.post("/api/v1/customers/", {
+            "name": "Invalid Advance Customer", "gstin": "27AACCC1234A1Z3",
+            "vendor_vehicle_advance_percent": "101.00",
+        }, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("vendor_vehicle_advance_percent", response.data)
 
 
 class TripSettlementTests(BaseFleetOpsTest):

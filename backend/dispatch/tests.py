@@ -1042,11 +1042,20 @@ class DemandCollectionTests(BaseDispatchTest):
         self.assertEqual(tasks["ORD-DC-4"].task_type, "ftl")
         self.assertEqual(tasks["ORD-DC-5"].task_type, "multi_drop_leg")
 
-    def test_an_indent_with_no_order_type_defaults_to_ftl(self):
+    def test_indent_type_expected_km_delivery_and_temperature_map_to_task(self):
+        delivery_at = timezone.now() + timedelta(days=1)
         Indent.objects.create(number="IND-DC-1", customer=self.customer, pickup=self.pickup,
-                              dropoff=self.dropA, weight_kg=Decimal("2000"))
+                              dropoff=self.dropA, weight_kg=Decimal("2000"), indent_type="part_load",
+                              expected_running_km=Decimal("321"), expected_delivery_at=delivery_at,
+                              temperature_class="chiller", temp_min_c=Decimal("2"), temp_max_c=Decimal("8"))
         tasks = inputs.collect_tasks(self.plan)
-        self.assertEqual(tasks[0].task_type, "ftl")
+        self.assertEqual(tasks[0].task_type, "multi_drop_leg")
+        self.assertEqual(tasks[0].temp_set_point_c, Decimal("5"))
+        self.assertEqual(tasks[0].drop_window_end, delivery_at)
+        self.assertEqual(tasks[0].outsource_estimate,
+                         inputs.money(Decimal("321") * costing.spot_rate_for_lane(
+                             self.pickup, self.dropA, distance_km=Decimal("321"), vehicle_type="",
+                             temperature_class="chiller")[0]))
 
     def test_priority_maps_urgent_to_must_go_and_low_to_deferrable(self):
         self.make_order("ORD-DC-6", self.dropA, 2000, priority="urgent")
