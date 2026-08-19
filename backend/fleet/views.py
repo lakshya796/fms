@@ -235,8 +235,11 @@ class TripViewSet(viewsets.ModelViewSet):
             raise _VE(f"Vehicle {vehicle.registration_number} is already committed to another trip.")
         if Trip.objects.filter(driver=driver).exclude(status__in=["closed", "cancelled"]).exists():
             raise _VE(f"Driver {driver.name} is already committed to another trip.")
+        # PostgreSQL cannot apply FOR UPDATE to the nullable side of an outer
+        # join. Lock only Order rows; nullable trip/LR relations are available
+        # through their ids and can be lazily fetched only on validation errors.
         orders = list(_Order.objects.select_for_update().select_related(
-            "pickup", "dropoff", "trip", "lorry_receipt"
+            "pickup", "dropoff"
         ).filter(pk__in=order_ids))
         found_ids = {order.id for order in orders}
         missing = [str(order_id) for order_id in order_ids if order_id not in found_ids]
@@ -312,7 +315,9 @@ class TripViewSet(viewsets.ModelViewSet):
         trip = self.get_object()
         if trip.status != "planned":
             raise ValidationError("Only a planned trip can be dispatched.")
-        orders = list(trip.orders.select_for_update().select_related("vehicle", "driver"))
+        # vehicle/driver are nullable on Order, so joining them while taking a
+        # row lock fails on PostgreSQL (SQLite silently accepts it).
+        orders = list(trip.orders.select_for_update())
         if not orders:
             raise ValidationError("Add at least one order before dispatching the trip.")
         invalid = [order.number for order in orders if order.status not in ("created", "assigned")]
