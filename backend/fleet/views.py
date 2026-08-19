@@ -363,6 +363,96 @@ class TripViewSet(viewsets.ModelViewSet):
         trip.refresh_from_db()
         return Response({"trip": self.get_serializer(trip).data, "summary": trip.settlement_summary(),
                          "expenses": expense_breakdown()})
+
+    @action(detail=True, methods=["get"])
+    def cockpit(self, request, pk=None):
+        """One trip's whole stack - every order it carries with its LR, POD and
+        invoice state, the apportioned cost behind each one, and what still
+        stands between this trip and being closed out - instead of the eight
+        screens it otherwise takes to piece the same picture together by hand.
+        See docs/ONE-TRIP-END-TO-END.md §5 Phase 3.
+        """
+        trip = self.get_object()
+        orders = list(trip.orders.select_related("customer", "pickup", "dropoff", "lorry_receipt")
+                                 .prefetch_related("proofs", "invoices").order_by("id"))
+        split = apportion_trip_cost(trip)
+
+        order_rows = []
+        documents = []
+        blockers = []
+        unpriced, unposted_lr, unverified_pod, unbilled = 0, 0, 0, 0
+        for order in orders:
+            lr = order.lorry_receipt
+            invoice = order.invoices.order_by("created_at").first()
+            captured, verified = order_pod_state(order)
+            cost_row = split["orders"].get(order.id, {"fuel": Decimal("0"), "shared_expenses": Decimal("0"),
+                                                       "attributed_expenses": Decimal("0"), "total_cost": Decimal("0")})
+            revenue = money(order.total_amount)
+            order_rows.append({
+                "id": order.id, "number": order.number, "status": order.status,
+                "customer": order.customer.name, "route": f"{order.pickup.city} → {order.dropoff.city}",
+                "weight_kg": float(order.weight_kg or 0), "distance_km": float(order.distance_km or 0),
+                "revenue": float(revenue),
+                "cost": {"fuel": float(cost_row["fuel"]), "shared_expenses": float(cost_row["shared_expenses"]),
+                        "attributed_expenses": float(cost_row["attributed_expenses"]),
+                        "total": float(cost_row["total_cost"])},
+                "profit": float(money(revenue - cost_row["total_cost"])),
+                "lorry_receipt": {"id": lr.id, "number": lr.number, "status": lr.status} if lr else None,
+                "pod": {"captured": captured, "verified": verified, "required": order.pod_required},
+                "invoice": {"id": invoice.id, "number": invoice.number, "status": invoice.status,
+                           "total_amount": float(invoice.total_amount)} if invoice else None,
+            })
+            if lr:
+                documents.append({"type": "lorry_receipt", "label": lr.number, "order": order.number,
+                                  "url": f"/api/v1/lorry-receipts/{lr.id}/pdf/"})
+            else:
+                unposted_lr += 1
+            for proof in order.proofs.all():
+                if proof.file_url:
+                    documents.append({"type": "pod", "label": f"POD · {order.number}", "order": order.number,
+                                      "url": proof.file_url})
+            if invoice:
+                documents.append({"type": "invoice", "label": invoice.number, "order": order.number,
+                                  "url": f"/api/v1/invoices/{invoice.id}/pdf/"})
+            elif order.status == "completed":
+                unbilled += 1
+            if order.pod_required and not verified and order.status != "cancelled":
+                unverified_pod += 1
+            if not order.total_amount:
+                unpriced += 1
+
+        if unposted_lr:
+            blockers.append(f"{unposted_lr} order(s) have no lorry receipt yet.")
+        if unverified_pod:
+            blockers.append(f"{unverified_pod} order(s) require a POD that has not been verified.")
+        if unpriced:
+            blockers.append(f"{unpriced} order(s) have no freight priced.")
+        if unbilled:
+            blockers.append(f"{unbilled} delivered order(s) have not been invoiced.")
+        if trip.end_odometer_km is None:
+            blockers.append("Trip has no end odometer reading.")
+        unapproved = money(trip.expenses.filter(status="pending").aggregate(v=Sum("amount"))["v"] or 0)
+        if unapproved:
+            blockers.append(f"₹{unapproved:,.2f} of expenses are awaiting approval.")
+
+        summary = trip.settlement_summary()
+        summary["cost_basis"] = split["basis"]
+        total_revenue = money(sum((row["revenue"] for row in order_rows), 0))
+
+        return Response({
+            "trip": self.get_serializer(trip).data,
+            "orders": order_rows,
+            "costs": {"shared_fuel": float(split["shared_fuel"]), "shared_expenses": float(split["shared_expenses"]),
+                     "shared_total": float(split["shared_total"]), "basis": split["basis"],
+                     "advance_amount": float(money(trip.advance_amount))},
+            "revenue": {"total": float(total_revenue)},
+            "pnl": summary,
+            "documents": documents,
+            "blockers": blockers,
+            "ready_to_close": not blockers,
+        })
+
+
 class InvoiceViewSet(viewsets.ModelViewSet):
     permission_classes = [HasModulePermission]
     required_permission = "accounting.view"; required_write_permission = "accounting.manage"
@@ -1006,14 +1096,22 @@ class OrderViewSet(FilterableViewSet):
                                "approved_expenses": float(settlement.approved_expenses),
                                "net_payable": float(settlement.net_payable), "status": settlement.status}
 
-        fuel = FuelEntry.objects.filter(trip_id=order.trip_id).aggregate(value=Sum("amount"))["value"] or 0 if order.trip_id else 0
-        expenses = TripExpense.objects.filter(order=order).aggregate(value=Sum("amount"))["value"] or 0
-        vehicle_side = {"fuel": float(money(fuel)), "trip_expenses": float(money(expenses)),
-                        "total_cost": float(money(Decimal(str(fuel)) + Decimal(str(expenses))))}
+        # Apportioned, not the whole trip's cost charged again to this one order -
+        # see docs/ONE-TRIP-END-TO-END.md §3.2/§5 Phase 2 for the same bug this
+        # fixed in order_profitability.
+        if order.trip_id:
+            row = apportion_trip_cost(order.trip)["orders"].get(
+                order.id, {"fuel": Decimal("0"), "shared_expenses": Decimal("0"), "attributed_expenses": Decimal("0")})
+            fuel = row["fuel"]
+            expenses = row["shared_expenses"] + row["attributed_expenses"]
+        else:
+            fuel = Decimal("0")
+            expenses = money(TripExpense.objects.filter(order=order).aggregate(value=Sum("amount"))["value"] or 0)
+        vehicle_side = {"fuel": float(fuel), "trip_expenses": float(expenses), "total_cost": float(money(fuel + expenses))}
 
         revenue = money(invoice.total_amount if invoice else order.total_amount)
         vendor_cost = money(vendor_side["payable"]["gross_amount"]) if vendor_side else Decimal("0")
-        total_cost = money(vendor_cost + Decimal(str(fuel)) + Decimal(str(expenses)))
+        total_cost = money(vendor_cost + fuel + expenses)
         actual_profit = money(revenue - total_cost)
 
         return Response({

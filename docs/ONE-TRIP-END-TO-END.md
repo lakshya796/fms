@@ -220,7 +220,7 @@ stops §3.2 recurring.
 
 ~400 lines, ~14 tests. Depends on nothing; unblocks 3 and 5.
 
-### Phase 3 — The Trip Cockpit API
+### Phase 3 — The Trip Cockpit API — ✅ shipped
 
 **`GET /trips/{id}/cockpit/`** — one response carrying the whole stack for one trip:
 
@@ -241,7 +241,13 @@ an operator currently reconstructs by opening eight screens.
 Builds almost entirely on existing pieces (`settlement_summary`, `order_pod_state`,
 `apportion_trip_cost`); this is composition, not new logic.
 
-~300 lines, ~8 tests. Depends on 1, 2.
+**Found in passing:** `OrderViewSet.settlement` (`fleet/views.py:978`, the order-level
+"four-sided settlement sheet") carried the exact same fuel/expense bug §3.2 diagnosed in
+`order_profitability` - a second, independent site charging a consolidated trip's whole
+diesel bill to one order. Fixed alongside the cockpit so the two sheets can never disagree
+with each other again.
+
+~300 lines, ~8 tests, plus 1 pre-existing bug fixed. Depends on 1, 2.
 
 ### Phase 4 — The Trip Cockpit screen
 

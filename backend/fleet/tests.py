@@ -952,6 +952,89 @@ class LorryReceiptGenerationTests(BaseFleetOpsTest):
         self.assertGreater(len(pdf.content), 500)
 
 
+class TripCockpitTests(BaseFleetOpsTest):
+    """docs/ONE-TRIP-END-TO-END.md §5 Phase 3: one trip's whole stack in one
+    response - what used to take eight screens to piece together by hand."""
+
+    def _order(self, **overrides):
+        defaults = dict(number="ORD-CKPT-1", customer=self.customer, pickup=self.pickup, dropoff=self.dropoff,
+                        distance_km=100, weight_kg=1000, total_amount=10000, freight_amount=10000,
+                        status="created", driver=self.driver, vehicle=self.vehicle)
+        defaults.update(overrides)
+        return Order.objects.create(**defaults)
+
+    def test_cockpit_lists_every_order_with_its_document_state(self):
+        o1 = self._order(number="ORD-CKPT-A")
+        trip = o1.ensure_trip()
+        o2 = self._order(number="ORD-CKPT-B", trip=trip)
+
+        from fleet.lr import build_lr_from_order
+        build_lr_from_order(o1)   # o1 has an LR, o2 does not
+
+        response = self.client.get(f"/api/v1/trips/{trip.id}/cockpit/")
+        self.assertEqual(response.status_code, 200, response.data)
+        rows = {row["number"]: row for row in response.data["orders"]}
+        self.assertEqual(set(rows), {"ORD-CKPT-A", "ORD-CKPT-B"})
+        self.assertIsNotNone(rows["ORD-CKPT-A"]["lorry_receipt"])
+        self.assertIsNone(rows["ORD-CKPT-B"]["lorry_receipt"])
+        self.assertIsNone(rows["ORD-CKPT-A"]["invoice"])
+        self.assertFalse(rows["ORD-CKPT-A"]["pod"]["verified"])
+
+    def test_cockpit_apportions_cost_consistently_with_order_profitability(self):
+        o1 = self._order(number="ORD-CKPT-C", distance_km=100)
+        trip = o1.ensure_trip()
+        o2 = self._order(number="ORD-CKPT-D", distance_km=300, trip=trip)
+        FuelEntry.objects.create(vehicle=self.vehicle, trip=trip, volume_litres=100, rate_per_litre=100, amount=10000)
+
+        cockpit = self.client.get(f"/api/v1/trips/{trip.id}/cockpit/").data
+        profitability = self.client.get(f"/api/v1/orders/{o1.id}/profitability/").data
+        row = next(r for r in cockpit["orders"] if r["number"] == "ORD-CKPT-C")
+        self.assertEqual(row["cost"]["fuel"], profitability["fuel"])
+        self.assertEqual(cockpit["costs"]["basis"], "distance")
+        self.assertEqual(cockpit["pnl"]["cost_basis"], "distance")
+
+    def test_cockpit_blockers_report_missing_lr_unverified_pod_and_unbilled_orders(self):
+        order = self._order(pod_required=True)
+        order.ensure_trip()
+        trip = order.trip
+        response = self.client.get(f"/api/v1/trips/{trip.id}/cockpit/")
+        blockers = " ".join(response.data["blockers"])
+        self.assertIn("lorry receipt", blockers)
+        self.assertIn("POD", blockers)
+        self.assertFalse(response.data["ready_to_close"])
+
+    def test_cockpit_reports_unapproved_expenses_as_a_blocker(self):
+        order = self._order()
+        trip = order.ensure_trip()
+        TripExpense.objects.create(trip=trip, vehicle=self.vehicle, category="toll", amount=500, status="pending")
+        response = self.client.get(f"/api/v1/trips/{trip.id}/cockpit/")
+        self.assertTrue(any("awaiting approval" in b for b in response.data["blockers"]))
+
+    def test_cockpit_ready_to_close_once_every_blocker_is_cleared(self):
+        order = self._order(pod_required=False)
+        trip = order.ensure_trip()
+        from fleet.lr import build_lr_from_order
+        build_lr_from_order(order)
+        order.status = "completed"; order.save(update_fields=["status"])
+        Invoice.objects.create(number="INV-CKPT-1", customer=self.customer, trip=trip, order=order,
+                               freight_amount=10000, tax_amount=0, due_date=timezone.localdate())
+        trip.end_odometer_km = (trip.start_odometer_km or 0) + 100
+        trip.save(update_fields=["end_odometer_km"])
+
+        response = self.client.get(f"/api/v1/trips/{trip.id}/cockpit/")
+        self.assertEqual(response.data["blockers"], [])
+        self.assertTrue(response.data["ready_to_close"])
+
+    def test_cockpit_documents_list_links_every_generated_document(self):
+        order = self._order()
+        trip = order.ensure_trip()
+        from fleet.lr import build_lr_from_order
+        build_lr_from_order(order)
+        response = self.client.get(f"/api/v1/trips/{trip.id}/cockpit/")
+        doc_types = {doc["type"] for doc in response.data["documents"]}
+        self.assertIn("lorry_receipt", doc_types)
+
+
 class ComplianceTests(BaseFleetOpsTest):
     def test_document_status_reflects_expiry_window(self):
         today = timezone.localdate()
