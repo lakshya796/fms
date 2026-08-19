@@ -30,6 +30,17 @@ def invoice_number():
     return "INV-" + timezone.now().strftime("%y%m%d") + uuid4().hex[:6].upper()
 
 
+def order_invoice(order):
+    """The invoice covering `order`, whichever of the two billing paths raised
+    it: singly (`Invoice.order`, `build_invoice_from_order`) or as part of a
+    consolidated trip invoice (`Invoice.orders`, `build_invoice_from_trip`).
+    Every reader that asks "has this order been billed" - the Trip Cockpit,
+    the order settlement sheet, this module's own idempotency checks - must
+    go through here, or one of the two paths silently stops recognising the
+    other's invoice."""
+    return order.invoices.order_by("created_at").first() or order.consolidated_invoices.order_by("created_at").first()
+
+
 def order_pod_state(order):
     """Where the consignment's ePOD stands: (captured, verified)."""
     proofs = order.proofs.all()
@@ -42,9 +53,10 @@ def build_invoice_from_order(order, *, due_days=15, additional_charges=None, cre
     """Raise (or return) the invoice for a delivered consignment.
 
     Idempotent: a second call returns the invoice already raised against the order
-    rather than billing the customer twice.
+    rather than billing the customer twice - including one raised as part of a
+    consolidated trip invoice (`build_invoice_from_trip`), not just a single-order one.
     """
-    existing = order.invoices.order_by("created_at").first()
+    existing = order_invoice(order)
     if existing:
         return existing, False
     if order.status == "cancelled":
@@ -74,6 +86,74 @@ def build_invoice_from_order(order, *, due_days=15, additional_charges=None, cre
     order.log(order.status, "INVOICE_RAISED",
               f"Invoice {invoice.number} for {invoice.total_amount}", city=order.dropoff.city)
     return invoice, True
+
+
+def build_invoice_from_trip(trip, *, due_days=15):
+    """Consolidate every billable, not-yet-invoiced order on `trip` into one
+    invoice per customer - a single bill for a milk run, instead of one
+    invoice per consignment even when several ride the same truck for the
+    same customer on the same trip.
+
+    Reuses the same gates as `build_invoice_from_order` (delivered, priced,
+    ePOD verified) and the same idempotency guarantee: an order already
+    billed, singly or as part of an earlier consolidated invoice, is skipped
+    rather than billed twice - which is also why an order billed here is
+    invisible to a later `build_invoice_from_order` call, and vice versa.
+
+    Returns `(invoices, skipped)` - `invoices` is `[(Invoice, created), ...]`,
+    one per customer with at least one billable order; `skipped` is
+    `[(order, reason), ...]` for every order left out, so a dispatcher sees
+    why a consignment did not make it onto the bill instead of it silently
+    vanishing.
+    """
+    by_customer = {}
+    for order in trip.orders.select_related("customer", "service_rate", "pickup", "dropoff").order_by("id"):
+        by_customer.setdefault(order.customer_id, []).append(order)
+
+    invoices, skipped = [], []
+    for customer_orders in by_customer.values():
+        billable = []
+        for order in customer_orders:
+            if order_invoice(order):
+                continue   # already billed - not an error, just nothing left to do for it here
+            if order.status == "cancelled":
+                skipped.append((order, "cancelled")); continue
+            if order.status != "completed":
+                skipped.append((order, "not yet delivered")); continue
+            if order.pod_required and not order_pod_state(order)[1]:
+                skipped.append((order, "ePOD not verified")); continue
+            if order.service_rate:
+                order.price_from_rate_card()
+            if not order.total_amount:
+                skipped.append((order, "not priced")); continue
+            billable.append(order)
+        if not billable:
+            continue
+
+        freight = money(sum((money(o.freight_amount) for o in billable), Decimal("0")))
+        extras = money(sum((money(o.other_charges) for o in billable), Decimal("0")))
+        tax = money(sum((money(o.tax_amount) for o in billable), Decimal("0")))
+        rate = billable[0].service_rate
+        line_items = [{"order_id": o.id, "order_number": o.number,
+                       "route": f"{o.pickup.city} → {o.dropoff.city}",
+                       "freight_amount": float(money(o.freight_amount)),
+                       "tax_amount": float(money(o.tax_amount)),
+                       "total_amount": float(money(o.total_amount))} for o in billable]
+        invoice = Invoice(
+            number=invoice_number(), customer=billable[0].customer, trip=trip,
+            freight_amount=freight, additional_charges=extras, tax_amount=tax,
+            gst_percent=rate.gst_percent if rate else Decimal("0"),
+            reverse_charge=bool(rate and rate.reverse_charge),
+            place_of_supply=billable[0].dropoff.state or billable[0].pickup.state,
+            due_date=timezone.localdate() + timedelta(days=int(due_days or 0)),
+            status="raised", line_items=line_items)
+        invoice.save()
+        invoice.orders.set(billable)
+        for order in billable:
+            order.log(order.status, "INVOICE_RAISED",
+                      f"Consolidated invoice {invoice.number} for {order.total_amount}", city=order.dropoff.city)
+        invoices.append((invoice, True))
+    return invoices, skipped
 
 
 def running_cost(vehicle=None, days=90):

@@ -8,7 +8,7 @@ from .views import (health, dashboard, fleet_analytics, public_tracking, live_tr
                     TrackingActivityViewSet, ProofOfDeliveryViewSet, FuelEntryViewSet, TripExpenseViewSet, IssueViewSet,
                     ComplianceDocumentViewSet, MaintenanceScheduleViewSet, IndentViewSet, VehicleHireViewSet,
                     VendorLaneRateViewSet, order_profitability, report_driver_availability, report_fleet,
-                    report_customer_invoices, report_vehicle_settlement, report_sales)
+                    report_customer_invoices, report_vehicle_settlement, report_sales, report_trip_profitability)
 router = DefaultRouter()
 router.register("maintenance", MaintenanceWorkOrderViewSet)
 router.register("quotes", SalesQuoteViewSet)
@@ -55,5 +55,6 @@ urlpatterns = [
     path("reports/customer-invoices/", report_customer_invoices),
     path("reports/vehicle-settlement/", report_vehicle_settlement),
     path("reports/sales/", report_sales),
+    path("reports/trip-profitability/", report_trip_profitability),
     path("", include(router.urls)),
 ]

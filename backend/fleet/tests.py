@@ -1065,6 +1065,183 @@ class TripCockpitTests(BaseFleetOpsTest):
         self.assertFalse(row["pod"]["verified"])
 
 
+class ConsolidatedInvoicingTests(BaseFleetOpsTest):
+    """docs/ONE-TRIP-END-TO-END.md §5 Phase 5: one invoice per customer for a
+    trip's billable orders, instead of one per consignment even when several
+    ride the same truck for the same customer."""
+
+    def _order(self, number, **overrides):
+        defaults = dict(number=number, customer=self.customer, pickup=self.pickup, dropoff=self.dropoff,
+                        distance_km=100, weight_kg=1000, freight_amount=10000, tax_amount=500, total_amount=10500,
+                        status="completed", driver=self.driver, vehicle=self.vehicle, pod_required=False)
+        defaults.update(overrides)
+        return Order.objects.create(**defaults)
+
+    def test_consolidates_two_orders_for_the_same_customer_into_one_invoice(self):
+        o1 = self._order("ORD-CINV-1")
+        trip = o1.ensure_trip()
+        o2 = self._order("ORD-CINV-2", trip=trip)
+
+        response = self.client.post(f"/api/v1/trips/{trip.id}/consolidate-invoice/")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(len(response.data["invoices"]), 1)
+        invoice = response.data["invoices"][0]
+        self.assertEqual(float(invoice["freight_amount"]), 20000.0)
+        self.assertEqual(float(invoice["total_amount"]), 21000.0)
+        self.assertEqual(len(invoice["line_items"]), 2)
+        self.assertEqual({item["order_number"] for item in invoice["line_items"]}, {"ORD-CINV-1", "ORD-CINV-2"})
+        o1.refresh_from_db(); o2.refresh_from_db()
+        self.assertTrue(o1.consolidated_invoices.exists())
+        self.assertTrue(o2.consolidated_invoices.exists())
+
+    def test_groups_into_two_invoices_when_the_trip_carries_two_customers(self):
+        other = Customer.objects.create(name="Other Co", gstin="27AAACT2727Q1ZX")
+        o1 = self._order("ORD-CINV-3")
+        trip = o1.ensure_trip()
+        o2 = self._order("ORD-CINV-4", trip=trip, customer=other, total_amount=6000, freight_amount=5700, tax_amount=300)
+
+        response = self.client.post(f"/api/v1/trips/{trip.id}/consolidate-invoice/")
+        self.assertEqual(len(response.data["invoices"]), 2)
+        customers = {inv["customer_name"] for inv in response.data["invoices"]}
+        self.assertEqual(customers, {self.customer.name, "Other Co"})
+
+    def test_skips_an_undelivered_order_and_reports_why(self):
+        o1 = self._order("ORD-CINV-5")
+        trip = o1.ensure_trip()
+        o2 = self._order("ORD-CINV-6", trip=trip, status="dispatched", total_amount=0, freight_amount=0)
+
+        response = self.client.post(f"/api/v1/trips/{trip.id}/consolidate-invoice/")
+        self.assertEqual(len(response.data["invoices"]), 1)
+        self.assertEqual(len(response.data["skipped"]), 1)
+        self.assertEqual(response.data["skipped"][0]["order"], "ORD-CINV-6")
+        self.assertEqual(response.data["skipped"][0]["reason"], "not yet delivered")
+
+    def test_consolidate_invoice_is_idempotent(self):
+        o1 = self._order("ORD-CINV-7")
+        trip = o1.ensure_trip()
+        first = self.client.post(f"/api/v1/trips/{trip.id}/consolidate-invoice/")
+        second = self.client.post(f"/api/v1/trips/{trip.id}/consolidate-invoice/")
+        self.assertEqual(len(first.data["invoices"]), 1)
+        self.assertEqual(len(second.data["invoices"]), 0)   # nothing left unbilled
+        self.assertEqual(Invoice.objects.filter(trip=trip).count(), 1)
+
+    def test_cockpit_recognises_a_consolidated_invoice_against_each_order(self):
+        """A consolidated invoice sets `Invoice.orders`, not the singular
+        `Invoice.order` a single-order bill uses - the Trip Cockpit (and the
+        order settlement sheet, and the billable-orders list) must recognise
+        both, or an order billed this way looks perpetually unbilled."""
+        o1 = self._order("ORD-CINV-COCKPIT-1")
+        trip = o1.ensure_trip()
+        o2 = self._order("ORD-CINV-COCKPIT-2", trip=trip)
+        self.client.post(f"/api/v1/trips/{trip.id}/consolidate-invoice/")
+
+        cockpit = self.client.get(f"/api/v1/trips/{trip.id}/cockpit/")
+        self.assertFalse(any("invoiced" in b for b in cockpit.data["blockers"]))
+        for row in cockpit.data["orders"]:
+            self.assertIsNotNone(row["invoice"], f"{row['number']} should show its consolidated invoice")
+
+        settlement = self.client.get(f"/api/v1/orders/{o1.id}/settlement/")
+        self.assertIsNotNone(settlement.data["customer"])
+
+        billable = self.client.get("/api/v1/orders/billable/")
+        self.assertNotIn("ORD-CINV-COCKPIT-1", [row["number"] for row in billable.data["orders"]])
+
+    def test_build_invoice_from_order_does_not_double_bill_a_consolidated_order(self):
+        """The two billing paths must never both raise a bill for the same order."""
+        o1 = self._order("ORD-CINV-8")
+        trip = o1.ensure_trip()
+        self.client.post(f"/api/v1/trips/{trip.id}/consolidate-invoice/")
+
+        from fleet.billing import build_invoice_from_order
+        invoice, created = build_invoice_from_order(o1)
+        self.assertFalse(created)
+        self.assertIn(o1, invoice.orders.all())
+
+    def test_consolidated_invoice_posts_to_the_ledger(self):
+        call_command("seed_accounting")
+        o1 = self._order("ORD-CINV-9")
+        trip = o1.ensure_trip()
+        response = self.client.post(f"/api/v1/trips/{trip.id}/consolidate-invoice/")
+        self.assertEqual(len(response.data["posted"]), 1)
+        self.assertIn("journal_entry", response.data["posted"][0])
+        self.assertEqual(JournalEntry.objects.filter(reference_type="invoice").count(), 1)
+
+    def test_consolidated_invoice_pdf_renders_the_line_items(self):
+        o1 = self._order("ORD-CINV-10")
+        trip = o1.ensure_trip()
+        o2 = self._order("ORD-CINV-11", trip=trip)
+        response = self.client.post(f"/api/v1/trips/{trip.id}/consolidate-invoice/")
+        invoice_id = response.data["invoices"][0]["id"]
+        pdf = self.client.get(f"/api/v1/invoices/{invoice_id}/pdf/")
+        self.assertEqual(pdf.status_code, 200)
+        self.assertEqual(pdf["Content-Type"], "application/pdf")
+        self.assertGreater(len(pdf.content), 500)
+
+
+class TripProfitabilityReportTests(BaseFleetOpsTest):
+    """docs/ONE-TRIP-END-TO-END.md §5 Phase 5: trip-wise P&L across a date
+    range, using the same apportioned cost as the Trip Cockpit."""
+
+    def _order(self, number, **overrides):
+        defaults = dict(number=number, customer=self.customer, pickup=self.pickup, dropoff=self.dropoff,
+                        distance_km=100, weight_kg=1000, total_amount=10000, status="completed",
+                        driver=self.driver, vehicle=self.vehicle)
+        defaults.update(overrides)
+        return Order.objects.create(**defaults)
+
+    def test_report_returns_apportioned_revenue_cost_and_margin_per_trip(self):
+        order = self._order("ORD-TPR-1")
+        trip = order.ensure_trip()
+        FuelEntry.objects.create(vehicle=self.vehicle, trip=trip, volume_litres=50, rate_per_litre=100, amount=5000)
+
+        response = self.client.get("/api/v1/reports/trip-profitability/")
+        self.assertEqual(response.status_code, 200)
+        row = next(r for r in response.data["trips"] if r["number"] == trip.number)
+        self.assertEqual(row["revenue"], 10000.0)
+        self.assertEqual(row["fuel"], 5000.0)
+        self.assertEqual(row["cost"], 5000.0)
+        self.assertEqual(row["margin"], 5000.0)
+        self.assertEqual(row["order_count"], 1)
+
+    def test_report_excludes_trips_with_no_orders(self):
+        Trip.objects.create(number="TRP-TPR-EMPTY", vehicle=self.vehicle, driver=self.driver,
+                            origin="Bhiwandi", destination="Chakan", planned_departure=timezone.now())
+        response = self.client.get("/api/v1/reports/trip-profitability/")
+        self.assertNotIn("TRP-TPR-EMPTY", [r["number"] for r in response.data["trips"]])
+
+    def test_report_filters_by_vehicle(self):
+        order = self._order("ORD-TPR-2")
+        trip = order.ensure_trip()
+        other_vehicle = Vehicle.objects.create(registration_number="MH 20 TP 0002", vehicle_type="20 ft SXL", capacity_kg=8000)
+
+        matching = self.client.get(f"/api/v1/reports/trip-profitability/?vehicle={self.vehicle.id}")
+        other = self.client.get(f"/api/v1/reports/trip-profitability/?vehicle={other_vehicle.id}")
+        self.assertIn(trip.number, [r["number"] for r in matching.data["trips"]])
+        self.assertNotIn(trip.number, [r["number"] for r in other.data["trips"]])
+
+    def test_report_filters_by_customer(self):
+        other = Customer.objects.create(name="Filter Co", gstin="27AAACT2727Q1XY")
+        order = self._order("ORD-TPR-3")
+        trip = order.ensure_trip()
+
+        matching = self.client.get(f"/api/v1/reports/trip-profitability/?customer={self.customer.id}")
+        other_result = self.client.get(f"/api/v1/reports/trip-profitability/?customer={other.id}")
+        self.assertIn(trip.number, [r["number"] for r in matching.data["trips"]])
+        self.assertNotIn(trip.number, [r["number"] for r in other_result.data["trips"]])
+
+    def test_report_summary_totals_match_the_row_sums(self):
+        o1 = self._order("ORD-TPR-4", total_amount=8000)
+        trip1 = o1.ensure_trip()
+        o2 = self._order("ORD-TPR-5", total_amount=6000)
+        trip2 = o2.ensure_trip()
+
+        response = self.client.get("/api/v1/reports/trip-profitability/")
+        rows = [r for r in response.data["trips"] if r["number"] in (trip1.number, trip2.number)]
+        self.assertEqual(len(rows), 2)
+        self.assertAlmostEqual(response.data["summary"]["total_revenue"],
+                               sum(r["revenue"] for r in response.data["trips"]), places=2)
+
+
 class ComplianceTests(BaseFleetOpsTest):
     def test_document_status_reflects_expiry_window(self):
         today = timezone.localdate()

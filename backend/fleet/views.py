@@ -383,7 +383,7 @@ class TripViewSet(viewsets.ModelViewSet):
         unpriced, unposted_lr, unverified_pod, unbilled = 0, 0, 0, 0
         for order in orders:
             lr = order.lorry_receipt
-            invoice = order.invoices.order_by("created_at").first()
+            invoice = order_invoice(order)
             proofs = list(order.proofs.all())
             captured = any(p.captured_at for p in proofs)
             verified = any(p.status == "verified" for p in proofs)
@@ -466,6 +466,31 @@ class TripViewSet(viewsets.ModelViewSet):
             "blockers": blockers,
             "ready_to_close": not blockers,
         })
+
+    @action(detail=True, methods=["post"], url_path="consolidate-invoice")
+    @transaction.atomic
+    def consolidate_invoice(self, request, pk=None):
+        """One invoice per customer for every billable order on this trip,
+        instead of one per consignment even when several ride the same truck
+        for the same customer - see docs/ONE-TRIP-END-TO-END.md §5 Phase 5."""
+        trip = self.get_object()
+        invoices, skipped = build_invoice_from_trip(trip, due_days=request.data.get("due_days", 15))
+        posted = []
+        if request.data.get("post_to_ledger", True):
+            for invoice, created in invoices:
+                if not created:
+                    continue
+                try:
+                    entry = post_customer_invoice(invoice, branch=trip.orders.first().branch if trip.orders.exists() else None,
+                                                  created_by=request.user.get_username())
+                    posted.append({"invoice": invoice.number, "journal_entry": entry.number})
+                except PostingError as error:
+                    posted.append({"invoice": invoice.number, "ledger_error": str(error)})
+        return Response({
+            "invoices": [InvoiceSerializer(invoice).data for invoice, _ in invoices],
+            "skipped": [{"order": order.number, "reason": reason} for order, reason in skipped],
+            "posted": posted,
+        }, status=http_status.HTTP_201_CREATED if invoices else http_status.HTTP_200_OK)
 
 
 class InvoiceViewSet(viewsets.ModelViewSet):
@@ -575,6 +600,26 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             elems.append(ref_t)
             elems.append(Spacer(1, 4*mm))
 
+        # ---- Consolidated invoice: one row per consignment ----
+        if invoice.line_items:
+            item_rows = [[Paragraph("Consignment", ps("th2", fontSize=8, fontName="Helvetica-Bold", textColor=colors.white)),
+                         Paragraph("Route", ps("th3", fontSize=8, fontName="Helvetica-Bold", textColor=colors.white)),
+                         Paragraph("Amount (₹)", ps("th4", fontSize=8, fontName="Helvetica-Bold", textColor=colors.white, alignment=TA_RIGHT))]]
+            for line in invoice.line_items:
+                item_rows.append([line.get("order_number", ""), line.get("route", ""),
+                                  Paragraph(money_str(line.get("total_amount", 0)), r_body)])
+            items_t = Table(item_rows, colWidths=[45*mm, 90*mm, 40*mm])
+            items_t.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BACKGROUND", (0, 0), (-1, 0), mid),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#fafafa")]),
+                ("PADDING", (0, 0), (-1, -1), 5), ("FONTSIZE", (0, 1), (-1, -1), 8),
+                ("LINEBELOW", (0, 0), (-1, -1), 0.3, colors.HexColor("#e0e0e0")),
+            ]))
+            elems.append(Paragraph(f"CONSOLIDATED INVOICE — {len(invoice.line_items)} consignment(s)", lbl))
+            elems.append(Spacer(1, 2*mm))
+            elems.append(items_t)
+            elems.append(Spacer(1, 4*mm))
+
         # ---- Charges ----
         rows = [
             [Paragraph("Particulars", ps("th", fontSize=9, fontName="Helvetica-Bold", textColor=colors.white)),
@@ -643,7 +688,7 @@ from .serializers import (VendorSerializer, ServiceAreaSerializer, ZoneSerialize
                           FuelEntrySerializer, TripExpenseSerializer, IssueSerializer, ComplianceDocumentSerializer,
                           MaintenanceScheduleSerializer, VehicleHireSerializer, VendorLaneRateSerializer,
                           QuoteRequestSerializer, ProjectionRequestSerializer)
-from .billing import BillingError, build_invoice_from_order, order_pod_state, project_lane
+from .billing import BillingError, build_invoice_from_order, build_invoice_from_trip, order_invoice, order_pod_state, project_lane
 from .costing import apportion_trip_cost
 from .lr import build_lr_from_order
 from .vendor_billing import HireBillingError, confirmation_email, raise_vendor_bill, vendor_payable
@@ -1013,7 +1058,7 @@ class OrderViewSet(FilterableViewSet):
         so the desk can see what is waiting on an ePOD rather than wondering why
         a delivered consignment is missing.
         """
-        orders = (self.get_queryset().filter(status="completed", invoices__isnull=True)
+        orders = (self.get_queryset().filter(status="completed", invoices__isnull=True, consolidated_invoices__isnull=True)
                   .select_related("customer", "service_rate", "pickup", "dropoff")
                   .prefetch_related("proofs").order_by("-completed_at"))
         rows = []
@@ -1086,7 +1131,7 @@ class OrderViewSet(FilterableViewSet):
         one screen, so nobody has to open four modules to see if a trip is closed out.
         """
         order = self.get_object()
-        invoice = order.invoices.order_by("created_at").first()
+        invoice = order_invoice(order)
         customer_side = None
         if invoice:
             received = invoice.allocations.aggregate(value=Sum("amount"))["value"] or 0
@@ -1925,6 +1970,76 @@ def report_vehicle_settlement(request):
         "settlement_count": len(rows),
     }
     return Response({"summary": summary, "settlements": rows})
+
+
+@requires("reports.view")
+@api_view(["GET"])
+def report_trip_profitability(request):
+    """Trip-wise P&L across a date range: revenue, fuel, on-road cost, advance
+    and margin per trip - using the same apportioned cost as the Trip Cockpit
+    (`fleet.costing.apportion_trip_cost`), so this report and that screen can
+    never disagree with each other. See docs/ONE-TRIP-END-TO-END.md §5 Phase 5.
+    """
+    from_date = request.query_params.get("from")
+    to_date = request.query_params.get("to")
+    vehicle_id = request.query_params.get("vehicle")
+    driver_id = request.query_params.get("driver")
+    branch_id = request.query_params.get("branch")
+    customer_id = request.query_params.get("customer")
+    origin_city = request.query_params.get("origin_city")
+    destination_city = request.query_params.get("destination_city")
+
+    qs = Trip.objects.select_related("vehicle", "driver").prefetch_related("orders__customer").order_by("-created_at")
+    if from_date:
+        qs = qs.filter(created_at__date__gte=from_date)
+    if to_date:
+        qs = qs.filter(created_at__date__lte=to_date)
+    if vehicle_id:
+        qs = qs.filter(vehicle_id=vehicle_id)
+    if driver_id:
+        qs = qs.filter(driver_id=driver_id)
+    if branch_id:
+        qs = qs.filter(orders__branch_id=branch_id)
+    if customer_id:
+        qs = qs.filter(orders__customer_id=customer_id)
+    if origin_city:
+        qs = qs.filter(origin__icontains=origin_city)
+    if destination_city:
+        qs = qs.filter(destination__icontains=destination_city)
+    if branch_id or customer_id:
+        qs = qs.distinct()
+
+    rows = []
+    for trip in qs:
+        orders = list(trip.orders.all())
+        if not orders:
+            continue   # a trip with nothing on it yet has no revenue to report
+        split = apportion_trip_cost(trip)
+        revenue = money(sum((money(o.total_amount) for o in orders), Decimal("0")))
+        cost = money(sum((row["total_cost"] for row in split["orders"].values()), Decimal("0")))
+        margin = money(revenue - cost)
+        distance = trip.passed_km or trip.running_km or 0
+        rows.append({
+            "id": trip.id, "number": trip.number, "status": trip.status,
+            "vehicle": trip.vehicle.registration_number, "driver": trip.driver.name,
+            "route": f"{trip.origin} → {trip.destination}", "order_count": len(orders),
+            "customers": sorted({o.customer.name for o in orders}),
+            "revenue": float(revenue), "fuel": float(split["shared_fuel"]),
+            "on_road": float(split["shared_expenses"]), "advance": float(money(trip.advance_amount)),
+            "cost": float(cost), "margin": float(margin),
+            "margin_percent": float(round(margin / revenue * 100, 2)) if revenue else 0.0,
+            "distance_km": distance,
+            "cost_per_km": float(money(cost / distance)) if distance else 0.0,
+            "revenue_per_km": float(money(revenue / distance)) if distance else 0.0,
+            "cost_basis": split["basis"], "created_at": trip.created_at.strftime("%Y-%m-%d"),
+        })
+
+    summary = {
+        "trip_count": len(rows), "total_revenue": sum(r["revenue"] for r in rows),
+        "total_cost": sum(r["cost"] for r in rows), "total_margin": sum(r["margin"] for r in rows),
+        "avg_margin_percent": float(round(sum(r["margin_percent"] for r in rows) / len(rows), 2)) if rows else 0.0,
+    }
+    return Response({"summary": summary, "trips": rows})
 
 
 @requires("reports.view")

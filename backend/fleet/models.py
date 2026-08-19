@@ -238,10 +238,17 @@ class Invoice(Timestamped):
     additional_charges=models.DecimalField(max_digits=12,decimal_places=2,default=0); tax_amount=models.DecimalField(max_digits=12,decimal_places=2,default=0)
     total_amount=models.DecimalField(max_digits=12,decimal_places=2,default=0); due_date=models.DateField(); status=models.CharField(max_length=20,default="draft")
     order=models.ForeignKey("Order",on_delete=models.SET_NULL,null=True,blank=True,related_name="invoices",
-                           help_text="The consignment this bills. Freight and GST are taken from it.")
+                           help_text="The consignment this bills. Freight and GST are taken from it. Null on a "
+                                     "consolidated invoice - see `orders` and `line_items` instead.")
     gst_percent=models.DecimalField(max_digits=5,decimal_places=2,default=0)
     reverse_charge=models.BooleanField(default=False,help_text="GST payable by the consignee under RCM")
     place_of_supply=models.CharField(max_length=80,blank=True)
+    orders=models.ManyToManyField("Order",blank=True,related_name="consolidated_invoices",
+                                  help_text="Every consignment this bill covers, for a consolidated invoice raised "
+                                            "across a trip - see fleet.billing.build_invoice_from_trip")
+    line_items=models.JSONField(default=list,blank=True,
+                                help_text="One row per consignment on a consolidated invoice - a snapshot at "
+                                          "issue time, the same way a lorry receipt's own fields are")
 
     def save(self,*args,**kwargs):
         # The total is always the sum of its parts; typing it by hand invites mistakes.

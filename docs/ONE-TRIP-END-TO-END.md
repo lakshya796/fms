@@ -285,19 +285,40 @@ raised; LR/invoice PDFs download correctly.
 ~500 lines (smaller than estimated — reusing the existing drawer, not building a new screen).
 Depends on 3.
 
-### Phase 5 — Consolidated billing and the trip P&L report
+### Phase 5 — Consolidated billing and the trip P&L report — ✅ shipped
 
 **Consolidated invoicing.** Today `build_invoice_from_order` bills one order
 (`fleet/billing.py:41`), so a five-order trip raises five invoices even for one customer on
-one lane. Add `build_invoice_from_trip(trip, customer=...)` grouping a trip's orders **per
-customer** into one invoice with one line per consignment, reusing the same POD gate and the
-same idempotency guarantee. Order-level invoicing stays — PTL customers genuinely want a bill
-per consignment; this is an additional path, not a replacement.
+one lane. `build_invoice_from_trip(trip)` groups a trip's orders **per customer** into one
+invoice with one line per consignment (`Invoice.orders` M2M + a `line_items` JSON snapshot,
+added alongside the existing singular `Invoice.order` rather than replacing it), reusing the
+same POD gate and the same idempotency guarantee. Order-level invoicing stays untouched — PTL
+customers genuinely want a bill per consignment; this is an additional path.
+`POST /trips/{id}/consolidate-invoice/` raises and posts to the ledger; a "Consolidate & raise
+invoices" button in the Trip Cockpit (Phase 4) surfaces it whenever a trip has more than one
+delivered, unbilled order — the smallest UI touchpoint that makes the capability reachable,
+short of the full report screen Phase 5 was never scoped to include.
 
 **`GET /reports/trip-profitability/`** — trip-wise P&L across a date range: revenue, fuel,
-on-road, advance, margin, ₹/km, filterable by vehicle, driver, branch, customer and lane.
-`accounting/views.py:285` already does exactly this shape for vehicles; this is the trip
-equivalent, which is what the business actually manages.
+on-road, advance, margin, ₹/km, filterable by vehicle, driver, branch, customer and lane (origin/
+destination city). `accounting/views.py:285` already does exactly this shape for vehicles; this
+is the trip equivalent, built on the same `apportion_trip_cost` the cockpit uses, so the two can
+never disagree.
+
+**Found in passing, twice.** Building this against the Cockpit surfaced that a consolidated
+invoice is invisible to it: the Cockpit, the order settlement sheet, and the `billable` order
+list all asked "has this order been invoiced" by checking only the singular `Invoice.order`
+reverse relation — never the new `Invoice.orders` M2M a consolidated bill uses. An order billed
+through the new path looked perpetually unbilled everywhere else, reproduced live in the
+browser (the "delivered order(s) have not been invoiced" blocker never cleared after raising a
+real invoice). Fixed with one `fleet.billing.order_invoice(order)` helper checking both
+relations, now the single source of truth every reader goes through — including
+`build_invoice_from_order`'s own idempotency check, so the two billing paths can never both bill
+the same order. Separately, the local dev database had not been migrated for the new fields
+(`manage.py test` always runs against a freshly-migrated database, so this was invisible to the
+test suite and only surfaced against the real, persistent dev database in the browser) - a
+reminder of why browser verification against persistent state catches a category of bug the
+suite structurally cannot.
 
 ~550 lines, ~12 tests. Depends on 2, 3.
 

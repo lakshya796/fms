@@ -1246,8 +1246,24 @@ function TripCockpitPanel({ trip, onAction, onOrderChanged }: { trip: any; onAct
     } finally { setBusyKey(""); }
   };
 
+  const consolidateInvoice = async () => {
+    setBusyKey("consolidate");
+    try {
+      const result = await fmsRequest<any>(`trips/${trip.id}/consolidate-invoice/`, { method: "POST", body: "{}" });
+      onAction(result.invoices.length
+        ? `${result.invoices.length} invoice(s) raised${result.skipped.length ? `, ${result.skipped.length} order(s) skipped` : ""}`
+        : "Nothing left to bill on this trip");
+      load();
+      onOrderChanged();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 150) : "Could not raise invoices", "warn");
+    } finally { setBusyKey(""); }
+  };
+
   if (loading) return <div className="record-section"><p className="eyebrow">TRIP COCKPIT</p><div className="data-state">Loading…</div></div>;
   if (!data) return null;
+
+  const unbilledOrders = data.orders.filter((row: any) => !row.invoice && row.status === "completed").length;
 
   return <div className="record-section">
     <p className="eyebrow">TRIP COCKPIT</p>
@@ -1265,6 +1281,10 @@ function TripCockpitPanel({ trip, onAction, onOrderChanged }: { trip: any; onAct
       Shared cost split by <strong>{data.costs.basis}</strong> across {data.orders.length} order{data.orders.length === 1 ? "" : "s"} —
       fuel {rupees(data.costs.shared_fuel)}, on-road {rupees(data.costs.shared_expenses)}.
     </p>
+    {unbilledOrders > 1 && <button className="secondary" style={{ marginTop: 10 }} disabled={busyKey === "consolidate"}
+             onClick={consolidateInvoice}>
+      {busyKey === "consolidate" ? "Raising…" : `Consolidate & raise invoices for ${unbilledOrders} delivered orders`}
+    </button>}
 
     <div className="table-wrap" style={{ marginTop: 12 }}>
       <table>
