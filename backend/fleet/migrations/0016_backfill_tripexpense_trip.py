@@ -24,7 +24,7 @@ def noop(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("fleet", "0013_vendorlanerate"),
+        ("fleet", "0015_indent_delivery_access_indent_expected_delivery_at_and_more"),
     ]
 
     operations = [

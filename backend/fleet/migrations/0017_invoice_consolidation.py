@@ -7,7 +7,7 @@ import django.db.models.deletion
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("fleet", "0014_backfill_tripexpense_trip"),
+        ("fleet", "0016_backfill_tripexpense_trip"),
     ]
 
     operations = [
