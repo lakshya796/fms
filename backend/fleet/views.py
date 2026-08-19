@@ -384,7 +384,10 @@ class TripViewSet(viewsets.ModelViewSet):
         for order in orders:
             lr = order.lorry_receipt
             invoice = order.invoices.order_by("created_at").first()
-            captured, verified = order_pod_state(order)
+            proofs = list(order.proofs.all())
+            captured = any(p.captured_at for p in proofs)
+            verified = any(p.status == "verified" for p in proofs)
+            pending_proof = next((p for p in proofs if p.status == "submitted"), None)
             cost_row = split["orders"].get(order.id, {"fuel": Decimal("0"), "shared_expenses": Decimal("0"),
                                                        "attributed_expenses": Decimal("0"), "total_cost": Decimal("0")})
             revenue = money(order.total_amount)
@@ -398,13 +401,14 @@ class TripViewSet(viewsets.ModelViewSet):
                         "total": float(cost_row["total_cost"])},
                 "profit": float(money(revenue - cost_row["total_cost"])),
                 "lorry_receipt": {"id": lr.id, "number": lr.number, "status": lr.status} if lr else None,
-                "pod": {"captured": captured, "verified": verified, "required": order.pod_required},
+                "pod": {"captured": captured, "verified": verified, "required": order.pod_required,
+                       "pending_proof_id": pending_proof.id if pending_proof else None},
                 "invoice": {"id": invoice.id, "number": invoice.number, "status": invoice.status,
                            "total_amount": float(invoice.total_amount)} if invoice else None,
             })
             if lr:
                 documents.append({"type": "lorry_receipt", "label": lr.number, "order": order.number,
-                                  "url": f"/api/v1/lorry-receipts/{lr.id}/pdf/"})
+                                  "url": f"lorry-receipts/{lr.id}/pdf/"})
             else:
                 unposted_lr += 1
             for proof in order.proofs.all():
@@ -413,7 +417,7 @@ class TripViewSet(viewsets.ModelViewSet):
                                       "url": proof.file_url})
             if invoice:
                 documents.append({"type": "invoice", "label": invoice.number, "order": order.number,
-                                  "url": f"/api/v1/invoices/{invoice.id}/pdf/"})
+                                  "url": f"invoices/{invoice.id}/pdf/"})
             elif order.status == "completed":
                 unbilled += 1
             if order.pod_required and not verified and order.status != "cancelled":
@@ -435,17 +439,28 @@ class TripViewSet(viewsets.ModelViewSet):
         if unapproved:
             blockers.append(f"₹{unapproved:,.2f} of expenses are awaiting approval.")
 
+        # The all-in figures - what the cockpit is for - summed from the same
+        # per-order apportionment above, so fuel is always in the total cost.
+        total_revenue = money(sum((row["revenue"] for row in order_rows), 0))
+        total_cost = money(sum((row["cost"]["total"] for row in order_rows), 0))
+        total_profit = money(total_revenue - total_cost)
+
+        # trip.settlement_summary() is a narrower, pre-existing figure: the
+        # driver's cash-advance reconciliation. Its `total_exp` is TripExpense
+        # only - fuel is deliberately excluded there, since it may be paid on
+        # a company fuel card rather than out of the driver's own advance -
+        # so it is not the all-in P&L above and the two will not match.
         summary = trip.settlement_summary()
         summary["cost_basis"] = split["basis"]
-        total_revenue = money(sum((row["revenue"] for row in order_rows), 0))
 
         return Response({
             "trip": self.get_serializer(trip).data,
             "orders": order_rows,
             "costs": {"shared_fuel": float(split["shared_fuel"]), "shared_expenses": float(split["shared_expenses"]),
                      "shared_total": float(split["shared_total"]), "basis": split["basis"],
-                     "advance_amount": float(money(trip.advance_amount))},
+                     "advance_amount": float(money(trip.advance_amount)), "total_cost": float(total_cost)},
             "revenue": {"total": float(total_revenue)},
+            "profit": {"total": float(total_profit)},
             "pnl": summary,
             "documents": documents,
             "blockers": blockers,

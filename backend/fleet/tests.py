@@ -993,6 +993,25 @@ class TripCockpitTests(BaseFleetOpsTest):
         self.assertEqual(cockpit["costs"]["basis"], "distance")
         self.assertEqual(cockpit["pnl"]["cost_basis"], "distance")
 
+    def test_cockpit_headline_profit_includes_fuel_unlike_settlement_summary(self):
+        """Trip.settlement_summary()'s trip_profit deliberately excludes fuel -
+        it is a driver cash-advance reconciliation, since fuel may be paid on
+        a company card rather than out of the driver's own advance - so it
+        must never be the cockpit's own headline profit figure, or a trip's
+        true cost reads as roughly its on-road expense alone."""
+        order = self._order(total_amount=11550, freight_amount=11550)
+        trip = order.ensure_trip()
+        FuelEntry.objects.create(vehicle=self.vehicle, trip=trip, volume_litres=60, rate_per_litre=98, amount=5880)
+        TripExpense.objects.create(trip=trip, vehicle=self.vehicle, category="toll", amount=450, status="approved")
+
+        response = self.client.get(f"/api/v1/trips/{trip.id}/cockpit/")
+        # settlement_summary()'s own trip_profit ignores the 5,880 of fuel entirely.
+        self.assertEqual(response.data["pnl"]["total_exp"], 450.0)
+        self.assertEqual(response.data["pnl"]["trip_profit"], 11550.0 - 450.0)
+        # The cockpit's own headline figures must not repeat that omission.
+        self.assertEqual(response.data["costs"]["total_cost"], 5880.0 + 450.0)
+        self.assertEqual(response.data["profit"]["total"], 11550.0 - 5880.0 - 450.0)
+
     def test_cockpit_blockers_report_missing_lr_unverified_pod_and_unbilled_orders(self):
         order = self._order(pod_required=True)
         order.ensure_trip()
@@ -1033,6 +1052,17 @@ class TripCockpitTests(BaseFleetOpsTest):
         response = self.client.get(f"/api/v1/trips/{trip.id}/cockpit/")
         doc_types = {doc["type"] for doc in response.data["documents"]}
         self.assertIn("lorry_receipt", doc_types)
+
+    def test_cockpit_surfaces_a_submitted_pod_awaiting_office_review(self):
+        order = self._order()
+        trip = order.ensure_trip()
+        proof = ProofOfDelivery.objects.create(order=order, status="submitted", captured_at=timezone.now(),
+                                               receiver_name="Store manager")
+        response = self.client.get(f"/api/v1/trips/{trip.id}/cockpit/")
+        row = next(r for r in response.data["orders"] if r["number"] == order.number)
+        self.assertEqual(row["pod"]["pending_proof_id"], proof.id)
+        self.assertTrue(row["pod"]["captured"])
+        self.assertFalse(row["pod"]["verified"])
 
 
 class ComplianceTests(BaseFleetOpsTest):

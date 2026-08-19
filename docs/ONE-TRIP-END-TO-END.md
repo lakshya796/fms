@@ -249,17 +249,41 @@ with each other again.
 
 ~300 lines, ~8 tests, plus 1 pre-existing bug fixed. Depends on 1, 2.
 
-### Phase 4 — The Trip Cockpit screen
+### Phase 4 — The Trip Cockpit screen — ✅ shipped
 
-One screen replacing the eight-screen tour: trip header, the order/LR/POD/invoice table, the
-cost stack, the P&L strip, the blocker checklist, and the actions inline — generate LR, log
-expense, verify POD, raise invoice — each hitting the endpoint that already exists, without
-leaving the page.
+One panel replacing the eight-screen tour: the order/LR/POD/invoice table, the cost stack,
+the P&L strip, the blocker checklist, and the actions inline — generate LR, verify POD,
+raise invoice — each hitting the endpoint that already exists, without leaving the page.
 
-Add it to `navGroups` **and its routing branch** (`app/page.tsx`) — noting that merge-dropped
-routing branch is exactly the bug that took the Scenario Profiles screen down at `ca45de3`.
+**Not a new nav entry, on inspection.** The trip detail drawer that `FleetOpsView`'s
+"Dispatch" board already opens per trip is the natural home for this — it already fetches
+the trip and renders a `TripSettlementPanel` inside the same drawer. Adding a second
+top-level nav entry for what is fundamentally a per-trip detail view would have duplicated
+that fetch and, per the plan's own warning above, been exactly the kind of addition a future
+merge could silently drop. `TripCockpitPanel` sits in the existing drawer instead, immediately
+above `TripSettlementPanel`.
 
-~700 lines. Depends on 3.
+**Found in passing, twice more.** Building the P&L strip against the real seeded data (a
+₹6,630-cost, ₹4,920-profit consolidated trip) surfaced two more instances of this plan's
+central defect:
+
+- `Trip.settlement_summary()`'s `trip_profit` deliberately excludes fuel (it is a driver
+  cash-advance reconciliation — fuel may be paid on a company card, not the driver's own
+  advance) — reported as-is, the cockpit's headline "Trip profit" would have read ₹10,800
+  instead of the true ₹4,920, again just from omitting the fuel bill. Fixed by giving the
+  cockpit its own all-in `costs.total_cost` / `profit.total`, summed from the per-order
+  apportionment that already includes fuel, and relabelling `TripSettlementPanel`'s figures
+  ("Margin (excl. fuel)") so the same drawer can never show two numbers both called "Trip
+  profit" that disagree by more than double.
+- A pre-existing React key warning was found in the same drawer's dispatch-board rendering,
+  unrelated to this plan's scope (it fires before any trip is even opened) — noted, not fixed.
+
+7 backend cockpit tests → 8 (one added for the fuel-omission regression); verified in a real
+browser end to end: blockers clear live as LRs are generated, PODs verified and invoices
+raised; LR/invoice PDFs download correctly.
+
+~500 lines (smaller than estimated — reusing the existing drawer, not building a new screen).
+Depends on 3.
 
 ### Phase 5 — Consolidated billing and the trip P&L report
 
