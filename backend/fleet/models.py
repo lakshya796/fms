@@ -828,7 +828,19 @@ class FuelEntry(Timestamped):
 
 
 class TripExpense(Timestamped):
-    """On-road trip cost such as toll, bhatta, loading or an RTO fine."""
+    """On-road trip cost such as toll, bhatta, loading or an RTO fine.
+
+    `trip` is the authority for what a cost belongs to when one exists; `order`
+    is an optional narrowing meaning "this cost belongs to that one consignment
+    specifically" (a drop-specific unloading charge, say) rather than the trip
+    as a whole. An expense with only `order` set is legal - `save()` below
+    fills `trip` in from `order.trip` whenever one exists, so it is never lost
+    from the trip's own totals (`Trip.settlement_summary`). An expense with
+    neither `trip` nor `order` set is also legal and deliberately so: a
+    vehicle-level cost (an RTO fine, a permit) that never belonged to any one
+    trip, which `fleet.billing.running_cost` reads by `vehicle` alone to learn
+    a fleet's real cost per km. See docs/ONE-TRIP-END-TO-END.md §3.3/§5 Phase 2.
+    """
     trip = models.ForeignKey(Trip, on_delete=models.CASCADE, null=True, blank=True, related_name="expenses")
     order = models.ForeignKey(Order, on_delete=models.SET_NULL, null=True, blank=True, related_name="expenses")
     vehicle = models.ForeignKey(Vehicle, on_delete=models.SET_NULL, null=True, blank=True, related_name="expenses")
@@ -844,6 +856,11 @@ class TripExpense(Timestamped):
 
     class Meta:
         ordering = ["-expense_date", "-id"]
+
+    def save(self, *args, **kwargs):
+        if not self.trip_id and self.order_id and self.order.trip_id:
+            self.trip_id = self.order.trip_id
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.category} {self.amount}"

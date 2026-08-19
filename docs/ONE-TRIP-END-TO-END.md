@@ -161,12 +161,14 @@ the direct consequence.
 
 ## 5. Phases
 
-### Phase 1 — The LR stops being an island
+### Phase 1 — The LR stops being an island — ✅ shipped
 
-**Migration.** Add `LorryReceipt.order` (FK, nullable, `related_name="lorry_receipts"`) so
-the LR points back at what it documents. Keep the existing free-text fields — an LR is a
-legal document that must preserve what was *printed*, even if the order is edited later —
-but stop making a human type them.
+**No migration needed, on inspection.** §3.1 already names the fix: `Order.lorry_receipt`
+exists as a nullable FK; nothing ever populated it. Adding a second FK the other way, as
+originally drafted here, would have been redundant with a field already on the model — the
+gap was never the schema, only the missing write path. Kept the existing free-text fields
+on `LorryReceipt` — an LR is a legal document that must preserve what was *printed*, even if
+the order is edited later.
 
 **`fleet/lr.py` — `build_lr_from_order(order)`**, mirroring `build_invoice_from_order`
 (`fleet/billing.py:41`) exactly: idempotent (a second call returns the existing LR rather
@@ -183,14 +185,18 @@ it from `dispatch_trip` for every order on the trip that lacks one.
 
 ~350 lines, ~10 tests. Depends on nothing.
 
-### Phase 2 — One cost, apportioned honestly
+### Phase 2 — One cost, apportioned honestly — ✅ shipped
 
 This is the highest-value phase and the only one that fixes a wrong number.
 
-**Settle the keying rule (§3.3).** Document and enforce: **`TripExpense.trip` is the
-authority; `order` is an optional narrowing** meaning "this cost belongs to that one
-consignment specifically" (a drop-specific unloading charge, say). Add a `clean()`/constraint
-rejecting the neither-set state, and backfill `trip` from `order.trip` where it is null.
+**Settle the keying rule (§3.3), corrected on inspection.** `TripExpense.trip` is the
+authority when a trip exists; `order` is an optional narrowing meaning "this cost belongs
+to that one consignment specifically." `TripExpense.save()` now backfills `trip` from
+`order.trip` whenever one exists, and a data migration catches up existing rows. A hard
+constraint rejecting "neither set" was drafted, then dropped once the tests it broke showed
+why: `fleet.billing.running_cost` deliberately reads `TripExpense` by `vehicle` alone for
+costs that never belonged to any one trip (an RTO fine, a permit) — a real, load-bearing
+pattern the original wording here would have outlawed.
 
 **`fleet/costing.py` — `apportion_trip_cost(trip)`**, returning each order's share of the
 trip's shared cost. Basis, in order of preference, each degrading explicitly and reporting

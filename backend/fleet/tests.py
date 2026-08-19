@@ -14,9 +14,9 @@ from rest_framework.test import APIClient
 from accounting.models import JournalEntry
 from iam.models import OutboundMessage
 from . import geotrackers
-from .models import (ComplianceDocument, Customer, Driver, Fleet, FuelEntry, Invoice, Issue, MaintenanceSchedule, Order,
-                     Place, ProofOfDelivery, ServiceArea, ServiceRate, Trip, TripExpense, Vehicle, VehicleHire, Vendor,
-                     Waypoint, Zone, haversine_km)
+from .models import (ComplianceDocument, Customer, Driver, Fleet, FuelEntry, Invoice, Issue, LorryReceipt,
+                     MaintenanceSchedule, Order, Place, ProofOfDelivery, ServiceArea, ServiceRate, Trip, TripExpense,
+                     Vehicle, VehicleHire, Vendor, Waypoint, Zone, haversine_km)
 
 
 class BaseFleetOpsTest(TestCase):
@@ -706,6 +706,250 @@ class FuelAndExpenseTests(BaseFleetOpsTest):
         self.assertEqual(summary.data[0], {"category": "toll", "total": 3200.0, "entries": 1})
         approved = self.client.post(f"/api/v1/trip-expenses/{toll.id}/approve/")
         self.assertEqual(approved.data["status"], "approved")
+
+
+class TripCostApportionmentTests(BaseFleetOpsTest):
+    """docs/ONE-TRIP-END-TO-END.md §3.2/§5 Phase 2: a trip's shared diesel and
+    on-road cost, split fairly across the orders that actually rode on it,
+    instead of the whole trip's cost being charged again to every order."""
+
+    _order_counter = 0
+
+    def _order(self, distance_km, weight_kg, **overrides):
+        TripCostApportionmentTests._order_counter += 1
+        defaults = dict(number=f"ORD-APRT-{TripCostApportionmentTests._order_counter}",
+                        customer=self.customer, pickup=self.pickup, dropoff=self.dropoff,
+                        distance_km=distance_km, weight_kg=weight_kg, total_amount=10000, status="created",
+                        driver=self.driver, vehicle=self.vehicle)
+        defaults.update(overrides)
+        return Order.objects.create(**defaults)
+
+    def test_apportion_splits_shared_cost_by_distance_proportionally(self):
+        o1 = self._order(distance_km=100, weight_kg=1000)
+        trip = o1.ensure_trip()
+        o2 = self._order(distance_km=300, weight_kg=1000, trip=trip)
+        FuelEntry.objects.create(vehicle=self.vehicle, trip=trip, volume_litres=100, rate_per_litre=100, amount=10000)
+
+        from fleet.costing import apportion_trip_cost
+        split = apportion_trip_cost(trip)
+        self.assertEqual(split["basis"], "distance")
+        # o1 is 100/400 of the distance, o2 is 300/400 - fuel splits the same way.
+        self.assertEqual(split["orders"][o1.id]["fuel"], Decimal("2500.00"))
+        self.assertEqual(split["orders"][o2.id]["fuel"], Decimal("7500.00"))
+
+    def test_apportion_falls_back_to_weight_when_no_order_has_a_distance(self):
+        o1 = self._order(distance_km=0, weight_kg=1000)
+        trip = o1.ensure_trip()
+        o2 = self._order(distance_km=0, weight_kg=3000, trip=trip)
+        FuelEntry.objects.create(vehicle=self.vehicle, trip=trip, volume_litres=100, rate_per_litre=100, amount=8000)
+
+        from fleet.costing import apportion_trip_cost
+        split = apportion_trip_cost(trip)
+        self.assertEqual(split["basis"], "weight")
+        self.assertEqual(split["orders"][o1.id]["fuel"], Decimal("2000.00"))   # 1000/4000
+        self.assertEqual(split["orders"][o2.id]["fuel"], Decimal("6000.00"))   # 3000/4000
+
+    def test_apportion_falls_back_to_an_equal_split_when_neither_is_known(self):
+        o1 = self._order(distance_km=0, weight_kg=0)
+        trip = o1.ensure_trip()
+        o2 = self._order(distance_km=0, weight_kg=0, trip=trip)
+        FuelEntry.objects.create(vehicle=self.vehicle, trip=trip, volume_litres=100, rate_per_litre=100, amount=9000)
+
+        from fleet.costing import apportion_trip_cost
+        split = apportion_trip_cost(trip)
+        self.assertEqual(split["basis"], "equal")
+        self.assertEqual(split["orders"][o1.id]["fuel"], Decimal("4500.00"))
+        self.assertEqual(split["orders"][o2.id]["fuel"], Decimal("4500.00"))
+
+    def test_a_trip_keyed_expense_is_split_across_every_order_on_the_trip(self):
+        """Before apportionment existed, an expense booked against only the
+        trip (exactly what the trip-settlement upsert does) never appeared
+        against any order's P&L at all."""
+        o1 = self._order(distance_km=100, weight_kg=1000)
+        trip = o1.ensure_trip()
+        o2 = self._order(distance_km=100, weight_kg=1000, trip=trip)
+        TripExpense.objects.create(trip=trip, vehicle=self.vehicle, category="toll", amount=1000)
+
+        from fleet.costing import apportion_trip_cost
+        split = apportion_trip_cost(trip)
+        self.assertEqual(split["orders"][o1.id]["shared_expenses"], Decimal("500.00"))
+        self.assertEqual(split["orders"][o2.id]["shared_expenses"], Decimal("500.00"))
+
+    def test_an_order_attributed_expense_is_charged_to_that_order_alone(self):
+        o1 = self._order(distance_km=100, weight_kg=1000)
+        trip = o1.ensure_trip()
+        o2 = self._order(distance_km=100, weight_kg=1000, trip=trip)
+        TripExpense.objects.create(trip=trip, order=o1, vehicle=self.vehicle, category="unloading", amount=600)
+
+        from fleet.costing import apportion_trip_cost
+        split = apportion_trip_cost(trip)
+        self.assertEqual(split["orders"][o1.id]["attributed_expenses"], Decimal("600.00"))
+        self.assertEqual(split["orders"][o1.id]["shared_expenses"], Decimal("0.00"))
+        self.assertEqual(split["orders"][o2.id]["attributed_expenses"], Decimal("0.00"))
+
+    def test_reconciliation_apportioned_costs_sum_exactly_to_the_trips_total_cost(self):
+        """The invariant this module exists to guarantee: split three ways (an
+        amount that does not divide evenly), the parts must still sum to
+        the whole to the paisa - this is what stops a consolidated trip's
+        cost from quietly not adding up across its own orders."""
+        o1 = self._order(distance_km=100, weight_kg=1000)
+        trip = o1.ensure_trip()
+        o2 = self._order(distance_km=137, weight_kg=1000, trip=trip)
+        o3 = self._order(distance_km=253, weight_kg=1000, trip=trip)
+        FuelEntry.objects.create(vehicle=self.vehicle, trip=trip, volume_litres=Decimal("33.33"),
+                                 rate_per_litre=Decimal("97.77"), amount=Decimal("3258.65"))
+        TripExpense.objects.create(trip=trip, vehicle=self.vehicle, category="toll", amount=Decimal("777.77"))
+        TripExpense.objects.create(trip=trip, order=o2, vehicle=self.vehicle, category="unloading", amount=Decimal("311.11"))
+
+        from fleet.costing import apportion_trip_cost
+        split = apportion_trip_cost(trip)
+        trip_total_cost = split["shared_total"] + sum(
+            (row["attributed_expenses"] for row in split["orders"].values()), Decimal("0"))
+        sum_of_orders = sum((row["total_cost"] for row in split["orders"].values()), Decimal("0"))
+        self.assertEqual(sum_of_orders, trip_total_cost)
+        for order in (o1, o2, o3):
+            self.assertIn(order.id, split["orders"])
+
+    def test_order_profitability_reports_the_apportioned_share_not_the_whole_trip(self):
+        """The regression this whole module fixes: two orders on one
+        consolidated trip must not each be charged the trip's entire fuel
+        bill - docs/ONE-TRIP-END-TO-END.md §3.2 measured this at a 1.82x
+        over-count with a legitimate trip margin reported as exactly zero."""
+        o1 = self._order(distance_km=100, weight_kg=1000)
+        trip = o1.ensure_trip()
+        o2 = self._order(distance_km=100, weight_kg=1000, trip=trip)
+        FuelEntry.objects.create(vehicle=self.vehicle, trip=trip, volume_litres=100, rate_per_litre=100, amount=10000)
+        TripExpense.objects.create(trip=trip, vehicle=self.vehicle, category="toll", amount=1000)
+
+        r1 = self.client.get(f"/api/v1/orders/{o1.id}/profitability/")
+        r2 = self.client.get(f"/api/v1/orders/{o2.id}/profitability/")
+        self.assertEqual(r1.data["fuel"], 5000.0)
+        self.assertEqual(r2.data["fuel"], 5000.0)
+        self.assertEqual(r1.data["trip_expenses"], 500.0)
+        self.assertEqual(r1.data["cost_basis"], "distance")
+        # Two 10,000 orders, 11,000 of real trip cost -> 9,000 of real margin,
+        # not the zero profit the un-apportioned version reported on every order.
+        self.assertEqual(r1.data["total_cost"] + r2.data["total_cost"], 11000.0)
+        self.assertGreater(r1.data["profit"] + r2.data["profit"], 0)
+
+    def test_order_with_no_trip_falls_back_to_its_own_directly_booked_expenses(self):
+        order = self._order(distance_km=100, weight_kg=1000, driver=None, vehicle=None)
+        TripExpense.objects.create(order=order, vehicle=self.vehicle, category="toll", amount=400)
+        response = self.client.get(f"/api/v1/orders/{order.id}/profitability/")
+        self.assertEqual(response.data["fuel"], 0.0)
+        self.assertEqual(response.data["trip_expenses"], 400.0)
+        self.assertEqual(response.data["cost_basis"], "order_only")
+
+    def test_tripexpense_save_backfills_trip_from_the_orders_trip(self):
+        """An expense written with only `order` set must not go missing from
+        the trip's own totals (`Trip.settlement_summary` aggregates
+        `self.expenses`, i.e. rows with `trip` set)."""
+        o1 = self._order(distance_km=100, weight_kg=1000)
+        trip = o1.ensure_trip()
+        expense = TripExpense.objects.create(order=o1, vehicle=self.vehicle, category="toll", amount=200)
+        self.assertEqual(expense.trip_id, trip.id)
+
+    def test_a_vehicle_only_expense_with_no_trip_or_order_is_still_legal(self):
+        """A cost that never belonged to any one trip - an RTO fine, a permit -
+        stays valid with neither FK set; fleet.billing.running_cost reads
+        these by vehicle alone to learn a fleet's real cost per km."""
+        expense = TripExpense.objects.create(vehicle=self.vehicle, category="fine", amount=500)
+        self.assertIsNone(expense.trip_id)
+        self.assertIsNone(expense.order_id)
+
+
+class LorryReceiptGenerationTests(BaseFleetOpsTest):
+    """docs/ONE-TRIP-END-TO-END.md §3.1/§5 Phase 1: the LR generated from the
+    order it documents, instead of `Order.lorry_receipt` staying permanently
+    null while an operator re-types the same details into a separate form."""
+
+    def _order(self, **overrides):
+        defaults = dict(number="ORD-LR-1", customer=self.customer, pickup=self.pickup, dropoff=self.dropoff,
+                        payload_description="Packaged food cartons", weight_kg=12400, packages=480,
+                        eway_bill_number="EWB1234567890", freight_amount=9700, status="created")
+        defaults.update(overrides)
+        return Order.objects.create(**defaults)
+
+    def test_generate_lr_creates_one_from_the_order_and_links_it_back(self):
+        order = self._order()
+        response = self.client.post(f"/api/v1/orders/{order.id}/generate-lr/")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertTrue(response.data["created"])
+        lr = response.data["lorry_receipt"]
+        self.assertEqual(lr["material"], "Packaged food cartons")
+        self.assertEqual(float(lr["weight_kg"]), 12400.0)
+        self.assertEqual(lr["packages"], 480)
+        self.assertEqual(lr["eway_bill_number"], "EWB1234567890")
+        self.assertEqual(float(lr["freight_amount"]), 9700.0)
+        self.assertEqual(lr["origin"], "Bhiwandi")
+        self.assertEqual(lr["destination"], "Chakan")
+        order.refresh_from_db()
+        self.assertEqual(order.lorry_receipt_id, lr["id"])
+
+    def test_consignor_and_consignee_fall_back_to_customer_and_dropoff_name(self):
+        """Neither place has a contact name in the fixture, so the LR falls
+        back to the order's customer (who is sending) and the dropoff place's
+        own name (who is receiving)."""
+        order = self._order()
+        from fleet.lr import build_lr_from_order
+        lr, _ = build_lr_from_order(order)
+        self.assertEqual(lr.consignor, self.customer.name)
+        self.assertEqual(lr.consignee, self.dropoff.name)
+
+    def test_a_places_own_contact_name_wins_over_the_fallback(self):
+        self.pickup.contact_name = "Bhiwandi Gate Security"; self.pickup.save()
+        self.dropoff.contact_name = "Chakan Store Manager"; self.dropoff.save()
+        order = self._order()
+        from fleet.lr import build_lr_from_order
+        lr, _ = build_lr_from_order(order)
+        self.assertEqual(lr.consignor, "Bhiwandi Gate Security")
+        self.assertEqual(lr.consignee, "Chakan Store Manager")
+
+    def test_generate_lr_is_idempotent(self):
+        order = self._order()
+        first = self.client.post(f"/api/v1/orders/{order.id}/generate-lr/")
+        second = self.client.post(f"/api/v1/orders/{order.id}/generate-lr/")
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        self.assertFalse(second.data["created"])
+        self.assertEqual(first.data["lorry_receipt"]["id"], second.data["lorry_receipt"]["id"])
+        self.assertEqual(LorryReceipt.objects.filter(number=first.data["lorry_receipt"]["number"]).count(), 1)
+
+    def test_generating_the_lr_adds_it_to_the_orders_trip(self):
+        order = self._order(driver=self.driver, vehicle=self.vehicle)
+        trip = order.ensure_trip()
+        response = self.client.post(f"/api/v1/orders/{order.id}/generate-lr/")
+        lr_id = response.data["lorry_receipt"]["id"]
+        self.assertIn(lr_id, trip.lorry_receipts.values_list("id", flat=True))
+
+    def test_dispatching_a_trip_auto_issues_an_lr_for_every_order_missing_one(self):
+        o1 = self._order(number="ORD-LR-D1", driver=self.driver, vehicle=self.vehicle)
+        trip = o1.ensure_trip()
+        o2 = self._order(number="ORD-LR-D2", driver=self.driver, vehicle=self.vehicle, trip=trip)
+        # o3 already has one - dispatch must not touch it or issue a second.
+        o3 = self._order(number="ORD-LR-D3", driver=self.driver, vehicle=self.vehicle, trip=trip)
+        from fleet.lr import build_lr_from_order
+        existing_lr, _ = build_lr_from_order(o3)
+
+        response = self.client.post(f"/api/v1/trips/{trip.id}/dispatch/")
+        self.assertEqual(response.status_code, 200, response.data)
+        for order in (o1, o2, o3):
+            order.refresh_from_db()
+            self.assertIsNotNone(order.lorry_receipt_id)
+        self.assertEqual(o3.lorry_receipt_id, existing_lr.id)
+        self.assertEqual(LorryReceipt.objects.filter(pk__in=[o1.lorry_receipt_id, o2.lorry_receipt_id]).count(), 2)
+        # dispatch also advances every LR now linked to the trip to "dispatched".
+        for order in (o1, o2, o3):
+            self.assertEqual(order.lorry_receipt.status, "dispatched")
+
+    def test_lr_pdf_downloads_for_a_generated_receipt(self):
+        order = self._order()
+        response = self.client.post(f"/api/v1/orders/{order.id}/generate-lr/")
+        lr_id = response.data["lorry_receipt"]["id"]
+        pdf = self.client.get(f"/api/v1/lorry-receipts/{lr_id}/pdf/")
+        self.assertEqual(pdf.status_code, 200)
+        self.assertEqual(pdf["Content-Type"], "application/pdf")
+        self.assertGreater(len(pdf.content), 500)
 
 
 class ComplianceTests(BaseFleetOpsTest):
