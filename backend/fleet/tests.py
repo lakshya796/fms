@@ -983,7 +983,31 @@ class LorryReceiptGenerationTests(BaseFleetOpsTest):
         pdf = self.client.get(f"/api/v1/lorry-receipts/{lr_id}/pdf/")
         self.assertEqual(pdf.status_code, 200)
         self.assertEqual(pdf["Content-Type"], "application/pdf")
-        self.assertGreater(len(pdf.content), 500)
+        self.assertTrue(pdf.content.startswith(b"%PDF-"))
+        self.assertGreater(len(pdf.content), 3000)
+
+    def test_lr_pdf_uses_the_landscape_way_bill_format(self):
+        order = self._order(
+            vehicle=self.vehicle,
+            declared_value=250000,
+            volume_cbm=Decimal("18.50"),
+            other_charges=500,
+            tax_amount=1836,
+            total_amount=12036,
+            payment_mode="tbb",
+            special_instructions="Keep dry and call before delivery.",
+        )
+        response = self.client.post(f"/api/v1/orders/{order.id}/generate-lr/")
+        lr = LorryReceipt.objects.get(pk=response.data["lorry_receipt"]["id"])
+
+        from fleet.lr_pdf import _amount_words, render_lr_pdf
+
+        pdf = render_lr_pdf(lr)
+        self.assertTrue(pdf.startswith(b"%PDF-"))
+        # ReportLab records the A4 landscape width in the page MediaBox.
+        self.assertIn(b"841.8898", pdf)
+        self.assertEqual(_amount_words(Decimal("12036.10")),
+                         "Rupees Twelve Thousand Thirty Six and Paise Ten Only")
 
 
 class TripCreationFromOrdersTests(BaseFleetOpsTest):
