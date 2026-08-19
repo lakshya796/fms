@@ -258,6 +258,41 @@ class TripViewSet(viewsets.ModelViewSet):
     ).all().order_by("-created_at")
     serializer_class = TripSerializer
 
+    @action(detail=False, methods=["post"], url_path="create-from-orders")
+    @transaction.atomic
+    def create_from_orders(self, request):
+        """Book a trip straight from a set of selected orders - one call instead of
+        creating the trip, then linking each order via add-order in turn."""
+        from .models import Order as _Order
+        from rest_framework.exceptions import ValidationError as _VE
+        order_ids = request.data.get("orders") or []
+        if not order_ids:
+            raise _VE("Select at least one order.")
+        vehicle_id = request.data.get("vehicle")
+        driver_id = request.data.get("driver")
+        if not vehicle_id or not driver_id:
+            raise _VE("Pick a vehicle and a driver.")
+        orders = list(_Order.objects.select_related("pickup", "dropoff").filter(pk__in=order_ids))
+        found_ids = {order.id for order in orders}
+        missing = [str(order_id) for order_id in order_ids if int(order_id) not in found_ids]
+        if missing:
+            raise _VE(f"Order(s) not found: {', '.join(missing)}.")
+        already_linked = [order.number for order in orders if order.trip_id]
+        if already_linked:
+            raise _VE(f"Already on a trip: {', '.join(already_linked)}. Remove them first.")
+        first, last = orders[0], orders[-1]
+        trip = Trip.objects.create(
+            number=request.data.get("number") or ("TRP-" + timezone.now().strftime("%y%m%d") + uuid4().hex[:5].upper()),
+            vehicle_id=vehicle_id, driver_id=driver_id,
+            origin=request.data.get("origin") or (first.pickup.city or first.pickup.name),
+            destination=request.data.get("destination") or (last.dropoff.city or last.dropoff.name),
+            planned_departure=request.data.get("planned_departure") or timezone.now(),
+            advance_amount=request.data.get("advance_amount") or 0,
+            estimated_cost=request.data.get("estimated_cost") or 0,
+        )
+        _Order.objects.filter(pk__in=found_ids).update(trip=trip)
+        return Response(self.get_serializer(trip).data, status=http_status.HTTP_201_CREATED)
+
     @action(detail=True, methods=["post"], url_path="add-order")
     @transaction.atomic
     def add_order(self, request, pk=None):

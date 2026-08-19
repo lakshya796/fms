@@ -986,6 +986,56 @@ class LorryReceiptGenerationTests(BaseFleetOpsTest):
         self.assertGreater(len(pdf.content), 500)
 
 
+class TripCreationFromOrdersTests(BaseFleetOpsTest):
+    """The Orders screen lets an operator pick several orders and book a trip
+    for them in one call, instead of creating the trip and then linking each
+    order in turn via add-order."""
+
+    def _order(self, **overrides):
+        defaults = dict(number="ORD-CFO-1", customer=self.customer, pickup=self.pickup, dropoff=self.dropoff,
+                        payload_description="Packaged food cartons", weight_kg=12400, packages=480,
+                        freight_amount=9700, status="created")
+        defaults.update(overrides)
+        return Order.objects.create(**defaults)
+
+    def test_creates_a_trip_and_links_every_selected_order(self):
+        o1 = self._order(number="ORD-CFO-1")
+        o2 = self._order(number="ORD-CFO-2")
+
+        response = self.client.post("/api/v1/trips/create-from-orders/", {
+            "orders": [o1.id, o2.id], "vehicle": self.vehicle.id, "driver": self.driver.id,
+        }, format="json")
+
+        self.assertEqual(response.status_code, 201, response.data)
+        trip_id = response.data["id"]
+        o1.refresh_from_db(); o2.refresh_from_db()
+        self.assertEqual(o1.trip_id, trip_id)
+        self.assertEqual(o2.trip_id, trip_id)
+        self.assertEqual(response.data["origin"], "Bhiwandi")
+        self.assertEqual(response.data["destination"], "Chakan")
+
+    def test_rejects_an_order_already_on_another_trip(self):
+        o1 = self._order(number="ORD-CFO-3", driver=self.driver, vehicle=self.vehicle)
+        o1.ensure_trip()
+
+        response = self.client.post("/api/v1/trips/create-from-orders/", {
+            "orders": [o1.id], "vehicle": self.vehicle.id, "driver": self.driver.id,
+        }, format="json")
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_requires_a_vehicle_and_a_driver(self):
+        o1 = self._order(number="ORD-CFO-4")
+        response = self.client.post("/api/v1/trips/create-from-orders/", {"orders": [o1.id]}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    def test_requires_at_least_one_order(self):
+        response = self.client.post("/api/v1/trips/create-from-orders/", {
+            "orders": [], "vehicle": self.vehicle.id, "driver": self.driver.id,
+        }, format="json")
+        self.assertEqual(response.status_code, 400)
+
+
 class TripCockpitTests(BaseFleetOpsTest):
     """docs/ONE-TRIP-END-TO-END.md §5 Phase 3: one trip's whole stack in one
     response - what used to take eight screens to piece together by hand."""
