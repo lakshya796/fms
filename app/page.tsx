@@ -1450,7 +1450,7 @@ function TripSettlementPanel({ trip, onAction, onSaved }: { trip: any; onAction:
   </form>;
 }
 
-function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string; onAction: Notify; reloadKey: number; openAction: (type: string) => void }) {
+function FleetOpsView({ name, onAction, reloadKey, openAction, openTripId, onTripOpened }: { name: string; onAction: Notify; reloadKey: number; openAction: (type: string) => void; openTripId?: number | null; onTripOpened?: () => void }) {
   const [records, setRecords] = useState<any[]>([]);
   const [dashboard, setDashboard] = useState<any>(null);
   const [tripDetail, setTripDetail] = useState<any>(null);
@@ -1496,6 +1496,13 @@ function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string;
       setLinkOrders(all.filter(o => !o.trip || o.trip === trip.id));
     } catch { setLinkOrders([]); }
   };
+  // A trip booked from the Orders screen (create-from-orders) lands the operator
+  // straight here, with that trip's sheet already open - once its board has loaded.
+  useEffect(() => {
+    if (name !== "Dispatch" || !openTripId || loading) return;
+    const trip = records.find(r => r.id === openTripId);
+    if (trip) { openTripDetail(trip); onTripOpened?.(); }
+  }, [name, openTripId, loading, records]);
   const refreshTripDetail = async (trip: any) => {
     try {
       const updated = await fmsRequest<any>(`trips/${trip.id}/`);
@@ -1737,7 +1744,7 @@ function DetailDrawer({ eyebrow, title, status, fields, sections, children, acti
   </aside></div>;
 }
 
-function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; onAction: Notify; openAction: (type: string) => void }) {
+function OrdersView({ reloadKey, onAction, openAction, onTripCreated }: { reloadKey: number; onAction: Notify; openAction: (type: string) => void; onTripCreated?: (trip: any) => void }) {
   const [orders, setOrders] = useState<any[]>([]);
   const [drivers, setDrivers] = useState<any[]>([]);
   const [vehicles, setVehicles] = useState<any[]>([]);
@@ -1751,6 +1758,13 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
   const [recommending, setRecommending] = useState(false);
   const [spotCandidate, setSpotCandidate] = useState<any>(null);
   const [settlement, setSettlement] = useState<any>(null);
+  // Booking a trip straight from a set of ticked orders, instead of creating an
+  // empty trip and linking each order back to it one at a time.
+  const [pickedOrders, setPickedOrders] = useState<Set<number>>(new Set());
+  const [bookingTrip, setBookingTrip] = useState(false);
+  const [tripVehicle, setTripVehicle] = useState("");
+  const [tripDriver, setTripDriver] = useState("");
+  const [creatingTrip, setCreatingTrip] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -1821,6 +1835,28 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
     } catch (e) {
       onAction(e instanceof Error ? e.message.slice(0, 120) : "Could not raise the invoice", "warn");
     } finally { setBusy(false); }
+  };
+
+  const togglePicked = (orderId: number) => setPickedOrders(current => {
+    const next = new Set(current);
+    if (next.has(orderId)) next.delete(orderId); else next.add(orderId);
+    return next;
+  });
+
+  const createTripFromOrders = async () => {
+    if (!tripVehicle || !tripDriver || !pickedOrders.size) return;
+    setCreatingTrip(true);
+    try {
+      const trip = await fmsRequest<any>("trips/create-from-orders/", { method: "POST", body: JSON.stringify({
+        orders: Array.from(pickedOrders), vehicle: Number(tripVehicle), driver: Number(tripDriver),
+      }) });
+      onAction(`Trip ${trip.number} created with ${pickedOrders.size} order${pickedOrders.size > 1 ? "s" : ""}`);
+      setPickedOrders(new Set()); setBookingTrip(false); setTripVehicle(""); setTripDriver("");
+      load();
+      onTripCreated?.(trip);
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 150) : "Could not create the trip", "warn");
+    } finally { setCreatingTrip(false); }
   };
 
   // Own and vendor capacity ranked by expected profit, not distance - the point of
@@ -1896,18 +1932,50 @@ function OrdersView({ reloadKey, onAction, openAction }: { reloadKey: number; on
   }));
 
   return <div className="module-page">
-    <div className="module-title"><div><p className="eyebrow">FLEETOPS ORDERS</p><h2>Consignment orders</h2><p>Drag a card between columns to move it on, or click one to open the consignment.</p></div><button className="primary module-action" onClick={() => openAction("order")}>＋ New order</button></div>
+    <div className="module-title"><div><p className="eyebrow">FLEETOPS ORDERS</p><h2>Consignment orders</h2><p>Drag a card between columns to move it on, tick one or more to book a trip for them, or click one to open the consignment.</p></div><button className="primary module-action" onClick={() => openAction("order")}>＋ New order</button></div>
     <div className="module-stats">
       <div className="module-stat"><span>Total orders</span><strong>{loading ? "—" : orderTotal}</strong><small>Across all statuses</small></div>
       <div className="module-stat"><span>Active now</span><strong>{loading ? "—" : active.length}</strong><small>Booked, allocated or moving</small></div>
       <div className="module-stat"><span>Order value</span><strong>{rupees(totalValue)}</strong><small>Freight incl. GST</small></div>
     </div>
+
+    {pickedOrders.size > 0 && <div className="record-section" style={{ marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+        <p><strong>{pickedOrders.size}</strong> order{pickedOrders.size > 1 ? "s" : ""} selected</p>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="secondary" onClick={() => setPickedOrders(new Set())}>Clear</button>
+          <button className="primary" onClick={() => setBookingTrip(true)}>Create trip with {pickedOrders.size} order{pickedOrders.size > 1 ? "s" : ""} →</button>
+        </div>
+      </div>
+      {bookingTrip && <div className="allocate-grid" style={{ marginTop: 12 }}>
+        <label>Vehicle<select value={tripVehicle} onChange={event => setTripVehicle(event.target.value)}>
+          <option value="">Select vehicle</option>
+          {vehicles.map(v => <option key={v.id} value={v.id}>{v.registration_number}</option>)}
+        </select></label>
+        <label>Driver<select value={tripDriver} onChange={event => setTripDriver(event.target.value)}>
+          <option value="">Select driver</option>
+          {drivers.map(d => <option key={d.id} value={d.id}>{d.name} · {d.status}</option>)}
+        </select></label>
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+          <button className="secondary" onClick={() => setBookingTrip(false)}>Cancel</button>
+          <button className="primary" disabled={creatingTrip || !tripVehicle || !tripDriver} onClick={createTripFromOrders}>
+            {creatingTrip ? "Creating…" : "Create trip"}
+          </button>
+        </div>
+      </div>}
+    </div>}
+
     <div className="dispatch-board">{orderColumns.map(([status, label]) => {
       const bucket = orders.filter(order => order.status === status);
       return <section {...board.columnProps(status)} key={status}>
         <header><strong>{label}</strong><span>{bucket.length}</span></header>
         {bucket.map(order => <article key={order.id}
             {...board.cardProps(order, opened => { setSelected(opened); setDriver(opened.driver || ""); setVehicle(opened.vehicle || ""); })}>
+          {!order.trip && status !== "completed" && <div onClick={event => event.stopPropagation()} style={{ marginBottom: 4 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
+              <input type="checkbox" checked={pickedOrders.has(order.id)} onChange={() => togglePicked(order.id)} /> Select for trip
+            </label>
+          </div>}
           <b>{order.number}</b>
           <p>{order.pickup_city} → {order.dropoff_city}</p>
           <small>{order.customer_name} · {rupees(order.total_amount)}</small>
@@ -4811,6 +4879,7 @@ export default function Home() {
   const [dataVersion, setDataVersion] = useState(0);
   const [dashboard, setDashboard] = useState<any>(null);
   const [me, setMe] = useState<any>(null);
+  const [openTripId, setOpenTripId] = useState<number | null>(null);
   useEffect(() => { setAuthenticated(Boolean(sessionStorage.getItem("fms_token"))); }, []);
   useEffect(() => {
     const ended = () => { setAuthenticated(false); setMe(null); };
@@ -4904,7 +4973,7 @@ export default function Home() {
             <div className="table-wrap"><table><thead><tr><th>Trip & route</th><th>Vehicle</th><th>Driver</th><th>Status</th><th>ETA / POD</th><th>Revenue</th></tr></thead><tbody>{(dashboard?.recent_trips || []).map((t: any) => <tr key={t.id}><td><strong>{t.number}</strong><small>{t.origin} → {t.destination}</small></td><td>{t.vehicle_number}</td><td>{t.driver_name}</td><td><span className={`status ${t.status.toLowerCase().replaceAll("_","-")}`}>{t.status.replaceAll("_"," ")}</span></td><td>{t.planned_departure ? new Date(t.planned_departure).toLocaleString("en-IN") : "—"}</td><td><strong>₹{Number(t.estimated_cost || 0).toLocaleString("en-IN")}</strong></td></tr>)}</tbody></table></div>
           </section>
 
-        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Planning" ? <DispatchPlanningView onAction={show} /> : active === "Scenario Profiles" ? <ScenarioProfilesView reloadKey={dataVersion} onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Hires" ? <HiresView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Fleet" ? <FleetVehiclesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Tracking" ? <TrackingView reloadKey={dataVersion} onAction={show} /> : active === "Fleets" ? <FleetsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : active === "Driver & Availability" ? <DriverAvailabilityReport reloadKey={dataVersion} onAction={show} /> : active === "Fleet Report" ? <FleetReport reloadKey={dataVersion} onAction={show} /> : active === "Customer Invoices" ? <CustomerInvoicesReport reloadKey={dataVersion} onAction={show} /> : active === "Vehicle Settlement" ? <VehicleSettlementReport reloadKey={dataVersion} onAction={show} /> : active === "Sales Report" ? <SalesReport reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
+        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Planning" ? <DispatchPlanningView onAction={show} /> : active === "Scenario Profiles" ? <ScenarioProfilesView reloadKey={dataVersion} onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} onTripCreated={trip => { setOpenTripId(trip.id); setActive("Dispatch"); }} /> : active === "Hires" ? <HiresView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Fleet" ? <FleetVehiclesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Tracking" ? <TrackingView reloadKey={dataVersion} onAction={show} /> : active === "Fleets" ? <FleetsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : active === "Driver & Availability" ? <DriverAvailabilityReport reloadKey={dataVersion} onAction={show} /> : active === "Fleet Report" ? <FleetReport reloadKey={dataVersion} onAction={show} /> : active === "Customer Invoices" ? <CustomerInvoicesReport reloadKey={dataVersion} onAction={show} /> : active === "Vehicle Settlement" ? <VehicleSettlementReport reloadKey={dataVersion} onAction={show} /> : active === "Sales Report" ? <SalesReport reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} openTripId={openTripId} onTripOpened={() => setOpenTripId(null)} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
       </section>
       {action && <ActionPanel type={action} onClose={() => setAction("")} onCreated={() => setDataVersion(v => v + 1)} />}
       {toast && <div className={"toast " + toast.tone}>{toast.tone === "warn" ? "⚠" : "✓"} {toast.text}</div>}
