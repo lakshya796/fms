@@ -147,102 +147,12 @@ class LorryReceiptViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["get"])
     def pdf(self, request, pk=None):
-        """The consignment note PDF - the document a driver carries and a
-        consignee signs, generated the same way the invoice PDF is."""
-        from io import BytesIO
+        """Landscape LR / non-negotiable way bill carried with the goods."""
         from django.http import HttpResponse
-        from reportlab.lib import colors
-        from reportlab.lib.pagesizes import A4
-        from reportlab.lib.units import mm
-        from reportlab.lib.styles import ParagraphStyle
-        from reportlab.lib.enums import TA_RIGHT
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
+        from .lr_pdf import render_lr_pdf
 
         lr = self.get_object()
-        order = lr.orders.first()
-
-        buffer = BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=15*mm, leftMargin=15*mm, topMargin=15*mm, bottomMargin=15*mm)
-
-        brand = colors.HexColor("#0d5f45")
-        light = colors.HexColor("#f0f4f2")
-        mid = colors.HexColor("#666666")
-
-        def ps(name, **kw): return ParagraphStyle(name, **kw)
-        h1 = ps("h1", fontSize=22, fontName="Helvetica-Bold", textColor=brand)
-        h2 = ps("h2", fontSize=11, fontName="Helvetica-Bold")
-        body = ps("body", fontSize=9, fontName="Helvetica")
-        small = ps("small", fontSize=8, fontName="Helvetica", textColor=mid)
-        r_bold = ps("r_bold", fontSize=10, fontName="Helvetica-Bold", alignment=TA_RIGHT, textColor=brand)
-        lbl = ps("lbl", fontSize=7, fontName="Helvetica-Bold", textColor=mid)
-
-        elems = []
-        hdr = [
-            [Paragraph("PHLOZ FMS", h1),
-             Paragraph("LORRY RECEIPT", ps("lr", fontSize=16, fontName="Helvetica-Bold", alignment=TA_RIGHT, textColor=brand))],
-            [Paragraph("Fleet Management System", small),
-             Paragraph(f"<b>{lr.number}</b>", ps("lrno", fontSize=11, fontName="Helvetica-Bold", alignment=TA_RIGHT))],
-            [Paragraph("", body),
-             Paragraph(f"Date: {lr.created_at.strftime('%d %b %Y')}", ps("d", fontSize=9, alignment=TA_RIGHT))],
-        ]
-        hdr_t = Table(hdr, colWidths=[100*mm, 75*mm])
-        hdr_t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
-                                   ("LINEBELOW", (0, -1), (-1, -1), 2, brand), ("BOTTOMPADDING", (0, -1), (-1, -1), 6)]))
-        elems.append(hdr_t)
-        elems.append(Spacer(1, 5*mm))
-
-        parties = [
-            [Paragraph("CONSIGNOR", lbl), Paragraph("CONSIGNEE", lbl)],
-            [Paragraph(f"<b>{lr.consignor}</b>", h2), Paragraph(f"<b>{lr.consignee}</b>", h2)],
-            [Paragraph(f"From: {lr.origin}", small), Paragraph(f"To: {lr.destination}", small)],
-        ]
-        parties_t = Table(parties, colWidths=[87.5*mm, 87.5*mm])
-        parties_t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("BACKGROUND", (0, 0), (-1, 0), light),
-                                       ("TOPPADDING", (0, 0), (-1, 0), 3), ("BOTTOMPADDING", (0, 0), (-1, 0), 3),
-                                       ("LINEBELOW", (0, -1), (-1, -1), 0.5, colors.HexColor("#cccccc"))]))
-        elems.append(parties_t)
-        elems.append(Spacer(1, 4*mm))
-
-        if order:
-            ref = [
-                [Paragraph("CONSIGNMENT", lbl), Paragraph("VEHICLE", lbl), Paragraph("E-WAY BILL", lbl)],
-                [Paragraph(f"<b>{order.number}</b>", h2),
-                 Paragraph(order.vehicle.registration_number if order.vehicle else "—", body),
-                 Paragraph(lr.eway_bill_number or "—", body)],
-            ]
-            ref_t = Table(ref, colWidths=[60*mm, 60*mm, 55*mm])
-            ref_t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("BACKGROUND", (0, 0), (-1, 0), light),
-                                       ("TOPPADDING", (0, 0), (-1, 0), 3), ("BOTTOMPADDING", (0, 0), (-1, 0), 3),
-                                       ("LINEBELOW", (0, -1), (-1, -1), 0.5, colors.HexColor("#cccccc"))]))
-            elems.append(ref_t)
-            elems.append(Spacer(1, 4*mm))
-
-        rows = [
-            [Paragraph("Particulars", ps("th", fontSize=9, fontName="Helvetica-Bold", textColor=colors.white)),
-             Paragraph("Detail", ps("th_r", fontSize=9, fontName="Helvetica-Bold", textColor=colors.white, alignment=TA_RIGHT))],
-            ["Material", Paragraph(lr.material, ps("r", fontSize=9, alignment=TA_RIGHT))],
-            ["Packages", Paragraph(str(lr.packages), ps("r2", fontSize=9, alignment=TA_RIGHT))],
-            ["Weight", Paragraph(f"{float(lr.weight_kg):,.0f} kg", ps("r3", fontSize=9, alignment=TA_RIGHT))],
-            [Paragraph("FREIGHT", h2), Paragraph(f"₹ {float(lr.freight_amount):,.2f}", r_bold)],
-        ]
-        table = Table(rows, colWidths=[130*mm, 45*mm])
-        table.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BACKGROUND", (0, 0), (-1, 0), brand),
-            ("LINEABOVE", (0, -1), (-1, -1), 1.5, brand), ("BACKGROUND", (0, -1), (-1, -1), light),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor("#fafafa")]),
-            ("PADDING", (0, 0), (-1, -1), 7), ("LINEBELOW", (0, 1), (-1, -3), 0.3, colors.HexColor("#e0e0e0")),
-        ]))
-        elems.append(table)
-        elems.append(Spacer(1, 6*mm))
-        elems.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#cccccc")))
-        elems.append(Spacer(1, 3*mm))
-        elems.append(Paragraph(
-            "Goods carried at owner's risk. Subject to the terms and conditions of carriage. "
-            "This is a computer-generated document and requires no signature to be valid for despatch.", small))
-
-        doc.build(elems)
-        buffer.seek(0)
-        response = HttpResponse(buffer.read(), content_type="application/pdf")
+        response = HttpResponse(render_lr_pdf(lr), content_type="application/pdf")
         response["Content-Disposition"] = f'inline; filename="{lr.number}.pdf"'
         return response
 class TrackingEventViewSet(viewsets.ModelViewSet):
