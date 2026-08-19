@@ -144,6 +144,107 @@ class LorryReceiptViewSet(viewsets.ModelViewSet):
     permission_classes = [HasModulePermission]
     required_permission = "operations.view"; required_write_permission = "operations.manage"
     queryset = LorryReceipt.objects.select_related("customer").all().order_by("-created_at"); serializer_class = LorryReceiptSerializer
+
+    @action(detail=True, methods=["get"])
+    def pdf(self, request, pk=None):
+        """The consignment note PDF - the document a driver carries and a
+        consignee signs, generated the same way the invoice PDF is."""
+        from io import BytesIO
+        from django.http import HttpResponse
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import mm
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.lib.enums import TA_RIGHT
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
+
+        lr = self.get_object()
+        order = lr.orders.first()
+
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=15*mm, leftMargin=15*mm, topMargin=15*mm, bottomMargin=15*mm)
+
+        brand = colors.HexColor("#0d5f45")
+        light = colors.HexColor("#f0f4f2")
+        mid = colors.HexColor("#666666")
+
+        def ps(name, **kw): return ParagraphStyle(name, **kw)
+        h1 = ps("h1", fontSize=22, fontName="Helvetica-Bold", textColor=brand)
+        h2 = ps("h2", fontSize=11, fontName="Helvetica-Bold")
+        body = ps("body", fontSize=9, fontName="Helvetica")
+        small = ps("small", fontSize=8, fontName="Helvetica", textColor=mid)
+        r_bold = ps("r_bold", fontSize=10, fontName="Helvetica-Bold", alignment=TA_RIGHT, textColor=brand)
+        lbl = ps("lbl", fontSize=7, fontName="Helvetica-Bold", textColor=mid)
+
+        elems = []
+        hdr = [
+            [Paragraph("PHLOZ FMS", h1),
+             Paragraph("LORRY RECEIPT", ps("lr", fontSize=16, fontName="Helvetica-Bold", alignment=TA_RIGHT, textColor=brand))],
+            [Paragraph("Fleet Management System", small),
+             Paragraph(f"<b>{lr.number}</b>", ps("lrno", fontSize=11, fontName="Helvetica-Bold", alignment=TA_RIGHT))],
+            [Paragraph("", body),
+             Paragraph(f"Date: {lr.created_at.strftime('%d %b %Y')}", ps("d", fontSize=9, alignment=TA_RIGHT))],
+        ]
+        hdr_t = Table(hdr, colWidths=[100*mm, 75*mm])
+        hdr_t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
+                                   ("LINEBELOW", (0, -1), (-1, -1), 2, brand), ("BOTTOMPADDING", (0, -1), (-1, -1), 6)]))
+        elems.append(hdr_t)
+        elems.append(Spacer(1, 5*mm))
+
+        parties = [
+            [Paragraph("CONSIGNOR", lbl), Paragraph("CONSIGNEE", lbl)],
+            [Paragraph(f"<b>{lr.consignor}</b>", h2), Paragraph(f"<b>{lr.consignee}</b>", h2)],
+            [Paragraph(f"From: {lr.origin}", small), Paragraph(f"To: {lr.destination}", small)],
+        ]
+        parties_t = Table(parties, colWidths=[87.5*mm, 87.5*mm])
+        parties_t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("BACKGROUND", (0, 0), (-1, 0), light),
+                                       ("TOPPADDING", (0, 0), (-1, 0), 3), ("BOTTOMPADDING", (0, 0), (-1, 0), 3),
+                                       ("LINEBELOW", (0, -1), (-1, -1), 0.5, colors.HexColor("#cccccc"))]))
+        elems.append(parties_t)
+        elems.append(Spacer(1, 4*mm))
+
+        if order:
+            ref = [
+                [Paragraph("CONSIGNMENT", lbl), Paragraph("VEHICLE", lbl), Paragraph("E-WAY BILL", lbl)],
+                [Paragraph(f"<b>{order.number}</b>", h2),
+                 Paragraph(order.vehicle.registration_number if order.vehicle else "—", body),
+                 Paragraph(lr.eway_bill_number or "—", body)],
+            ]
+            ref_t = Table(ref, colWidths=[60*mm, 60*mm, 55*mm])
+            ref_t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("BACKGROUND", (0, 0), (-1, 0), light),
+                                       ("TOPPADDING", (0, 0), (-1, 0), 3), ("BOTTOMPADDING", (0, 0), (-1, 0), 3),
+                                       ("LINEBELOW", (0, -1), (-1, -1), 0.5, colors.HexColor("#cccccc"))]))
+            elems.append(ref_t)
+            elems.append(Spacer(1, 4*mm))
+
+        rows = [
+            [Paragraph("Particulars", ps("th", fontSize=9, fontName="Helvetica-Bold", textColor=colors.white)),
+             Paragraph("Detail", ps("th_r", fontSize=9, fontName="Helvetica-Bold", textColor=colors.white, alignment=TA_RIGHT))],
+            ["Material", Paragraph(lr.material, ps("r", fontSize=9, alignment=TA_RIGHT))],
+            ["Packages", Paragraph(str(lr.packages), ps("r2", fontSize=9, alignment=TA_RIGHT))],
+            ["Weight", Paragraph(f"{float(lr.weight_kg):,.0f} kg", ps("r3", fontSize=9, alignment=TA_RIGHT))],
+            [Paragraph("FREIGHT", h2), Paragraph(f"₹ {float(lr.freight_amount):,.2f}", r_bold)],
+        ]
+        table = Table(rows, colWidths=[130*mm, 45*mm])
+        table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BACKGROUND", (0, 0), (-1, 0), brand),
+            ("LINEABOVE", (0, -1), (-1, -1), 1.5, brand), ("BACKGROUND", (0, -1), (-1, -1), light),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor("#fafafa")]),
+            ("PADDING", (0, 0), (-1, -1), 7), ("LINEBELOW", (0, 1), (-1, -3), 0.3, colors.HexColor("#e0e0e0")),
+        ]))
+        elems.append(table)
+        elems.append(Spacer(1, 6*mm))
+        elems.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#cccccc")))
+        elems.append(Spacer(1, 3*mm))
+        elems.append(Paragraph(
+            "Goods carried at owner's risk. Subject to the terms and conditions of carriage. "
+            "This is a computer-generated document and requires no signature to be valid for despatch.", small))
+
+        doc.build(elems)
+        buffer.seek(0)
+        response = HttpResponse(buffer.read(), content_type="application/pdf")
+        response["Content-Disposition"] = f'inline; filename="{lr.number}.pdf"'
+        return response
 class TrackingEventViewSet(viewsets.ModelViewSet):
     permission_classes = [HasModulePermission]
     required_permission = "operations.view"; required_write_permission = "operations.manage"
@@ -193,6 +294,11 @@ class TripViewSet(viewsets.ModelViewSet):
         trip.status = "dispatched"; trip.actual_departure = timezone.now(); trip.save()
         set_vehicle_status(trip.vehicle, "running", trip=trip, reason="Trip dispatched")
         trip.driver.status = "on_trip"; trip.driver.save(update_fields=["status"])
+        # An LR is a legal precondition for the goods moving - issue one now for
+        # every order on the trip that does not already have one, rather than
+        # leaving it to an operator to remember (docs/ONE-TRIP-END-TO-END.md §5 Phase 1).
+        for order in trip.orders.filter(lorry_receipt__isnull=True):
+            build_lr_from_order(order)
         trip.lorry_receipts.update(status="dispatched")
         return Response(self.get_serializer(trip).data)
     @action(detail=True, methods=["post"])
@@ -257,6 +363,136 @@ class TripViewSet(viewsets.ModelViewSet):
         trip.refresh_from_db()
         return Response({"trip": self.get_serializer(trip).data, "summary": trip.settlement_summary(),
                          "expenses": expense_breakdown()})
+
+    @action(detail=True, methods=["get"])
+    def cockpit(self, request, pk=None):
+        """One trip's whole stack - every order it carries with its LR, POD and
+        invoice state, the apportioned cost behind each one, and what still
+        stands between this trip and being closed out - instead of the eight
+        screens it otherwise takes to piece the same picture together by hand.
+        See docs/ONE-TRIP-END-TO-END.md §5 Phase 3.
+        """
+        trip = self.get_object()
+        orders = list(trip.orders.select_related("customer", "pickup", "dropoff", "lorry_receipt")
+                                 .prefetch_related("proofs", "invoices").order_by("id"))
+        split = apportion_trip_cost(trip)
+
+        order_rows = []
+        documents = []
+        blockers = []
+        unpriced, unposted_lr, unverified_pod, unbilled = 0, 0, 0, 0
+        for order in orders:
+            lr = order.lorry_receipt
+            invoice = order_invoice(order)
+            proofs = list(order.proofs.all())
+            captured = any(p.captured_at for p in proofs)
+            verified = any(p.status == "verified" for p in proofs)
+            pending_proof = next((p for p in proofs if p.status == "submitted"), None)
+            cost_row = split["orders"].get(order.id, {"fuel": Decimal("0"), "shared_expenses": Decimal("0"),
+                                                       "attributed_expenses": Decimal("0"), "total_cost": Decimal("0")})
+            revenue = money(order.total_amount)
+            order_rows.append({
+                "id": order.id, "number": order.number, "status": order.status,
+                "customer": order.customer.name, "route": f"{order.pickup.city} → {order.dropoff.city}",
+                "weight_kg": float(order.weight_kg or 0), "distance_km": float(order.distance_km or 0),
+                "revenue": float(revenue),
+                "cost": {"fuel": float(cost_row["fuel"]), "shared_expenses": float(cost_row["shared_expenses"]),
+                        "attributed_expenses": float(cost_row["attributed_expenses"]),
+                        "total": float(cost_row["total_cost"])},
+                "profit": float(money(revenue - cost_row["total_cost"])),
+                "lorry_receipt": {"id": lr.id, "number": lr.number, "status": lr.status} if lr else None,
+                "pod": {"captured": captured, "verified": verified, "required": order.pod_required,
+                       "pending_proof_id": pending_proof.id if pending_proof else None},
+                "invoice": {"id": invoice.id, "number": invoice.number, "status": invoice.status,
+                           "total_amount": float(invoice.total_amount)} if invoice else None,
+            })
+            if lr:
+                documents.append({"type": "lorry_receipt", "label": lr.number, "order": order.number,
+                                  "url": f"lorry-receipts/{lr.id}/pdf/"})
+            else:
+                unposted_lr += 1
+            for proof in order.proofs.all():
+                if proof.file_url:
+                    documents.append({"type": "pod", "label": f"POD · {order.number}", "order": order.number,
+                                      "url": proof.file_url})
+            if invoice:
+                documents.append({"type": "invoice", "label": invoice.number, "order": order.number,
+                                  "url": f"invoices/{invoice.id}/pdf/"})
+            elif order.status == "completed":
+                unbilled += 1
+            if order.pod_required and not verified and order.status != "cancelled":
+                unverified_pod += 1
+            if not order.total_amount:
+                unpriced += 1
+
+        if unposted_lr:
+            blockers.append(f"{unposted_lr} order(s) have no lorry receipt yet.")
+        if unverified_pod:
+            blockers.append(f"{unverified_pod} order(s) require a POD that has not been verified.")
+        if unpriced:
+            blockers.append(f"{unpriced} order(s) have no freight priced.")
+        if unbilled:
+            blockers.append(f"{unbilled} delivered order(s) have not been invoiced.")
+        if trip.end_odometer_km is None:
+            blockers.append("Trip has no end odometer reading.")
+        unapproved = money(trip.expenses.filter(status="pending").aggregate(v=Sum("amount"))["v"] or 0)
+        if unapproved:
+            blockers.append(f"₹{unapproved:,.2f} of expenses are awaiting approval.")
+
+        # The all-in figures - what the cockpit is for - summed from the same
+        # per-order apportionment above, so fuel is always in the total cost.
+        total_revenue = money(sum((row["revenue"] for row in order_rows), 0))
+        total_cost = money(sum((row["cost"]["total"] for row in order_rows), 0))
+        total_profit = money(total_revenue - total_cost)
+
+        # trip.settlement_summary() is a narrower, pre-existing figure: the
+        # driver's cash-advance reconciliation. Its `total_exp` is TripExpense
+        # only - fuel is deliberately excluded there, since it may be paid on
+        # a company fuel card rather than out of the driver's own advance -
+        # so it is not the all-in P&L above and the two will not match.
+        summary = trip.settlement_summary()
+        summary["cost_basis"] = split["basis"]
+
+        return Response({
+            "trip": self.get_serializer(trip).data,
+            "orders": order_rows,
+            "costs": {"shared_fuel": float(split["shared_fuel"]), "shared_expenses": float(split["shared_expenses"]),
+                     "shared_total": float(split["shared_total"]), "basis": split["basis"],
+                     "advance_amount": float(money(trip.advance_amount)), "total_cost": float(total_cost)},
+            "revenue": {"total": float(total_revenue)},
+            "profit": {"total": float(total_profit)},
+            "pnl": summary,
+            "documents": documents,
+            "blockers": blockers,
+            "ready_to_close": not blockers,
+        })
+
+    @action(detail=True, methods=["post"], url_path="consolidate-invoice")
+    @transaction.atomic
+    def consolidate_invoice(self, request, pk=None):
+        """One invoice per customer for every billable order on this trip,
+        instead of one per consignment even when several ride the same truck
+        for the same customer - see docs/ONE-TRIP-END-TO-END.md §5 Phase 5."""
+        trip = self.get_object()
+        invoices, skipped = build_invoice_from_trip(trip, due_days=request.data.get("due_days", 15))
+        posted = []
+        if request.data.get("post_to_ledger", True):
+            for invoice, created in invoices:
+                if not created:
+                    continue
+                try:
+                    entry = post_customer_invoice(invoice, branch=trip.orders.first().branch if trip.orders.exists() else None,
+                                                  created_by=request.user.get_username())
+                    posted.append({"invoice": invoice.number, "journal_entry": entry.number})
+                except PostingError as error:
+                    posted.append({"invoice": invoice.number, "ledger_error": str(error)})
+        return Response({
+            "invoices": [InvoiceSerializer(invoice).data for invoice, _ in invoices],
+            "skipped": [{"order": order.number, "reason": reason} for order, reason in skipped],
+            "posted": posted,
+        }, status=http_status.HTTP_201_CREATED if invoices else http_status.HTTP_200_OK)
+
+
 class InvoiceViewSet(viewsets.ModelViewSet):
     permission_classes = [HasModulePermission]
     required_permission = "accounting.view"; required_write_permission = "accounting.manage"
@@ -364,6 +600,26 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             elems.append(ref_t)
             elems.append(Spacer(1, 4*mm))
 
+        # ---- Consolidated invoice: one row per consignment ----
+        if invoice.line_items:
+            item_rows = [[Paragraph("Consignment", ps("th2", fontSize=8, fontName="Helvetica-Bold", textColor=colors.white)),
+                         Paragraph("Route", ps("th3", fontSize=8, fontName="Helvetica-Bold", textColor=colors.white)),
+                         Paragraph("Amount (₹)", ps("th4", fontSize=8, fontName="Helvetica-Bold", textColor=colors.white, alignment=TA_RIGHT))]]
+            for line in invoice.line_items:
+                item_rows.append([line.get("order_number", ""), line.get("route", ""),
+                                  Paragraph(money_str(line.get("total_amount", 0)), r_body)])
+            items_t = Table(item_rows, colWidths=[45*mm, 90*mm, 40*mm])
+            items_t.setStyle(TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BACKGROUND", (0, 0), (-1, 0), mid),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#fafafa")]),
+                ("PADDING", (0, 0), (-1, -1), 5), ("FONTSIZE", (0, 1), (-1, -1), 8),
+                ("LINEBELOW", (0, 0), (-1, -1), 0.3, colors.HexColor("#e0e0e0")),
+            ]))
+            elems.append(Paragraph(f"CONSOLIDATED INVOICE — {len(invoice.line_items)} consignment(s)", lbl))
+            elems.append(Spacer(1, 2*mm))
+            elems.append(items_t)
+            elems.append(Spacer(1, 4*mm))
+
         # ---- Charges ----
         rows = [
             [Paragraph("Particulars", ps("th", fontSize=9, fontName="Helvetica-Bold", textColor=colors.white)),
@@ -432,7 +688,9 @@ from .serializers import (VendorSerializer, ServiceAreaSerializer, ZoneSerialize
                           FuelEntrySerializer, TripExpenseSerializer, IssueSerializer, ComplianceDocumentSerializer,
                           MaintenanceScheduleSerializer, VehicleHireSerializer, VendorLaneRateSerializer,
                           QuoteRequestSerializer, ProjectionRequestSerializer)
-from .billing import BillingError, build_invoice_from_order, order_pod_state, project_lane
+from .billing import BillingError, build_invoice_from_order, build_invoice_from_trip, order_invoice, order_pod_state, project_lane
+from .costing import apportion_trip_cost
+from .lr import build_lr_from_order
 from .vendor_billing import HireBillingError, confirmation_email, raise_vendor_bill, vendor_payable
 from .allocation import recommend_vehicles
 from accounting.services import PostingError, post_customer_invoice
@@ -800,7 +1058,7 @@ class OrderViewSet(FilterableViewSet):
         so the desk can see what is waiting on an ePOD rather than wondering why
         a delivered consignment is missing.
         """
-        orders = (self.get_queryset().filter(status="completed", invoices__isnull=True)
+        orders = (self.get_queryset().filter(status="completed", invoices__isnull=True, consolidated_invoices__isnull=True)
                   .select_related("customer", "service_rate", "pickup", "dropoff")
                   .prefetch_related("proofs").order_by("-completed_at"))
         rows = []
@@ -854,6 +1112,18 @@ class OrderViewSet(FilterableViewSet):
                          "order": self.get_serializer(order).data},
                         status=http_status.HTTP_201_CREATED if created else http_status.HTTP_200_OK)
 
+    @action(detail=True, methods=["post"], url_path="generate-lr")
+    @transaction.atomic
+    def generate_lr(self, request, pk=None):
+        """Issue the lorry receipt from what is already on the order, instead of
+        an operator re-typing consignor/consignee/origin/destination/material by
+        hand into a separate form. See docs/ONE-TRIP-END-TO-END.md §3.1."""
+        order = self.get_object()
+        lr, created = build_lr_from_order(order)
+        return Response({"lorry_receipt": LorryReceiptSerializer(lr).data, "created": created,
+                         "order": self.get_serializer(order).data},
+                        status=http_status.HTTP_201_CREATED if created else http_status.HTTP_200_OK)
+
     @action(detail=True, methods=["get"])
     def settlement(self, request, pk=None):
         """The four-sided settlement sheet: what the customer owes, what the vendor
@@ -861,7 +1131,7 @@ class OrderViewSet(FilterableViewSet):
         one screen, so nobody has to open four modules to see if a trip is closed out.
         """
         order = self.get_object()
-        invoice = order.invoices.order_by("created_at").first()
+        invoice = order_invoice(order)
         customer_side = None
         if invoice:
             received = invoice.allocations.aggregate(value=Sum("amount"))["value"] or 0
@@ -886,14 +1156,22 @@ class OrderViewSet(FilterableViewSet):
                                "approved_expenses": float(settlement.approved_expenses),
                                "net_payable": float(settlement.net_payable), "status": settlement.status}
 
-        fuel = FuelEntry.objects.filter(trip_id=order.trip_id).aggregate(value=Sum("amount"))["value"] or 0 if order.trip_id else 0
-        expenses = TripExpense.objects.filter(order=order).aggregate(value=Sum("amount"))["value"] or 0
-        vehicle_side = {"fuel": float(money(fuel)), "trip_expenses": float(money(expenses)),
-                        "total_cost": float(money(Decimal(str(fuel)) + Decimal(str(expenses))))}
+        # Apportioned, not the whole trip's cost charged again to this one order -
+        # see docs/ONE-TRIP-END-TO-END.md §3.2/§5 Phase 2 for the same bug this
+        # fixed in order_profitability.
+        if order.trip_id:
+            row = apportion_trip_cost(order.trip)["orders"].get(
+                order.id, {"fuel": Decimal("0"), "shared_expenses": Decimal("0"), "attributed_expenses": Decimal("0")})
+            fuel = row["fuel"]
+            expenses = row["shared_expenses"] + row["attributed_expenses"]
+        else:
+            fuel = Decimal("0")
+            expenses = money(TripExpense.objects.filter(order=order).aggregate(value=Sum("amount"))["value"] or 0)
+        vehicle_side = {"fuel": float(fuel), "trip_expenses": float(expenses), "total_cost": float(money(fuel + expenses))}
 
         revenue = money(invoice.total_amount if invoice else order.total_amount)
         vendor_cost = money(vendor_side["payable"]["gross_amount"]) if vendor_side else Decimal("0")
-        total_cost = money(vendor_cost + Decimal(str(fuel)) + Decimal(str(expenses)))
+        total_cost = money(vendor_cost + fuel + expenses)
         actual_profit = money(revenue - total_cost)
 
         return Response({
@@ -1480,21 +1758,42 @@ class IndentViewSet(FilterableViewSet):
 @requires("reports.view")
 @api_view(["GET"])
 def order_profitability(request, pk):
-    """Revenue, diesel and on-road cost for one consignment."""
-    order = Order.objects.filter(pk=pk).select_related("vehicle").first()
+    """Revenue, diesel and on-road cost for one consignment.
+
+    When the order rides on a trip with other orders, its diesel and shared
+    on-road cost are its *apportioned share* of the trip's total
+    (`fleet.costing.apportion_trip_cost`), not the trip's full cost charged
+    again to every order on it - see docs/ONE-TRIP-END-TO-END.md §3.2/§5
+    Phase 2 for why that used to double- (or quintuple-) count fuel and drop
+    trip-keyed expenses from every order's P&L entirely.
+    """
+    order = Order.objects.filter(pk=pk).select_related("vehicle", "trip").first()
     if not order:
         return Response({"detail": "Order not found."}, status=404)
-    expenses = TripExpense.objects.filter(order=order).aggregate(value=Sum("amount"))["value"] or 0
-    fuel = FuelEntry.objects.filter(trip=order.trip).aggregate(value=Sum("amount"))["value"] or 0 if order.trip_id else 0
     revenue = money(order.total_amount)
-    cost = money(expenses) + money(fuel)
+    if order.trip_id:
+        split = apportion_trip_cost(order.trip)
+        row = split["orders"].get(order.id, {"fuel": Decimal("0"), "shared_expenses": Decimal("0"),
+                                              "attributed_expenses": Decimal("0"), "total_cost": Decimal("0")})
+        fuel = row["fuel"]
+        expenses = row["shared_expenses"] + row["attributed_expenses"]
+        cost = row["total_cost"]
+        cost_basis = split["basis"]
+    else:
+        # No trip yet - the only cost that can exist is whatever was booked
+        # directly against this order, with nothing to share or apportion.
+        expenses = money(TripExpense.objects.filter(order=order).aggregate(value=Sum("amount"))["value"] or 0)
+        fuel = Decimal("0")
+        cost = expenses
+        cost_basis = "order_only"
     profit = money(revenue - cost)
     return Response({
         "order": order.number, "vehicle": getattr(order.vehicle, "registration_number", ""),
-        "revenue": float(revenue), "trip_expenses": float(money(expenses)), "fuel": float(money(fuel)),
+        "revenue": float(revenue), "trip_expenses": float(expenses), "fuel": float(fuel),
         "total_cost": float(cost), "profit": float(profit),
         "margin_percent": float(round(profit / revenue * 100, 2)) if revenue else 0.0,
         "cost_per_km": float(money(cost / order.distance_km)) if order.distance_km else 0.0,
+        "cost_basis": cost_basis,
     })
 
 
@@ -1680,6 +1979,76 @@ def report_vehicle_settlement(request):
         "settlement_count": len(rows),
     }
     return Response({"summary": summary, "settlements": rows})
+
+
+@requires("reports.view")
+@api_view(["GET"])
+def report_trip_profitability(request):
+    """Trip-wise P&L across a date range: revenue, fuel, on-road cost, advance
+    and margin per trip - using the same apportioned cost as the Trip Cockpit
+    (`fleet.costing.apportion_trip_cost`), so this report and that screen can
+    never disagree with each other. See docs/ONE-TRIP-END-TO-END.md §5 Phase 5.
+    """
+    from_date = request.query_params.get("from")
+    to_date = request.query_params.get("to")
+    vehicle_id = request.query_params.get("vehicle")
+    driver_id = request.query_params.get("driver")
+    branch_id = request.query_params.get("branch")
+    customer_id = request.query_params.get("customer")
+    origin_city = request.query_params.get("origin_city")
+    destination_city = request.query_params.get("destination_city")
+
+    qs = Trip.objects.select_related("vehicle", "driver").prefetch_related("orders__customer").order_by("-created_at")
+    if from_date:
+        qs = qs.filter(created_at__date__gte=from_date)
+    if to_date:
+        qs = qs.filter(created_at__date__lte=to_date)
+    if vehicle_id:
+        qs = qs.filter(vehicle_id=vehicle_id)
+    if driver_id:
+        qs = qs.filter(driver_id=driver_id)
+    if branch_id:
+        qs = qs.filter(orders__branch_id=branch_id)
+    if customer_id:
+        qs = qs.filter(orders__customer_id=customer_id)
+    if origin_city:
+        qs = qs.filter(origin__icontains=origin_city)
+    if destination_city:
+        qs = qs.filter(destination__icontains=destination_city)
+    if branch_id or customer_id:
+        qs = qs.distinct()
+
+    rows = []
+    for trip in qs:
+        orders = list(trip.orders.all())
+        if not orders:
+            continue   # a trip with nothing on it yet has no revenue to report
+        split = apportion_trip_cost(trip)
+        revenue = money(sum((money(o.total_amount) for o in orders), Decimal("0")))
+        cost = money(sum((row["total_cost"] for row in split["orders"].values()), Decimal("0")))
+        margin = money(revenue - cost)
+        distance = trip.passed_km or trip.running_km or 0
+        rows.append({
+            "id": trip.id, "number": trip.number, "status": trip.status,
+            "vehicle": trip.vehicle.registration_number, "driver": trip.driver.name,
+            "route": f"{trip.origin} → {trip.destination}", "order_count": len(orders),
+            "customers": sorted({o.customer.name for o in orders}),
+            "revenue": float(revenue), "fuel": float(split["shared_fuel"]),
+            "on_road": float(split["shared_expenses"]), "advance": float(money(trip.advance_amount)),
+            "cost": float(cost), "margin": float(margin),
+            "margin_percent": float(round(margin / revenue * 100, 2)) if revenue else 0.0,
+            "distance_km": distance,
+            "cost_per_km": float(money(cost / distance)) if distance else 0.0,
+            "revenue_per_km": float(money(revenue / distance)) if distance else 0.0,
+            "cost_basis": split["basis"], "created_at": trip.created_at.strftime("%Y-%m-%d"),
+        })
+
+    summary = {
+        "trip_count": len(rows), "total_revenue": sum(r["revenue"] for r in rows),
+        "total_cost": sum(r["cost"] for r in rows), "total_margin": sum(r["margin"] for r in rows),
+        "avg_margin_percent": float(round(sum(r["margin_percent"] for r in rows) / len(rows), 2)) if rows else 0.0,
+    }
+    return Response({"summary": summary, "trips": rows})
 
 
 @requires("reports.view")

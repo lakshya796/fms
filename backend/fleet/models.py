@@ -260,10 +260,17 @@ class Invoice(Timestamped):
     additional_charges=models.DecimalField(max_digits=12,decimal_places=2,default=0); tax_amount=models.DecimalField(max_digits=12,decimal_places=2,default=0)
     total_amount=models.DecimalField(max_digits=12,decimal_places=2,default=0); due_date=models.DateField(); status=models.CharField(max_length=20,default="draft")
     order=models.ForeignKey("Order",on_delete=models.SET_NULL,null=True,blank=True,related_name="invoices",
-                           help_text="The consignment this bills. Freight and GST are taken from it.")
+                           help_text="The consignment this bills. Freight and GST are taken from it. Null on a "
+                                     "consolidated invoice - see `orders` and `line_items` instead.")
     gst_percent=models.DecimalField(max_digits=5,decimal_places=2,default=0)
     reverse_charge=models.BooleanField(default=False,help_text="GST payable by the consignee under RCM")
     place_of_supply=models.CharField(max_length=80,blank=True)
+    orders=models.ManyToManyField("Order",blank=True,related_name="consolidated_invoices",
+                                  help_text="Every consignment this bill covers, for a consolidated invoice raised "
+                                            "across a trip - see fleet.billing.build_invoice_from_trip")
+    line_items=models.JSONField(default=list,blank=True,
+                                help_text="One row per consignment on a consolidated invoice - a snapshot at "
+                                          "issue time, the same way a lorry receipt's own fields are")
 
     def save(self,*args,**kwargs):
         # The total is always the sum of its parts; typing it by hand invites mistakes.
@@ -858,7 +865,19 @@ class FuelEntry(Timestamped):
 
 
 class TripExpense(Timestamped):
-    """On-road trip cost such as toll, bhatta, loading or an RTO fine."""
+    """On-road trip cost such as toll, bhatta, loading or an RTO fine.
+
+    `trip` is the authority for what a cost belongs to when one exists; `order`
+    is an optional narrowing meaning "this cost belongs to that one consignment
+    specifically" (a drop-specific unloading charge, say) rather than the trip
+    as a whole. An expense with only `order` set is legal - `save()` below
+    fills `trip` in from `order.trip` whenever one exists, so it is never lost
+    from the trip's own totals (`Trip.settlement_summary`). An expense with
+    neither `trip` nor `order` set is also legal and deliberately so: a
+    vehicle-level cost (an RTO fine, a permit) that never belonged to any one
+    trip, which `fleet.billing.running_cost` reads by `vehicle` alone to learn
+    a fleet's real cost per km. See docs/ONE-TRIP-END-TO-END.md §3.3/§5 Phase 2.
+    """
     trip = models.ForeignKey(Trip, on_delete=models.CASCADE, null=True, blank=True, related_name="expenses")
     order = models.ForeignKey(Order, on_delete=models.SET_NULL, null=True, blank=True, related_name="expenses")
     vehicle = models.ForeignKey(Vehicle, on_delete=models.SET_NULL, null=True, blank=True, related_name="expenses")
@@ -874,6 +893,11 @@ class TripExpense(Timestamped):
 
     class Meta:
         ordering = ["-expense_date", "-id"]
+
+    def save(self, *args, **kwargs):
+        if not self.trip_id and self.order_id and self.order.trip_id:
+            self.trip_id = self.order.trip_id
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.category} {self.amount}"

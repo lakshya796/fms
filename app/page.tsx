@@ -1253,6 +1253,116 @@ const tripExpenseCategories: [string, string][] = [
   ["rto_fine", "RTO fine"], ["other", "Other"],
 ];
 
+// One trip's whole stack: every order it carries with its lorry receipt, POD
+// and invoice state, its apportioned cost and profit, and what still blocks
+// the trip from closing out - the eight-screen tour collapsed into one panel.
+// See docs/ONE-TRIP-END-TO-END.md §5 Phase 4.
+function TripCockpitPanel({ trip, onAction, onOrderChanged }: { trip: any; onAction: Notify; onOrderChanged: () => void }) {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [busyKey, setBusyKey] = useState<string>("");
+
+  const load = () => {
+    setLoading(true);
+    fmsRequest<any>(`trips/${trip.id}/cockpit/`).then(setData).catch(() => setData(null)).finally(() => setLoading(false));
+  };
+  useEffect(load, [trip.id]);
+
+  const downloadPdf = async (path: string, filename: string) => {
+    try {
+      const res = await fmsRequestRaw(path);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { onAction(e instanceof Error ? e.message.slice(0, 120) : "Download failed", "warn"); }
+  };
+
+  const runAction = async (key: string, path: string, message: string) => {
+    setBusyKey(key);
+    try {
+      await fmsRequest(path, { method: "POST", body: "{}" });
+      onAction(message);
+      load();
+      onOrderChanged();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 150) : "Action failed", "warn");
+    } finally { setBusyKey(""); }
+  };
+
+  const consolidateInvoice = async () => {
+    setBusyKey("consolidate");
+    try {
+      const result = await fmsRequest<any>(`trips/${trip.id}/consolidate-invoice/`, { method: "POST", body: "{}" });
+      onAction(result.invoices.length
+        ? `${result.invoices.length} invoice(s) raised${result.skipped.length ? `, ${result.skipped.length} order(s) skipped` : ""}`
+        : "Nothing left to bill on this trip");
+      load();
+      onOrderChanged();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 150) : "Could not raise invoices", "warn");
+    } finally { setBusyKey(""); }
+  };
+
+  if (loading) return <div className="record-section"><p className="eyebrow">TRIP COCKPIT</p><div className="data-state">Loading…</div></div>;
+  if (!data) return null;
+
+  const unbilledOrders = data.orders.filter((row: any) => !row.invoice && row.status === "completed").length;
+
+  return <div className="record-section">
+    <p className="eyebrow">TRIP COCKPIT</p>
+
+    {data.ready_to_close
+      ? <p className="breach-line" style={{ background: "#e9f6ee", color: "#347257" }}>✓ Ready to close — nothing is blocking this trip.</p>
+      : <div className="constraint-breaches">{data.blockers.map((b: string, i: number) => <p key={i} className="breach-line">⚠ {b}</p>)}</div>}
+
+    <div className="margin-strip">
+      <div><span>Revenue</span><strong>{rupees(data.revenue.total)}</strong></div>
+      <div><span>Trip cost (fuel + on-road)</span><strong>{rupees(data.costs.total_cost)}</strong></div>
+      <div><span>Trip profit</span><strong className={data.profit.total >= 0 ? "good" : "bad"}>{rupees(data.profit.total)}</strong></div>
+    </div>
+    <p style={{ fontSize: 10, color: "#8a938e", marginTop: 8 }}>
+      Shared cost split by <strong>{data.costs.basis}</strong> across {data.orders.length} order{data.orders.length === 1 ? "" : "s"} —
+      fuel {rupees(data.costs.shared_fuel)}, on-road {rupees(data.costs.shared_expenses)}.
+    </p>
+    {unbilledOrders > 1 && <button className="secondary" style={{ marginTop: 10 }} disabled={busyKey === "consolidate"}
+             onClick={consolidateInvoice}>
+      {busyKey === "consolidate" ? "Raising…" : `Consolidate & raise invoices for ${unbilledOrders} delivered orders`}
+    </button>}
+
+    <div className="table-wrap" style={{ marginTop: 12 }}>
+      <table>
+        <thead><tr><th>Order</th><th>Status</th><th>LR</th><th>POD</th><th>Invoice</th><th>Revenue</th><th>Cost</th><th>Profit</th></tr></thead>
+        <tbody>{data.orders.map((row: any) => <tr key={row.id}>
+          <td><strong>{row.number}</strong><small>{row.customer}</small></td>
+          <td><span className={"status " + row.status}>{row.status}</span></td>
+          <td>{row.lorry_receipt
+            ? <button className="row-action" onClick={() => downloadPdf(`lorry-receipts/${row.lorry_receipt.id}/pdf/`, `${row.lorry_receipt.number}.pdf`)}>{row.lorry_receipt.number}</button>
+            : <button className="row-action" disabled={busyKey === `lr-${row.id}`}
+                     onClick={() => runAction(`lr-${row.id}`, `orders/${row.id}/generate-lr/`, "Lorry receipt generated")}>Generate</button>}</td>
+          <td>{row.pod.verified ? "✓ verified"
+            : row.pod.pending_proof_id ? <button className="row-action" disabled={busyKey === `pod-${row.id}`}
+                     onClick={() => runAction(`pod-${row.id}`, `proofs/${row.pod.pending_proof_id}/verify/`, "POD verified")}>Verify</button>
+            : row.pod.captured ? "captured" : row.pod.required ? "awaited" : "not required"}</td>
+          <td>{row.invoice
+            ? <button className="row-action" onClick={() => downloadPdf(`invoices/${row.invoice.id}/pdf/`, `${row.invoice.number}.pdf`)}>{row.invoice.number}</button>
+            : row.status === "completed" ? <button className="row-action" disabled={busyKey === `inv-${row.id}`}
+                     onClick={() => runAction(`inv-${row.id}`, `orders/${row.id}/invoice/`, "Invoice raised")}>Raise</button> : "—"}</td>
+          <td>{rupees(row.revenue)}</td>
+          <td>{rupees(row.cost.total)}</td>
+          <td className={row.profit >= 0 ? "good" : "bad"}>{rupees(row.profit)}</td>
+        </tr>)}</tbody>
+      </table>
+    </div>
+
+    {!!data.documents.some((d: any) => d.type === "pod") && <div className="chip-list" style={{ marginTop: 12 }}>
+      {data.documents.filter((d: any) => d.type === "pod").map((doc: any, i: number) =>
+        <a key={i} className="chip" href={doc.url} target="_blank" rel="noreferrer">{doc.label}</a>)}
+    </div>}
+  </div>;
+}
+
 // The trip sheet a transport office already fills in by hand: load type, load/unload
 // dates, planned vs. billable distance, odometer, freight, the diesel/cash advance,
 // and every expense line - captured here in one submission and settled automatically
@@ -1324,13 +1434,18 @@ function TripSettlementPanel({ trip, onAction, onSaved }: { trip: any; onAction:
       </label>)}
     </div>
     {summary && <div className="margin-strip" style={{ marginTop: 16 }}>
-      <div><span>Total expense</span><strong>{rupees(summary.total_exp)}</strong></div>
-      <div><span>Diesel given</span><strong>{rupees(summary.diesel_given)}</strong></div>
-      <div><span>Difference</span><strong className={summary.difference <= 0 ? "good" : "bad"}>{rupees(summary.difference)}</strong></div>
-      <div><span>Per km cost</span><strong>₹{summary.per_km_exp}</strong></div>
+      <div><span>Booked expense (excl. fuel)</span><strong>{rupees(summary.total_exp)}</strong></div>
+      <div><span>Diesel given (advance)</span><strong>{rupees(summary.diesel_given)}</strong></div>
+      <div><span>Advance vs. expense</span><strong className={summary.difference <= 0 ? "good" : "bad"}>{rupees(summary.difference)}</strong></div>
+      <div><span>Per km cost (excl. fuel)</span><strong>₹{summary.per_km_exp}</strong></div>
       <div><span>Per km revenue</span><strong>₹{summary.per_km_rev}</strong></div>
-      <div><span>Trip profit</span><strong className={summary.trip_profit >= 0 ? "good" : "bad"}>{rupees(summary.trip_profit)}</strong></div>
+      <div><span>Margin (excl. fuel)</span><strong className={summary.trip_profit >= 0 ? "good" : "bad"}>{rupees(summary.trip_profit)}</strong></div>
     </div>}
+    <p style={{ fontSize: 10, color: "#8a938e", marginTop: 8 }}>
+      The figures above are the driver's cash-advance reconciliation and deliberately exclude fuel,
+      which may be paid on a company card rather than the driver's own advance — see the all-in
+      revenue, cost and profit in the Trip Cockpit above.
+    </p>
     <button className="primary full-button" disabled={busy} style={{ marginTop: 16 }}>{busy ? "Saving…" : "Save trip settlement"}</button>
   </form>;
 }
@@ -1471,6 +1586,7 @@ function FleetOpsView({ name, onAction, reloadKey, openAction }: { name: string;
                   style={{ whiteSpace: "nowrap" }}>{linking ? "Linking…" : "Add to trip"}</button>
         </div>}
       </div>
+      <TripCockpitPanel trip={tripDetail} onAction={onAction} onOrderChanged={() => refreshTripDetail(tripDetail)} />
       <TripSettlementPanel trip={tripDetail} onAction={onAction} onSaved={updated => { setTripDetail(updated); load(); }} />
       <div className="record-actions" style={{ marginTop: 18 }}>
         <button className="secondary" onClick={() => setTripDetail(null)}>Close</button>
