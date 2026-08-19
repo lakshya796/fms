@@ -168,6 +168,42 @@ class TripViewSet(viewsets.ModelViewSet):
     ).all().order_by("-created_at")
     serializer_class = TripSerializer
 
+    @staticmethod
+    def _validate_order_can_join_trip(order, trip=None):
+        """Keep a consignment from entering two conflicting workflows."""
+        if order.status not in ("created", "assigned"):
+            raise ValidationError(
+                f"Order {order.number} is {order.status} and cannot be added to a planned trip."
+            )
+        if order.trip_id and (trip is None or order.trip_id != trip.pk):
+            raise ValidationError(
+                f"Order {order.number} is already on trip {order.trip.number}. Remove it first."
+            )
+        if trip and order.vehicle_id and order.vehicle_id != trip.vehicle_id:
+            raise ValidationError(
+                f"Order {order.number} is assigned to a different vehicle. Unassign it first."
+            )
+        if trip and order.driver_id and order.driver_id != trip.driver_id:
+            raise ValidationError(
+                f"Order {order.number} is assigned to a different driver. Unassign it first."
+            )
+
+    @staticmethod
+    def _assign_order_to_trip(order, trip):
+        order.trip = trip
+        order.vehicle = trip.vehicle
+        order.driver = trip.driver
+        order.status = "assigned"
+        if not order.scheduled_at:
+            order.scheduled_at = trip.planned_departure
+        order.save(update_fields=["trip", "vehicle", "driver", "status", "scheduled_at", "updated_at"])
+        if order.lorry_receipt_id:
+            trip.lorry_receipts.add(order.lorry_receipt_id)
+        order.log(
+            "assigned", "ORDER_TRIP_ASSIGNED",
+            f"Trip {trip.number} · {trip.vehicle.registration_number} · {trip.driver.name}",
+        )
+
     @action(detail=False, methods=["post"], url_path="create-from-orders")
     @transaction.atomic
     def create_from_orders(self, request):
@@ -176,31 +212,53 @@ class TripViewSet(viewsets.ModelViewSet):
         from .models import Order as _Order
         from rest_framework.exceptions import ValidationError as _VE
         order_ids = request.data.get("orders") or []
+        if not isinstance(order_ids, (list, tuple)):
+            raise _VE("orders must be a list of order ids.")
         if not order_ids:
             raise _VE("Select at least one order.")
+        try:
+            order_ids = [int(order_id) for order_id in order_ids]
+        except (TypeError, ValueError):
+            raise _VE("Every order id must be a number.")
+        if len(order_ids) != len(set(order_ids)):
+            raise _VE("The same order cannot be selected twice.")
         vehicle_id = request.data.get("vehicle")
         driver_id = request.data.get("driver")
         if not vehicle_id or not driver_id:
             raise _VE("Pick a vehicle and a driver.")
-        orders = list(_Order.objects.select_related("pickup", "dropoff").filter(pk__in=order_ids))
+        try:
+            vehicle = Vehicle.objects.select_for_update().get(pk=vehicle_id)
+            driver = Driver.objects.select_for_update().get(pk=driver_id)
+        except (Vehicle.DoesNotExist, Driver.DoesNotExist):
+            raise _VE("The selected vehicle or driver no longer exists.")
+        if vehicle.current_trip_id:
+            raise _VE(f"Vehicle {vehicle.registration_number} is already committed to another trip.")
+        if Trip.objects.filter(driver=driver).exclude(status__in=["closed", "cancelled"]).exists():
+            raise _VE(f"Driver {driver.name} is already committed to another trip.")
+        orders = list(_Order.objects.select_for_update().select_related(
+            "pickup", "dropoff", "trip", "lorry_receipt"
+        ).filter(pk__in=order_ids))
         found_ids = {order.id for order in orders}
-        missing = [str(order_id) for order_id in order_ids if int(order_id) not in found_ids]
+        missing = [str(order_id) for order_id in order_ids if order_id not in found_ids]
         if missing:
             raise _VE(f"Order(s) not found: {', '.join(missing)}.")
-        already_linked = [order.number for order in orders if order.trip_id]
-        if already_linked:
-            raise _VE(f"Already on a trip: {', '.join(already_linked)}. Remove them first.")
+        orders_by_id = {order.id: order for order in orders}
+        orders = [orders_by_id[order_id] for order_id in order_ids]
+        for order in orders:
+            self._validate_order_can_join_trip(order)
         first, last = orders[0], orders[-1]
         trip = Trip.objects.create(
             number=request.data.get("number") or ("TRP-" + timezone.now().strftime("%y%m%d") + uuid4().hex[:5].upper()),
-            vehicle_id=vehicle_id, driver_id=driver_id,
+            vehicle=vehicle, driver=driver,
             origin=request.data.get("origin") or (first.pickup.city or first.pickup.name),
             destination=request.data.get("destination") or (last.dropoff.city or last.dropoff.name),
             planned_departure=request.data.get("planned_departure") or timezone.now(),
             advance_amount=request.data.get("advance_amount") or 0,
             estimated_cost=request.data.get("estimated_cost") or 0,
         )
-        _Order.objects.filter(pk__in=found_ids).update(trip=trip)
+        for order in orders:
+            self._assign_order_to_trip(order, trip)
+        set_vehicle_status(vehicle, "allocated", trip=trip, reason=f"Assigned to trip {trip.number}")
         return Response(self.get_serializer(trip).data, status=http_status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"], url_path="add-order")
@@ -210,6 +268,8 @@ class TripViewSet(viewsets.ModelViewSet):
         from .models import Order as _Order
         from rest_framework.exceptions import ValidationError as _VE
         trip = self.get_object()
+        if trip.status != "planned":
+            raise _VE("Orders can only be added to a planned trip.")
         order_id = request.data.get("order")
         if not order_id:
             raise _VE("Provide an order id.")
@@ -217,10 +277,10 @@ class TripViewSet(viewsets.ModelViewSet):
             order = _Order.objects.select_related("trip").get(pk=order_id)
         except _Order.DoesNotExist:
             raise _VE("Order not found.")
-        if order.trip_id and order.trip_id != trip.pk:
-            raise _VE(f"Order {order.number} is already on trip {order.trip.number}. Remove it first.")
-        order.trip = trip
-        order.save(update_fields=["trip", "updated_at"])
+        self._validate_order_can_join_trip(order, trip)
+        if order.trip_id == trip.pk:
+            return Response(self.get_serializer(self.get_object()).data)
+        self._assign_order_to_trip(order, trip)
         return Response(self.get_serializer(self.get_object()).data)
 
     @action(detail=True, methods=["post"], url_path="remove-order")
@@ -228,28 +288,72 @@ class TripViewSet(viewsets.ModelViewSet):
     def remove_order(self, request, pk=None):
         """Unlink an order from this trip."""
         from .models import Order as _Order
+        from rest_framework.exceptions import ValidationError as _VE
         trip = self.get_object()
-        _Order.objects.filter(pk=request.data.get("order"), trip=trip).update(trip=None)
+        if trip.status != "planned":
+            raise _VE("Orders can only be removed from a planned trip.")
+        order = _Order.objects.filter(pk=request.data.get("order"), trip=trip).first()
+        if not order:
+            raise _VE("That order is not linked to this trip.")
+        order.trip = None
+        order.vehicle = None
+        order.driver = None
+        order.status = "created"
+        order.scheduled_at = None
+        order.save(update_fields=["trip", "vehicle", "driver", "status", "scheduled_at", "updated_at"])
+        order.log("created", "ORDER_TRIP_REMOVED", f"Removed from trip {trip.number}")
+        if not trip.orders.exists():
+            set_vehicle_status(trip.vehicle, "available", trip=None, reason=f"Last order removed from {trip.number}")
         return Response(self.get_serializer(self.get_object()).data)
 
     @action(detail=True, methods=["post"], url_path="dispatch")
     @transaction.atomic
     def dispatch_trip(self, request, pk=None):
         trip = self.get_object()
+        if trip.status != "planned":
+            raise ValidationError("Only a planned trip can be dispatched.")
+        orders = list(trip.orders.select_for_update().select_related("vehicle", "driver"))
+        if not orders:
+            raise ValidationError("Add at least one order before dispatching the trip.")
+        invalid = [order.number for order in orders if order.status not in ("created", "assigned")]
+        if invalid:
+            raise ValidationError(f"Order(s) are not ready for dispatch: {', '.join(invalid)}.")
+        conflicts = [order.number for order in orders
+                     if (order.vehicle_id and order.vehicle_id != trip.vehicle_id)
+                     or (order.driver_id and order.driver_id != trip.driver_id)]
+        if conflicts:
+            raise ValidationError(f"Order(s) have a conflicting vehicle or driver: {', '.join(conflicts)}.")
         trip.status = "dispatched"; trip.actual_departure = timezone.now(); trip.save()
         set_vehicle_status(trip.vehicle, "running", trip=trip, reason="Trip dispatched")
         trip.driver.status = "on_trip"; trip.driver.save(update_fields=["status"])
         # An LR is a legal precondition for the goods moving - issue one now for
         # every order on the trip that does not already have one, rather than
         # leaving it to an operator to remember (docs/ONE-TRIP-END-TO-END.md §5 Phase 1).
-        for order in trip.orders.filter(lorry_receipt__isnull=True):
-            build_lr_from_order(order)
+        for order in orders:
+            order.vehicle = trip.vehicle
+            order.driver = trip.driver
+            order.status = "dispatched"
+            order.dispatched_at = trip.actual_departure
+            order.save(update_fields=["vehicle", "driver", "status", "dispatched_at", "updated_at"])
+            if not order.lorry_receipt_id:
+                build_lr_from_order(order)
+            order.log("dispatched", "ORDER_TRIP_DISPATCHED", f"Trip {trip.number} dispatched")
         trip.lorry_receipts.update(status="dispatched")
         return Response(self.get_serializer(trip).data)
     @action(detail=True, methods=["post"])
     @transaction.atomic
     def close(self, request, pk=None):
         trip = self.get_object()
+        if trip.status not in ("dispatched", "in_transit"):
+            raise ValidationError("Only a dispatched or in-transit trip can be closed.")
+        orders = list(trip.orders.all())
+        if not orders:
+            raise ValidationError("A trip with no orders cannot be closed.")
+        incomplete = [order.number for order in orders if order.status != "completed"]
+        if incomplete:
+            raise ValidationError(
+                f"Complete delivery and POD for these order(s) before closing the trip: {', '.join(incomplete)}."
+            )
         trip.status = "closed"; trip.arrival_at = trip.arrival_at or timezone.now(); trip.save()
         set_vehicle_status(trip.vehicle, "available", trip=None, reason="Trip closed")
         trip.driver.status = "available"; trip.driver.save(update_fields=["status"])
@@ -957,13 +1061,17 @@ class OrderViewSet(FilterableViewSet):
         order.completed_at = timezone.now()
         order.save()
         order.waypoints.filter(status="pending").update(status="completed", actual_arrival=timezone.now())
-        if order.trip_id:
+        trip_finished = not order.trip_id or not order.trip.orders.exclude(pk=order.pk).exclude(
+            status__in=["completed", "cancelled"]
+        ).exists()
+        if order.trip_id and trip_finished:
             order.trip.status = "closed"
             order.trip.arrival_at = order.completed_at
             order.trip.save(update_fields=["status", "arrival_at", "updated_at"])
-        if order.vehicle_id:
+            order.trip.lorry_receipts.update(status="delivered")
+        if order.vehicle_id and trip_finished:
             set_vehicle_status(order.vehicle, "available", trip=None, place=order.dropoff, reason="Order completed")
-        if order.driver_id:
+        if order.driver_id and trip_finished:
             Driver.objects.filter(pk=order.driver_id).update(status="available")
         order.log("completed", "ORDER_COMPLETED", proof.receiver_name if proof else "Delivered", city=order.dropoff.city)
         return Response(self.get_serializer(order).data)
@@ -1712,7 +1820,9 @@ def order_profitability(request, pk):
     Phase 2 for why that used to double- (or quintuple-) count fuel and drop
     trip-keyed expenses from every order's P&L entirely.
     """
-    order = Order.objects.filter(pk=pk).select_related("vehicle", "trip").first()
+    order = Order.objects.filter(pk=pk).select_related("vehicle", "trip", "lorry_receipt").prefetch_related(
+        "proofs", "invoices"
+    ).first()
     if not order:
         return Response({"detail": "Order not found."}, status=404)
     revenue = money(order.total_amount)
@@ -1732,6 +1842,21 @@ def order_profitability(request, pk):
         cost = expenses
         cost_basis = "order_only"
     profit = money(revenue - cost)
+    blockers = []
+    if not order.trip_id:
+        blockers.append("Assign the order to a trip before finalizing P&L.")
+    elif order.trip.status != "closed":
+        blockers.append("Close the trip before treating this P&L as final.")
+    if not order.lorry_receipt_id:
+        blockers.append("Generate the lorry receipt before dispatch.")
+    if order.status != "completed":
+        blockers.append("Complete the order before treating this P&L as final.")
+    if order.pod_required and not order.proofs.filter(status="verified").exists():
+        blockers.append("Verify the POD before invoice and final P&L.")
+    if not order_invoice(order):
+        blockers.append("Generate the invoice before treating this P&L as final.")
+    if order.trip_id and order.trip.expenses.filter(status="pending").exists():
+        blockers.append("Approve or reject all pending trip expenses before final P&L.")
     return Response({
         "order": order.number, "vehicle": getattr(order.vehicle, "registration_number", ""),
         "revenue": float(revenue), "trip_expenses": float(expenses), "fuel": float(fuel),
@@ -1739,6 +1864,7 @@ def order_profitability(request, pk):
         "margin_percent": float(round(profit / revenue * 100, 2)) if revenue else 0.0,
         "cost_per_km": float(money(cost / order.distance_km)) if order.distance_km else 0.0,
         "cost_basis": cost_basis,
+        "readiness": {"is_final": not blockers, "blockers": blockers},
     })
 
 

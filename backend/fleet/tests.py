@@ -1035,8 +1035,68 @@ class TripCreationFromOrdersTests(BaseFleetOpsTest):
         o1.refresh_from_db(); o2.refresh_from_db()
         self.assertEqual(o1.trip_id, trip_id)
         self.assertEqual(o2.trip_id, trip_id)
+        self.assertEqual(o1.status, "assigned")
+        self.assertEqual(o2.status, "assigned")
+        self.assertEqual(o1.vehicle_id, self.vehicle.id)
+        self.assertEqual(o2.driver_id, self.driver.id)
+        self.assertIsNotNone(o1.scheduled_at)
+        self.assertEqual(o1.activities.first().code, "ORDER_TRIP_ASSIGNED")
+        self.vehicle.refresh_from_db()
+        self.assertEqual(self.vehicle.status, "allocated")
+        self.assertEqual(self.vehicle.current_trip_id, trip_id)
         self.assertEqual(response.data["origin"], "Bhiwandi")
         self.assertEqual(response.data["destination"], "Chakan")
+
+    def test_rejects_an_order_that_has_already_finished_its_workflow(self):
+        order = self._order(number="ORD-CFO-DONE", status="completed")
+
+        response = self.client.post("/api/v1/trips/create-from-orders/", {
+            "orders": [order.id], "vehicle": self.vehicle.id, "driver": self.driver.id,
+        }, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("cannot be added", str(response.data))
+
+    def test_dispatching_trip_updates_every_linked_order_and_generates_lr(self):
+        o1 = self._order(number="ORD-CFO-DISPATCH-1")
+        o2 = self._order(number="ORD-CFO-DISPATCH-2")
+        created = self.client.post("/api/v1/trips/create-from-orders/", {
+            "orders": [o1.id, o2.id], "vehicle": self.vehicle.id, "driver": self.driver.id,
+        }, format="json")
+
+        response = self.client.post(f"/api/v1/trips/{created.data['id']}/dispatch/")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        o1.refresh_from_db(); o2.refresh_from_db()
+        self.assertEqual(o1.status, "dispatched")
+        self.assertEqual(o2.status, "dispatched")
+        self.assertIsNotNone(o1.dispatched_at)
+        self.assertIsNotNone(o2.dispatched_at)
+        self.assertIsNotNone(o1.lorry_receipt_id)
+        self.assertIsNotNone(o2.lorry_receipt_id)
+
+    def test_multi_order_trip_stays_open_until_last_order_is_completed(self):
+        o1 = self._order(number="ORD-CFO-CLOSE-1", pod_required=False)
+        o2 = self._order(number="ORD-CFO-CLOSE-2", pod_required=False)
+        created = self.client.post("/api/v1/trips/create-from-orders/", {
+            "orders": [o1.id, o2.id], "vehicle": self.vehicle.id, "driver": self.driver.id,
+        }, format="json")
+        trip = Trip.objects.get(pk=created.data["id"])
+        self.client.post(f"/api/v1/trips/{trip.id}/dispatch/")
+
+        first = self.client.post(f"/api/v1/orders/{o1.id}/complete/")
+        trip.refresh_from_db(); self.vehicle.refresh_from_db(); self.driver.refresh_from_db()
+        self.assertEqual(first.status_code, 200, first.data)
+        self.assertEqual(trip.status, "dispatched")
+        self.assertEqual(self.vehicle.status, "running")
+        self.assertEqual(self.driver.status, "on_trip")
+
+        second = self.client.post(f"/api/v1/orders/{o2.id}/complete/")
+        trip.refresh_from_db(); self.vehicle.refresh_from_db(); self.driver.refresh_from_db()
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertEqual(trip.status, "closed")
+        self.assertEqual(self.vehicle.status, "available")
+        self.assertEqual(self.driver.status, "available")
 
     def test_rejects_an_order_already_on_another_trip(self):
         o1 = self._order(number="ORD-CFO-3", driver=self.driver, vehicle=self.vehicle)
