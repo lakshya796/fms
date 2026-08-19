@@ -40,6 +40,15 @@ Two guards enforce that boundary, both tested against a real server:
 | `ALLOWED_HOSTS` | `api-test.phloz.app,localhost,127.0.0.1` | |
 | `CORS_ORIGINS` | `https://track.phloz.app,https://main.d12iaal63qqmzf.amplifyapp.com` | comma-separated, no trailing slash on any origin |
 
+## Fleet document storage
+
+ePOD photos and PDFs are streamed to private S3 storage; they are never written
+to the application server. Set `FMS_S3_BUCKET` (default `phlozmedia`) and
+`FMS_S3_REGION` (default `ap-south-1`) in `shared/fms.env`. The EC2 instance role
+must allow `s3:PutObject` and `s3:GetObject` for `fleet/pod-documents/*` in that
+bucket. Downloads remain authenticated by streaming the private S3 object
+through the order API.
+
 ## What it does
 
 1. **Database** — creates `fms` and the `fms_app` role on the PostgreSQL server, after the

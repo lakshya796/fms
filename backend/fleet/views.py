@@ -731,7 +731,7 @@ from decimal import Decimal
 from uuid import uuid4
 from django.db.models import Avg, Count, F, Q
 from rest_framework import status as http_status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import APIException, ValidationError
 from .models import (Vendor, ServiceArea, Zone, Place, Fleet, ServiceRate, ServiceQuote, Order, Waypoint,
                      TrackingActivity, ProofOfDelivery, FuelEntry, TripExpense, Issue, ComplianceDocument,
                      MaintenanceSchedule, VehicleHire, ORDER_STATUSES, haversine_km, money)
@@ -749,6 +749,11 @@ from .vendor_billing import HireBillingError, confirmation_email, raise_vendor_b
 from .allocation import recommend_vehicles
 from accounting.services import PostingError, post_customer_invoice
 from iam import messaging as outbound_messaging
+
+
+class DocumentStorageUnavailable(APIException):
+    status_code = http_status.HTTP_503_SERVICE_UNAVAILABLE
+    default_code = "document_storage_unavailable"
 
 
 class FilterableViewSet(viewsets.ModelViewSet):
@@ -1031,23 +1036,58 @@ class OrderViewSet(FilterableViewSet):
 
     @action(detail=True, methods=["post"], url_path="pod-document-upload")
     def pod_document_upload(self, request, pk=None):
-        """Upload a POD document (photo or PDF). Returns a URL to pass as file_url in pod-submit."""
+        """Stream a POD photo/PDF to private S3 and return its API download URL."""
         import os
-        from pathlib import Path
-        from django.conf import settings as _settings
+        from rest_framework.reverse import reverse
+        from . import storage
+
         order = self.get_object()
         uploaded = request.FILES.get("document")
         if not uploaded:
             raise ValidationError("No file received. POST multipart/form-data with a 'document' field.")
+        if uploaded.size > 20 * 1024 * 1024:
+            raise ValidationError("POD documents cannot be larger than 20 MB.")
+        content_type = (uploaded.content_type or "").lower()
+        if content_type != "application/pdf" and not content_type.startswith("image/"):
+            raise ValidationError("Upload a PDF or image file for the POD.")
         ext = os.path.splitext(uploaded.name)[1].lower() or ".bin"
-        filename = f"pod-documents/{order.pk}_{uuid4().hex[:10]}{ext}"
-        dest = Path(_settings.MEDIA_ROOT) / filename
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        with open(dest, "wb") as f:
-            for chunk in uploaded.chunks():
-                f.write(chunk)
-        url = request.build_absolute_uri(_settings.MEDIA_URL + filename)
-        return Response({"url": url}, status=http_status.HTTP_201_CREATED)
+        document_name = f"{uuid4().hex}{ext}"
+        key = f"fleet/pod-documents/{order.pk}/{document_name}"
+        try:
+            storage.store_upload(key, uploaded)
+        except storage.DocumentStorageError as error:
+            raise DocumentStorageUnavailable(str(error))
+        url = reverse(
+            "order-pod-document-download",
+            kwargs={"pk": order.pk, "document_name": document_name},
+            request=request,
+        )
+        return Response({"url": url, "storage": "s3"}, status=http_status.HTTP_201_CREATED)
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path=r"pod-document/(?P<document_name>[A-Za-z0-9._-]+)",
+        url_name="pod-document-download",
+    )
+    def pod_document_download(self, request, pk=None, document_name=None):
+        """Stream a private POD from S3 after normal API authentication."""
+        import mimetypes
+        from django.http import FileResponse
+        from . import storage
+
+        order = self.get_object()
+        key = f"fleet/pod-documents/{order.pk}/{document_name}"
+        try:
+            stream = storage.open_file(key)
+        except storage.DocumentStorageError as error:
+            raise DocumentStorageUnavailable(str(error))
+        if stream is None:
+            from rest_framework.exceptions import NotFound
+
+            raise NotFound("POD document not found.")
+        content_type = mimetypes.guess_type(document_name)[0] or "application/octet-stream"
+        return FileResponse(stream, content_type=content_type, filename=document_name)
 
     @action(detail=True, methods=["post"])
     @transaction.atomic

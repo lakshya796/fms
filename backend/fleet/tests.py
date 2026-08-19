@@ -2084,25 +2084,64 @@ class OrderViewSetTest(BaseFleetOpsTest):
 
     def test_upload_returns_a_url(self):
         from io import BytesIO
-        from django.test import override_settings
-        import tempfile, os
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
         order = self._make_order()
         content = b"%PDF-1.4 fake pdf content"
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with override_settings(MEDIA_ROOT=tmpdir, MEDIA_URL="/media/"):
-                r = self.client.post(
-                    f"/api/v1/orders/{order.id}/pod-document-upload/",
-                    {"document": BytesIO(content)},
-                    format="multipart",
-                )
+        upload = SimpleUploadedFile("signed-pod.pdf", content, content_type="application/pdf")
+        with mock.patch("fleet.storage.store_upload") as store_upload:
+            r = self.client.post(
+                f"/api/v1/orders/{order.id}/pod-document-upload/",
+                {"document": upload},
+                format="multipart",
+            )
         self.assertEqual(r.status_code, 201, r.data)
-        self.assertIn("url", r.data)
-        self.assertIn("pod-documents", r.data["url"])
+        self.assertEqual(r.data["storage"], "s3")
+        self.assertIn(f"/orders/{order.id}/pod-document/", r.data["url"])
+        key = store_upload.call_args.args[0]
+        self.assertTrue(key.startswith(f"fleet/pod-documents/{order.id}/"))
+        self.assertTrue(key.endswith(".pdf"))
+
+        document_name = r.data["url"].rstrip("/").rsplit("/", 1)[-1]
+        with mock.patch("fleet.storage.open_file", return_value=BytesIO(content)) as open_file:
+            downloaded = self.client.get(r.data["url"])
+        self.assertEqual(downloaded.status_code, 200)
+        self.assertEqual(b"".join(downloaded.streaming_content), content)
+        open_file.assert_called_once_with(f"fleet/pod-documents/{order.id}/{document_name}")
 
     def test_upload_without_file_is_rejected(self):
         order = self._make_order()
         r = self.client.post(f"/api/v1/orders/{order.id}/pod-document-upload/", {}, format="json")
         self.assertEqual(r.status_code, 400)
+
+    def test_upload_rejects_non_document_content(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        order = self._make_order()
+        upload = SimpleUploadedFile("payload.exe", b"not a document", content_type="application/octet-stream")
+        with mock.patch("fleet.storage.store_upload") as store_upload:
+            r = self.client.post(
+                f"/api/v1/orders/{order.id}/pod-document-upload/",
+                {"document": upload},
+                format="multipart",
+            )
+        self.assertEqual(r.status_code, 400)
+        store_upload.assert_not_called()
+
+    def test_s3_failure_is_reported_as_service_unavailable(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from fleet.storage import DocumentStorageError
+
+        order = self._make_order()
+        upload = SimpleUploadedFile("signed-pod.pdf", b"%PDF-1.4", content_type="application/pdf")
+        with mock.patch("fleet.storage.store_upload", side_effect=DocumentStorageError("S3 is unavailable.")):
+            r = self.client.post(
+                f"/api/v1/orders/{order.id}/pod-document-upload/",
+                {"document": upload},
+                format="multipart",
+            )
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("S3 is unavailable", str(r.data))
 
 
 class InvoiceViewSetTest(AutomaticInvoiceTests):

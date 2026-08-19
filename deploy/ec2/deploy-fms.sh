@@ -26,8 +26,15 @@ fi
 if [ ! -f "${APP_ROOT}/shared/fms.env" ]; then
     secret=$("${APP_ROOT}/venv/bin/python" -c 'import secrets; print(secrets.token_urlsafe(64))')
     umask 077
-    printf 'DJANGO_SECRET_KEY=%s\nDJANGO_DEBUG=false\nDJANGO_ALLOWED_HOSTS=api-test.phloz.app,127.0.0.1,localhost\nCORS_ALLOWED_ORIGINS=https://track.phloz.app,https://main.d12iaal63qqmzf.amplifyapp.com\nUSE_SQLITE=true\nMEDIA_ROOT=%s/shared/media\nDJANGO_SCRIPT_NAME=/fms\n' "$secret" "${APP_ROOT}" > "${APP_ROOT}/shared/fms.env"
+    printf 'DJANGO_SECRET_KEY=%s\nDJANGO_DEBUG=false\nDJANGO_ALLOWED_HOSTS=api-test.phloz.app,127.0.0.1,localhost\nCORS_ALLOWED_ORIGINS=https://track.phloz.app,https://main.d12iaal63qqmzf.amplifyapp.com\nUSE_SQLITE=true\nMEDIA_ROOT=%s/shared/media\nDJANGO_SCRIPT_NAME=/fms\nFMS_S3_BUCKET=phlozmedia\nFMS_S3_REGION=ap-south-1\n' "$secret" "${APP_ROOT}" > "${APP_ROOT}/shared/fms.env"
 fi
+
+# Fleet documents are streamed to S3 rather than the release or shared disk.
+# Backfill installations whose environment predates the upload flow.
+grep -q '^FMS_S3_BUCKET=' "${APP_ROOT}/shared/fms.env" \
+    || echo 'FMS_S3_BUCKET=phlozmedia' >> "${APP_ROOT}/shared/fms.env"
+grep -q '^FMS_S3_REGION=' "${APP_ROOT}/shared/fms.env" \
+    || echo 'FMS_S3_REGION=ap-south-1' >> "${APP_ROOT}/shared/fms.env"
 
 # Uploads (template artwork) must outlive the release they were uploaded into.
 # Without MEDIA_ROOT the settings default is BASE_DIR/media - inside the
