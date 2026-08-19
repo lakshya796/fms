@@ -268,6 +268,8 @@ def collect_tasks(plan, filters=None):
             if pickup.latitude is not None and dropoff.latitude is not None:
                 distance_km, _ = matrix.distance_and_duration(
                     (pickup.latitude, pickup.longitude), (dropoff.latitude, dropoff.longitude))
+            if getattr(obj, "expected_running_km", None):
+                distance_km = obj.expected_running_km
             revenue = money(getattr(obj, "total_amount", None) or getattr(obj, "expected_rate", None) or 0)
             # Lane-level pricing (docs/DISPATCH-PLANNER-V2.md §7.1) rather than
             # one flat national rate for every lane, vehicle type and season.
@@ -275,14 +277,21 @@ def collect_tasks(plan, filters=None):
             rate_per_km, confidence = costing.spot_rate_for_lane(
                 pickup, dropoff, distance_km=distance_km, vehicle_type=vehicle_type, temperature_class=obj.temperature_class)
             outsource = money((distance_km or Decimal("0")) * rate_per_km)
-            deadline = getattr(obj, "required_at", None) or getattr(obj, "scheduled_at", None)
-            pickup_start, pickup_end = _pickup_window(pickup, deadline)
-            task_type = "ftl" if getattr(obj, "order_type", "ftl") == "ftl" else "multi_drop_leg"
+            pickup_deadline = getattr(obj, "required_at", None) or getattr(obj, "scheduled_at", None)
+            delivery_deadline = getattr(obj, "expected_delivery_at", None) or pickup_deadline
+            pickup_start, pickup_end = _pickup_window(pickup, pickup_deadline)
+            load_type = getattr(obj, "order_type", None)
+            if kind == "indent":
+                load_type = "ptl" if obj.indent_type == "part_load" else "ftl"
+            task_type = "ftl" if load_type == "ftl" else "multi_drop_leg"
+            temp_set_point = obj.temp_set_point_c
+            if temp_set_point is None and getattr(obj, "temp_min_c", None) is not None and getattr(obj, "temp_max_c", None) is not None:
+                temp_set_point = (obj.temp_min_c + obj.temp_max_c) / Decimal("2")
             created.append(DispatchTask.objects.create(
                 plan=plan, order=obj if kind == "order" else None, indent=obj if kind == "indent" else None,
                 task_type=task_type, pickup=pickup, dropoff=dropoff, weight_kg=obj.weight_kg or 0,
                 volume_cbm=getattr(obj, "volume_cbm", 0) or 0, temperature_class=obj.temperature_class,
-                temp_set_point_c=obj.temp_set_point_c, pickup_window_start=pickup_start, pickup_window_end=pickup_end,
+                temp_set_point_c=temp_set_point, pickup_window_start=pickup_start, pickup_window_end=pickup_end,
                 revenue_estimate=revenue, outsource_estimate=outsource, outsource_confidence=confidence,
-                drop_window_end=deadline, priority=_priority_from(obj)))
+                drop_window_end=delivery_deadline, priority=_priority_from(obj)))
     return created

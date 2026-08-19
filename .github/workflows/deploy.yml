@@ -56,8 +56,18 @@ jobs:
           KEY: ${{ secrets.EC2_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$KEY" > ~/.ssh/deploy.pem
+          if printf '%s' "$KEY" | grep -q '\\n'; then
+            printf '%b\n' "$KEY" | tr -d '\r' > ~/.ssh/deploy.pem
+          elif printf '%s' "$KEY" | grep -q -- '-----BEGIN .*PRIVATE KEY-----'; then
+            printf '%s\n' "$KEY" | tr -d '\r' > ~/.ssh/deploy.pem
+          else
+            printf '%s' "$KEY" | tr -d '[:space:]' | base64 --decode > ~/.ssh/deploy.pem
+          fi
           chmod 600 ~/.ssh/deploy.pem
+          ssh-keygen -y -f ~/.ssh/deploy.pem > /dev/null || {
+            echo "::error::EC2_SSH_KEY is not a valid private key after normalisation. Replace the repository secret with the full PEM key."
+            exit 1
+          }
           ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Deploy and verify

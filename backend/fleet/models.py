@@ -5,6 +5,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from math import asin, cos, radians, sin, sqrt
 
 from django.db import models
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.utils import timezone
 
 def money(value):
@@ -20,10 +21,31 @@ class Timestamped(models.Model):
     created_at=models.DateTimeField(auto_now_add=True); updated_at=models.DateTimeField(auto_now=True)
     class Meta: abstract=True
 
+POD_PREFERENCES = [("epod", "ePOD"), ("physical", "Physical POD"), ("both", "ePOD and physical POD")]
+INVOICE_DELIVERY_PREFERENCES = [("soft_copy", "Soft copy"), ("hard_copy", "Hard copy"), ("both", "Soft and hard copy")]
+CUSTOMER_TYPES = [("dry", "Dry"), ("reefer", "Reefer"), ("both", "Dry and reefer")]
+PAYMENT_TERMS = [(30, "30 days"), (45, "45 days"), (90, "90 days")]
+VENDOR_ADVANCE_TRIGGERS = [("after_loading", "After vehicle loading")]
+
+
 class Customer(Timestamped):
     name=models.CharField(max_length=180); gstin=models.CharField(max_length=15,unique=True); pan=models.CharField(max_length=10,blank=True)
     phone=models.CharField(max_length=20,blank=True); email=models.EmailField(blank=True); billing_address=models.TextField(blank=True)
     credit_limit=models.DecimalField(max_digits=14,decimal_places=2,default=0); kyc_status=models.CharField(max_length=20,default="pending")
+    billing_party_name=models.CharField(max_length=180,blank=True)
+    billing_contact_name=models.CharField(max_length=120,blank=True)
+    billing_contact_phone=models.CharField(max_length=20,blank=True)
+    billing_contact_email=models.EmailField(blank=True)
+    pod_preference=models.CharField(max_length=12,choices=POD_PREFERENCES,default="epod")
+    invoice_delivery_preference=models.CharField(max_length=12,choices=INVOICE_DELIVERY_PREFERENCES,default="soft_copy")
+    customer_type=models.CharField(max_length=10,choices=CUSTOMER_TYPES,default="both")
+    payment_terms_days=models.PositiveSmallIntegerField(choices=PAYMENT_TERMS,default=30)
+    vendor_vehicle_advance_percent=models.DecimalField(
+        max_digits=5,decimal_places=2,default=90,
+        validators=[MinValueValidator(0),MaxValueValidator(100)],
+        help_text="Advance payable to a vendor when its vehicle is deployed for this customer")
+    vendor_vehicle_advance_trigger=models.CharField(
+        max_length=24,choices=VENDOR_ADVANCE_TRIGGERS,default="after_loading")
     def __str__(self): return self.name
 
 class Driver(Timestamped):
@@ -292,6 +314,8 @@ PLACE_TYPES = [("warehouse", "Warehouse"), ("hub", "Branch / hub"), ("customer",
 ZONE_TYPES = [("delivery", "Delivery zone"), ("pickup", "Pickup zone"), ("hub", "Hub zone"), ("restricted", "Restricted zone")]
 RATE_TYPES = [("per_km", "Per km"), ("per_ton_km", "Per ton per km"), ("per_kg", "Per kg"), ("per_trip", "Fixed per trip"), ("per_hour", "Per hour")]
 ORDER_TYPES = [("ftl", "Full truck load"), ("ptl", "Part truck load"), ("parcel", "Parcel"), ("rental", "Vehicle rental"), ("reverse", "Reverse pickup")]
+DELIVERY_ACCESS_TYPES = [("no_entry_area", "No-entry area"),
+                         ("no_restriction", "Without no-entry restriction")]
 ORDER_STATUSES = ["created", "assigned", "dispatched", "in_transit", "at_dropoff", "completed", "cancelled"]
 PAYMENT_MODES = [("to_pay", "To pay"), ("paid", "Paid"), ("tbb", "To be billed"), ("cod", "Cash on delivery")]
 FUEL_PAYMENT_MODES = [("fastag", "FASTag"), ("fuel_card", "Fuel card"), ("cash", "Cash"), ("upi", "UPI"), ("credit", "Station credit")]
@@ -550,6 +574,12 @@ class Order(Timestamped):
     priority = models.CharField(max_length=20, default="normal")
     temperature_class = models.CharField(max_length=10, choices=VEHICLE_TEMPERATURE_CLASSES, default="dry")
     temp_set_point_c = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    delivery_access = models.CharField(max_length=20, choices=DELIVERY_ACCESS_TYPES, default="no_restriction")
+    expected_delivery_at = models.DateTimeField(null=True, blank=True)
+    expected_running_km = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    temp_min_c = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    temp_max_c = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    temp_tolerance_c = models.DecimalField(max_digits=4, decimal_places=1, default=1)
     pod_required = models.BooleanField(default=True)
     special_instructions = models.TextField(blank=True)
     status = models.CharField(max_length=20, default="created")
@@ -980,6 +1010,7 @@ class MaintenanceSchedule(Timestamped):
 
 INDENT_STATUSES = [("open", "Open"), ("allocated", "Allocated"), ("converted", "Converted to order"),
                    ("cancelled", "Cancelled"), ("rejected", "Rejected")]
+INDENT_TYPES = [("part_load", "Part load"), ("ftl", "Full truck load")]
 
 
 class Indent(Timestamped):
@@ -997,10 +1028,17 @@ class Indent(Timestamped):
     vehicles_required = models.PositiveIntegerField(default=1)
     material = models.CharField(max_length=180, blank=True)
     weight_kg = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    indent_type = models.CharField(max_length=12, choices=INDENT_TYPES, default="ftl")
+    delivery_access = models.CharField(max_length=20, choices=DELIVERY_ACCESS_TYPES, default="no_restriction")
     priority = models.CharField(max_length=20, default="normal")
     temperature_class = models.CharField(max_length=10, choices=VEHICLE_TEMPERATURE_CLASSES, default="dry")
     temp_set_point_c = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    temp_min_c = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    temp_max_c = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
+    temp_tolerance_c = models.DecimalField(max_digits=4, decimal_places=1, default=1)
     required_at = models.DateTimeField(null=True, blank=True)
+    expected_delivery_at = models.DateTimeField(null=True, blank=True)
+    expected_running_km = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     expected_rate = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     service_rate = models.ForeignKey(ServiceRate, on_delete=models.SET_NULL, null=True, blank=True, related_name="indents")
     vehicle = models.ForeignKey(Vehicle, on_delete=models.SET_NULL, null=True, blank=True, related_name="indents")

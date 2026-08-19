@@ -294,3 +294,14 @@ class IndentSerializer(serializers.ModelSerializer):
     driver_name = serializers.CharField(source="driver.name", read_only=True, default="")
     order_number = serializers.CharField(source="order.number", read_only=True, default="")
     class Meta: model = Indent; fields = "__all__"
+
+    def validate(self, attrs):
+        minimum = attrs.get("temp_min_c", getattr(self.instance, "temp_min_c", None))
+        maximum = attrs.get("temp_max_c", getattr(self.instance, "temp_max_c", None))
+        if minimum is not None and maximum is not None and minimum > maximum:
+            raise serializers.ValidationError({"temp_max_c": "Maximum temperature must be at least the minimum temperature."})
+        expected_delivery = attrs.get("expected_delivery_at", getattr(self.instance, "expected_delivery_at", None))
+        required_at = attrs.get("required_at", getattr(self.instance, "required_at", None))
+        if expected_delivery and required_at and expected_delivery < required_at:
+            raise serializers.ValidationError({"expected_delivery_at": "Expected delivery cannot be before the vehicle is required."})
+        return attrs
