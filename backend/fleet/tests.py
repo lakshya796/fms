@@ -15,9 +15,9 @@ from accounting.models import JournalEntry
 from iam.models import OutboundMessage
 from . import geotrackers
 
-from .models import (ComplianceDocument, Customer, Driver, Fleet, FuelEntry, Indent, Invoice, Issue, MaintenanceSchedule, Order,
-                     Place, ProofOfDelivery, ServiceArea, ServiceRate, Trip, TripExpense, Vehicle, VehicleHire, Vendor,
-                     Waypoint, Zone, haversine_km)
+from .models import (ComplianceDocument, Customer, Driver, Fleet, FuelEntry, Indent, Invoice, Issue, LorryReceipt,
+                     MaintenanceSchedule, Order, Place, ProofOfDelivery, ServiceArea, ServiceRate, Trip, TripExpense,
+                     Vehicle, VehicleHire, Vendor, Waypoint, Zone, haversine_km)
 
 class BaseFleetOpsTest(TestCase):
     def setUp(self):
