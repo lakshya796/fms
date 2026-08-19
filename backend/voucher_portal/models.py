@@ -396,8 +396,11 @@ class StatusChange(Timestamped):
     `voucher` is set."""
     batch = models.ForeignKey(PortalBatch, on_delete=models.CASCADE, null=True, blank=True, related_name="status_changes")
     voucher = models.ForeignKey(PortalVoucher, on_delete=models.CASCADE, null=True, blank=True, related_name="status_changes")
-    from_status = models.CharField(max_length=20, blank=True)
-    to_status = models.CharField(max_length=20)
+    # The two-stage workflow uses "pending_second_approval" (23 chars).
+    # SQLite silently accepted it, while production-like Postgres correctly
+    # rejected it when this audit row was written.
+    from_status = models.CharField(max_length=24, blank=True)
+    to_status = models.CharField(max_length=24)
     actor = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
     reason = models.CharField(max_length=240, blank=True)
 

@@ -1,3 +1,4 @@
+from decimal import Decimal
 from uuid import uuid4
 
 from django.db import transaction
@@ -457,7 +458,17 @@ def _convert_indent(indent, plan_vehicle):
         number="ORD-" + timezone.now().strftime("%y%m%d") + uuid4().hex[:6].upper(),
         customer=indent.customer, branch=indent.branch, pickup=indent.pickup, dropoff=indent.dropoff,
         service_rate=indent.service_rate, vehicle=plan_vehicle.vehicle, driver=plan_vehicle.driver,
-        payload_description=indent.material, weight_kg=indent.weight_kg, scheduled_at=indent.required_at, status="assigned")
+        payload_description=indent.material, weight_kg=indent.weight_kg,
+        order_type="ptl" if indent.indent_type == "part_load" else "ftl",
+        delivery_access=indent.delivery_access, expected_delivery_at=indent.expected_delivery_at,
+        expected_running_km=indent.expected_running_km,
+        temperature_class=indent.temperature_class,
+        temp_set_point_c=indent.temp_set_point_c if indent.temp_set_point_c is not None else (
+            (indent.temp_min_c + indent.temp_max_c) / Decimal("2")
+            if indent.temp_min_c is not None and indent.temp_max_c is not None else None),
+        temp_min_c=indent.temp_min_c, temp_max_c=indent.temp_max_c,
+        temp_tolerance_c=indent.temp_tolerance_c,
+        scheduled_at=indent.required_at, status="assigned")
     if order.service_rate:
         order.price_from_rate_card()
     indent.order = order

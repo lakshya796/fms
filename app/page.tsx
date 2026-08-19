@@ -163,8 +163,8 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
   </section></main>;
 }
 
-type FormField = { name: string; label: string; type?: "text" | "number" | "date" | "datetime" | "select" | "textarea"; options?: [string, string][]; source?: string; value?: string; required?: boolean; multiple?: boolean };
-type FormSpec = { eyebrow: string; title: string; button: string; endpoint: string; fields: FormField[]; reference: (values: Record<string, string>, created: any) => string };
+type FormField = { name: string; label: string; type?: "text" | "number" | "date" | "datetime" | "select" | "textarea"; options?: [string, string][]; source?: string; value?: string; required?: boolean; multiple?: boolean; tab?: string };
+type FormSpec = { eyebrow: string; title: string; button: string; endpoint: string; fields: FormField[]; reference: (values: Record<string, string>, created: any) => string; tabs?: string[]; tabDescriptions?: Record<string, string> };
 
 const sourceLabel: Record<string, (record: any) => string> = {
   "customers/": r => r.name, "vehicles/": r => r.registration_number, "drivers/": r => r.name,
@@ -365,15 +365,33 @@ const recordForms: Record<string, FormSpec> = {
   customer: {
     eyebrow: "CUSTOMER KYC", title: "Add customer", button: "Save customer", endpoint: "customers/",
     reference: values => values.name,
+    tabs: ["KYC", "Billing party", "Address", "Preferences", "Vendor vehicle terms"],
+    tabDescriptions: {
+      "KYC": "Legal identity and credit approval for the customer account.",
+      "Billing party": "The party and contact who should receive billing communication.",
+      "Address": "Billing address already used for customer invoices.",
+      "Preferences": "Contracted POD, invoice delivery, temperature service and payment terms.",
+      "Vendor vehicle terms": "When a vendor vehicle serves this customer, keep the commercial KYC here and release the agreed advance after loading.",
+    },
     fields: [
-      { name: "name", label: "Customer name", required: true },
-      { name: "gstin", label: "GSTIN", required: true },
-      { name: "pan", label: "PAN" },
-      { name: "phone", label: "Phone" },
-      { name: "email", label: "Email" },
-      { name: "credit_limit", label: "Credit limit (₹)", type: "number", value: "500000" },
-      { name: "kyc_status", label: "KYC status", type: "select", options: [["pending", "Pending verification"], ["verified", "Verified"], ["rejected", "Rejected"]] },
-      { name: "billing_address", label: "Billing address", type: "textarea" },
+      { name: "name", label: "Customer name", required: true, tab: "KYC" },
+      { name: "gstin", label: "GSTIN", required: true, tab: "KYC" },
+      { name: "pan", label: "PAN", tab: "KYC" },
+      { name: "phone", label: "Primary phone", tab: "KYC" },
+      { name: "email", label: "Primary email", tab: "KYC" },
+      { name: "credit_limit", label: "Credit limit (₹)", type: "number", value: "500000", tab: "KYC" },
+      { name: "kyc_status", label: "KYC status", type: "select", options: [["pending", "Pending verification"], ["verified", "Verified"], ["rejected", "Rejected"]], tab: "KYC" },
+      { name: "billing_party_name", label: "Billing party name", tab: "Billing party" },
+      { name: "billing_contact_name", label: "Contact person", tab: "Billing party" },
+      { name: "billing_contact_phone", label: "Contact phone", tab: "Billing party" },
+      { name: "billing_contact_email", label: "Contact email", tab: "Billing party" },
+      { name: "billing_address", label: "Billing address", type: "textarea", tab: "Address" },
+      { name: "pod_preference", label: "POD requirement", type: "select", options: [["epod", "ePOD"], ["physical", "Physical POD"], ["both", "ePOD and physical POD"]], tab: "Preferences" },
+      { name: "invoice_delivery_preference", label: "Invoice delivery", type: "select", options: [["soft_copy", "Soft copy"], ["hard_copy", "Hard copy"], ["both", "Soft and hard copy"]], tab: "Preferences" },
+      { name: "customer_type", label: "Customer type", type: "select", options: [["dry", "Dry"], ["reefer", "Reefer"], ["both", "Dry and reefer"]], tab: "Preferences" },
+      { name: "payment_terms_days", label: "Payment terms", type: "select", options: [["30", "30 days"], ["45", "45 days"], ["90", "90 days"]], tab: "Preferences" },
+      { name: "vendor_vehicle_advance_percent", label: "Vendor advance (%)", type: "number", value: "90", tab: "Vendor vehicle terms" },
+      { name: "vendor_vehicle_advance_trigger", label: "Advance release", type: "select", options: [["after_loading", "After vehicle loading"]], tab: "Vendor vehicle terms" },
     ],
   },
   vehicle: {
@@ -570,9 +588,16 @@ const recordForms: Record<string, FormSpec> = {
       { name: "vehicles_required", label: "How many", type: "number", value: "1" },
       { name: "material", label: "Material" },
       { name: "weight_kg", label: "Weight (kg)", type: "number", value: "12000" },
+      { name: "indent_type", label: "Indent type", type: "select", options: [["part_load", "Part load"], ["ftl", "Full truck load (FTL)"]] },
+      { name: "delivery_access", label: "Delivery access", type: "select", options: [["no_entry_area", "No-entry area"], ["no_restriction", "Without no-entry restriction"]] },
       { name: "temperature_class", label: "Temperature", type: "select", options: [["dry", "Dry"], ["chiller", "Chiller"], ["frozen", "Frozen"], ["multi", "Multi-compartment"]] },
+      { name: "temp_min_c", label: "Minimum temperature (°C)", type: "number", value: "2" },
+      { name: "temp_max_c", label: "Maximum temperature (°C)", type: "number", value: "8" },
+      { name: "temp_tolerance_c", label: "Temperature tolerance (±°C)", type: "number", value: "1" },
       { name: "priority", label: "Priority", type: "select", options: [["normal", "Normal"], ["urgent", "Urgent - cannot be outsourced away"], ["low", "Low - can be deferred"]] },
       { name: "required_at", label: "Required by", type: "datetime" },
+      { name: "expected_delivery_at", label: "Expected delivery", type: "datetime" },
+      { name: "expected_running_km", label: "Expected running (km)", type: "number", value: "0" },
       { name: "expected_rate", label: "Expected freight (₹)", type: "number", value: "0" },
       { name: "service_rate", label: "Rate card", type: "select", source: "service-rates/" },
       { name: "remarks", label: "Remarks", type: "textarea" },
@@ -651,9 +676,11 @@ function RecordForm({ spec, record, onClose, onSaved }: { spec: FormSpec; record
   const [options, setOptions] = useState<Record<string, any[]>>({});
   const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
+  const [activeTab, setActiveTab] = useState(spec.tabs?.[0] || "");
   const sources = Array.from(new Set(spec.fields.map(field => field.source).filter(Boolean) as string[]));
   useEffect(() => {
     setOptions({});
+    setActiveTab(spec.tabs?.[0] || "");
     sources.forEach(source => {
       fmsRequest<any>(wholeSet(source)).then(payload => {
         setOptions(current => ({ ...current, [source]: asList(payload) }));
@@ -674,6 +701,13 @@ function RecordForm({ spec, record, onClose, onSaved }: { spec: FormSpec; record
     event.preventDefault();
     setWorking(true); setError("");
     const form = new FormData(event.currentTarget as HTMLFormElement);
+    const missing = spec.fields.find(field => field.required && !String(form.get(field.name) ?? "").trim());
+    if (missing) {
+      setActiveTab(missing.tab || spec.tabs?.[0] || "");
+      setError(`${missing.label} is required`);
+      setWorking(false);
+      return;
+    }
     const values: Record<string, string> = {};
     const payload: Record<string, unknown> = {};
     for (const field of spec.fields) {
@@ -699,16 +733,27 @@ function RecordForm({ spec, record, onClose, onSaved }: { spec: FormSpec; record
 
   if (!ready) return <div className="action-form"><div className="data-state">Loading form…</div></div>;
 
-  return <form className="action-form" onSubmit={submit}>
-    <div className="form-grid">{spec.fields.filter(field => field.type !== "textarea").map(field => <label key={field.name}>{field.label}
-      {field.source ? <select name={field.name} required={field.required} multiple={field.multiple} defaultValue={field.multiple ? (record?.[field.name] || []).map(String) : defaultFor(field)}>
+  const fieldsForTab = (tab: string) => spec.fields.filter(field => (field.tab || spec.tabs?.[0]) === tab);
+  const renderFields = (fields: FormField[]) => <>
+    <div className="form-grid">{fields.filter(field => field.type !== "textarea").map(field => <label key={field.name}>{field.label}
+      {field.source ? <select name={field.name} required={field.required && !spec.tabs?.length} multiple={field.multiple} defaultValue={field.multiple ? (record?.[field.name] || []).map(String) : defaultFor(field)}>
         {!field.multiple && <option value="">{(options[field.source] || []).length ? "Select…" : "Loading…"}</option>}
         {(options[field.source] || []).map(option => <option key={option.id} value={option.id}>{sourceLabel[field.source!] ? sourceLabel[field.source!](option) : option.name}</option>)}
       </select>
       : field.type === "select" ? <select name={field.name} defaultValue={defaultFor(field)}>{(field.options || []).map(option => <option key={option[0]} value={option[0]}>{option[1]}</option>)}</select>
-      : <input name={field.name} type={field.type === "number" ? "number" : field.type === "date" ? "date" : field.type === "datetime" ? "datetime-local" : "text"} step={field.type === "number" ? "any" : undefined} defaultValue={defaultFor(field)} required={field.required} />}
+      : <input name={field.name} type={field.type === "number" ? "number" : field.type === "date" ? "date" : field.type === "datetime" ? "datetime-local" : "text"} step={field.type === "number" ? "any" : undefined} defaultValue={defaultFor(field)} required={field.required && !spec.tabs?.length} />}
     </label>)}</div>
-    {spec.fields.filter(field => field.type === "textarea").map(field => <label key={field.name}>{field.label}<textarea name={field.name} defaultValue={defaultFor(field)} /></label>)}
+    {fields.filter(field => field.type === "textarea").map(field => <label key={field.name}>{field.label}<textarea name={field.name} defaultValue={defaultFor(field)} /></label>)}
+  </>;
+
+  return <form className="action-form" onSubmit={submit}>
+    {spec.tabs?.length ? <>
+      <div className="form-tabs" role="tablist" aria-label={`${spec.title} sections`}>{spec.tabs.map(tab => <button key={tab} type="button" role="tab" aria-selected={activeTab === tab} className={activeTab === tab ? "active" : ""} onClick={() => setActiveTab(tab)}>{tab}</button>)}</div>
+      {spec.tabs.map(tab => <section key={tab} className="form-tab-panel" role="tabpanel" hidden={activeTab !== tab}>
+        {spec.tabDescriptions?.[tab] && <p className="form-tab-description">{spec.tabDescriptions[tab]}</p>}
+        {renderFields(fieldsForTab(tab))}
+      </section>)}
+    </> : renderFields(spec.fields)}
     {error && <div className="form-error">{error}</div>}
     <div className="form-actions"><button type="button" className="secondary" onClick={onClose}>Cancel</button><button className="primary" type="submit" disabled={working}>{working ? "Saving…" : record ? "Save changes" : spec.button}</button></div>
   </form>;
@@ -4260,8 +4305,13 @@ function IndentsView({ reloadKey, onAction, openAction }: { reloadKey: number; o
                ["Loading point", detail.pickup_city], ["Unloading point", detail.dropoff_city],
                ["Vehicle required", detail.vehicle_type], ["How many", detail.vehicles_required],
                ["Material", detail.material], ["Weight", `${Number(detail.weight_kg).toLocaleString("en-IN")} kg`],
+               ["Indent type", detail.indent_type === "part_load" ? "Part load" : "Full truck load (FTL)"],
+               ["Delivery access", detail.delivery_access === "no_entry_area" ? "No-entry area" : "Without no-entry restriction"],
+               ["Temperature required", detail.temp_min_c != null && detail.temp_max_c != null ? `${detail.temp_min_c} to ${detail.temp_max_c} °C ±${detail.temp_tolerance_c} °C` : detail.temperature_class],
                ["Expected freight", rupees(detail.expected_rate)],
                ["Required by", detail.required_at ? new Date(detail.required_at).toLocaleString("en-IN") : ""],
+               ["Expected delivery", detail.expected_delivery_at ? new Date(detail.expected_delivery_at).toLocaleString("en-IN") : ""],
+               ["Expected running", detail.expected_running_km ? `${Number(detail.expected_running_km).toLocaleString("en-IN")} km` : ""],
                ["Allocated truck", detail.vehicle_number], ["Driver", detail.driver_name],
                ["Order", detail.order_number], ["Remarks", detail.remarks],
                ["Created", stamp(detail.created_at)], ["Last updated", stamp(detail.updated_at)]]}
