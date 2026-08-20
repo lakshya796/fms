@@ -26,6 +26,18 @@ class VehicleStatusLogSerializer(serializers.ModelSerializer):
 class LorryReceiptSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     class Meta: model = LorryReceipt; fields = "__all__"
+
+
+class GenerateLorryReceiptInputSerializer(serializers.Serializer):
+    """Optional operator-supplied identity for an LR generated from an order."""
+    number = serializers.CharField(required=False, allow_blank=False, max_length=30, trim_whitespace=True)
+
+    def validate_number(self, value):
+        if LorryReceipt.objects.filter(number__iexact=value).exists():
+            raise serializers.ValidationError("A lorry receipt with this number already exists.")
+        return value
+
+
 class TrackingEventSerializer(serializers.ModelSerializer):
     class Meta: model = TrackingEvent; fields = "__all__"
 class TripSerializer(serializers.ModelSerializer):

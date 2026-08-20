@@ -1261,6 +1261,9 @@ function TripCockpitPanel({ trip, onAction, onOrderChanged }: { trip: any; onAct
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState<string>("");
+  const [lrDialogOrder, setLrDialogOrder] = useState<any>(null);
+  const [lrNumberMode, setLrNumberMode] = useState<"auto" | "manual">("auto");
+  const [manualLrNumber, setManualLrNumber] = useState("");
 
   const load = () => {
     setLoading(true);
@@ -1288,6 +1291,37 @@ function TripCockpitPanel({ trip, onAction, onOrderChanged }: { trip: any; onAct
       onOrderChanged();
     } catch (e) {
       onAction(e instanceof Error ? e.message.slice(0, 150) : "Action failed", "warn");
+    } finally { setBusyKey(""); }
+  };
+
+  const openLrDialog = (order: any) => {
+    setLrDialogOrder(order);
+    setLrNumberMode("auto");
+    setManualLrNumber("");
+  };
+
+  const closeLrDialog = () => {
+    if (!busyKey) setLrDialogOrder(null);
+  };
+
+  const generateLr = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!lrDialogOrder) return;
+    const number = manualLrNumber.trim();
+    if (lrNumberMode === "manual" && !number) return;
+    const key = `lr-${lrDialogOrder.id}`;
+    setBusyKey(key);
+    try {
+      const result = await fmsRequest<any>(`orders/${lrDialogOrder.id}/generate-lr/`, {
+        method: "POST",
+        body: JSON.stringify(lrNumberMode === "manual" ? { number } : {}),
+      });
+      setLrDialogOrder(null);
+      onAction(`Lorry receipt ${result.lorry_receipt.number} generated`);
+      load();
+      onOrderChanged();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 150) : "Could not generate the lorry receipt", "warn");
     } finally { setBusyKey(""); }
   };
 
@@ -1340,7 +1374,7 @@ function TripCockpitPanel({ trip, onAction, onOrderChanged }: { trip: any; onAct
           <td>{row.lorry_receipt
             ? <button className="row-action" onClick={() => downloadPdf(`lorry-receipts/${row.lorry_receipt.id}/pdf/`, `${row.lorry_receipt.number}.pdf`)}>{row.lorry_receipt.number}</button>
             : <button className="row-action" disabled={busyKey === `lr-${row.id}`}
-                     onClick={() => runAction(`lr-${row.id}`, `orders/${row.id}/generate-lr/`, "Lorry receipt generated")}>Generate</button>}</td>
+                     onClick={() => openLrDialog(row)}>Generate</button>}</td>
           <td>{row.pod.verified ? "✓ verified"
             : row.pod.pending_proof_id ? <button className="row-action" disabled={busyKey === `pod-${row.id}`}
                      onClick={() => runAction(`pod-${row.id}`, `proofs/${row.pod.pending_proof_id}/verify/`, "POD verified")}>Verify</button>
@@ -1359,6 +1393,41 @@ function TripCockpitPanel({ trip, onAction, onOrderChanged }: { trip: any; onAct
     {!!data.documents.some((d: any) => d.type === "pod") && <div className="chip-list" style={{ marginTop: 12 }}>
       {data.documents.filter((d: any) => d.type === "pod").map((doc: any, i: number) =>
         <a key={i} className="chip" href={doc.url} target="_blank" rel="noreferrer">{doc.label}</a>)}
+    </div>}
+
+    {lrDialogOrder && <div className="modal-backdrop" onMouseDown={closeLrDialog}>
+      <section className="action-panel lr-number-panel" role="dialog" aria-modal="true" aria-labelledby="lr-number-title"
+               onMouseDown={event => event.stopPropagation()}>
+        <div className="panel-head"><div><p className="eyebrow">LORRY RECEIPT</p><h2 id="lr-number-title">Generate LR</h2></div>
+          <button type="button" className="panel-close" aria-label="Close" disabled={!!busyKey} onClick={closeLrDialog}>×</button></div>
+        <form className="action-form" onSubmit={generateLr}>
+          <p className="lr-order-context">For <strong>{lrDialogOrder.number}</strong> · {lrDialogOrder.customer}</p>
+          <fieldset className="lr-number-options">
+            <legend>Choose how the LR number is assigned</legend>
+            <label className={lrNumberMode === "auto" ? "selected" : ""}>
+              <input type="radio" name="lr_number_mode" value="auto" checked={lrNumberMode === "auto"}
+                     onChange={() => setLrNumberMode("auto")} />
+              <span><strong>Auto-generate</strong><small>The system will create a unique LR number.</small></span>
+            </label>
+            <label className={lrNumberMode === "manual" ? "selected" : ""}>
+              <input type="radio" name="lr_number_mode" value="manual" checked={lrNumberMode === "manual"}
+                     onChange={() => setLrNumberMode("manual")} />
+              <span><strong>Enter manually</strong><small>Use a pre-printed or externally assigned LR number.</small></span>
+            </label>
+          </fieldset>
+          {lrNumberMode === "manual" && <label className="lr-manual-number">LR number
+            <input autoFocus required maxLength={30} value={manualLrNumber}
+                   onChange={event => setManualLrNumber(event.target.value)} placeholder="e.g. LR-2026-0042" />
+            <small>Must be unique and no more than 30 characters.</small>
+          </label>}
+          <div className="form-actions">
+            <button type="button" className="secondary" disabled={!!busyKey} onClick={closeLrDialog}>Cancel</button>
+            <button className="primary" disabled={!!busyKey || (lrNumberMode === "manual" && !manualLrNumber.trim())}>
+              {busyKey ? "Generating…" : lrNumberMode === "auto" ? "Auto-generate LR" : "Generate with this number"}
+            </button>
+          </div>
+        </form>
+      </section>
     </div>}
   </div>;
 }

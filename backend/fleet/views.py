@@ -15,7 +15,7 @@ from . import geotrackers
 from .models import (Customer, Driver, Vehicle, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement, SalesQuote,
                      MaintenanceWorkOrder, VEHICLE_STATUSES, set_vehicle_status)
 from .serializers import (CustomerSerializer, DriverSerializer, VehicleSerializer, VehicleStatusLogSerializer,
-                          LorryReceiptSerializer, TripSerializer, TripSettlementInputSerializer, TrackingEventSerializer,
+                          LorryReceiptSerializer, GenerateLorryReceiptInputSerializer, TripSerializer, TripSettlementInputSerializer, TrackingEventSerializer,
                           InvoiceSerializer, SettlementSerializer, SalesQuoteSerializer, MaintenanceWorkOrderSerializer)
 
 @requires("reports.view")
@@ -1264,7 +1264,15 @@ class OrderViewSet(FilterableViewSet):
         an operator re-typing consignor/consignee/origin/destination/material by
         hand into a separate form. See docs/ONE-TRIP-END-TO-END.md §3.1."""
         order = self.get_object()
-        lr, created = build_lr_from_order(order)
+        number = None
+        # Preserve idempotency for an already-issued order. For a new LR, an
+        # omitted number means "auto-generate"; a supplied one is the
+        # operator's manual/pre-printed LR reference.
+        if not order.lorry_receipt_id:
+            input_serializer = GenerateLorryReceiptInputSerializer(data=request.data)
+            input_serializer.is_valid(raise_exception=True)
+            number = input_serializer.validated_data.get("number")
+        lr, created = build_lr_from_order(order, number=number)
         return Response({"lorry_receipt": LorryReceiptSerializer(lr).data, "created": created,
                          "order": self.get_serializer(order).data},
                         status=http_status.HTTP_201_CREATED if created else http_status.HTTP_200_OK)

@@ -18,8 +18,12 @@ def lr_number():
     return "LR-" + timezone.now().strftime("%y%m%d") + uuid4().hex[:6].upper()
 
 
-def build_lr_from_order(order):
+def build_lr_from_order(order, number=None):
     """Raise (or return) the lorry receipt for a consignment.
+
+    ``number`` may be supplied when an operator needs to preserve a pre-printed
+    or otherwise externally assigned LR number. When it is omitted, the normal
+    system-generated number is used.
 
     Idempotent: a second call returns the LR already issued against the order
     rather than raising a duplicate consignment note - the same guarantee
@@ -35,7 +39,7 @@ def build_lr_from_order(order):
     consignor = order.pickup.contact_name or order.customer.name
     consignee = order.dropoff.contact_name or order.dropoff.name
     lr = LorryReceipt.objects.create(
-        number=lr_number(), customer=order.customer,
+        number=number or lr_number(), customer=order.customer,
         consignor=consignor, consignee=consignee,
         origin=order.pickup.city or order.pickup.name, destination=order.dropoff.city or order.dropoff.name,
         material=order.payload_description or "General cargo",

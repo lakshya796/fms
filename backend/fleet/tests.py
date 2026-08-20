@@ -971,6 +971,30 @@ class LorryReceiptGenerationTests(BaseFleetOpsTest):
         order.refresh_from_db()
         self.assertEqual(order.lorry_receipt_id, lr["id"])
 
+    def test_generate_lr_accepts_a_manual_number(self):
+        order = self._order()
+        response = self.client.post(
+            f"/api/v1/orders/{order.id}/generate-lr/", {"number": "  LR-MANUAL-0042  "}, format="json")
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["lorry_receipt"]["number"], "LR-MANUAL-0042")
+        order.refresh_from_db()
+        self.assertEqual(order.lorry_receipt.number, "LR-MANUAL-0042")
+
+    def test_generate_lr_rejects_a_duplicate_manual_number(self):
+        existing_order = self._order(number="ORD-LR-EXISTING")
+        self.client.post(
+            f"/api/v1/orders/{existing_order.id}/generate-lr/", {"number": "LR-MANUAL-0042"}, format="json")
+        order = self._order(number="ORD-LR-NEW")
+
+        response = self.client.post(
+            f"/api/v1/orders/{order.id}/generate-lr/", {"number": "lr-manual-0042"}, format="json")
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("already exists", str(response.data).lower())
+        order.refresh_from_db()
+        self.assertIsNone(order.lorry_receipt_id)
+
     def test_consignor_and_consignee_fall_back_to_customer_and_dropoff_name(self):
         """Neither place has a contact name in the fixture, so the LR falls
         back to the order's customer (who is sending) and the dropoff place's
