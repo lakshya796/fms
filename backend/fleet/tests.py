@@ -1034,7 +1034,31 @@ class LorryReceiptGenerationTests(BaseFleetOpsTest):
         pdf = self.client.get(f"/api/v1/lorry-receipts/{lr_id}/pdf/")
         self.assertEqual(pdf.status_code, 200)
         self.assertEqual(pdf["Content-Type"], "application/pdf")
-        self.assertGreater(len(pdf.content), 500)
+        self.assertTrue(pdf.content.startswith(b"%PDF-"))
+        self.assertGreater(len(pdf.content), 3000)
+
+    def test_lr_pdf_uses_the_landscape_way_bill_format(self):
+        order = self._order(
+            vehicle=self.vehicle,
+            declared_value=250000,
+            volume_cbm=Decimal("18.50"),
+            other_charges=500,
+            tax_amount=1836,
+            total_amount=12036,
+            payment_mode="tbb",
+            special_instructions="Keep dry and call before delivery.",
+        )
+        response = self.client.post(f"/api/v1/orders/{order.id}/generate-lr/")
+        lr = LorryReceipt.objects.get(pk=response.data["lorry_receipt"]["id"])
+
+        from fleet.lr_pdf import _amount_words, render_lr_pdf
+
+        pdf = render_lr_pdf(lr)
+        self.assertTrue(pdf.startswith(b"%PDF-"))
+        # ReportLab records the A4 landscape width in the page MediaBox.
+        self.assertIn(b"841.8898", pdf)
+        self.assertEqual(_amount_words(Decimal("12036.10")),
+                         "Rupees Twelve Thousand Thirty Six and Paise Ten Only")
 
 
 class TripCreationFromOrdersTests(BaseFleetOpsTest):
@@ -1062,8 +1086,68 @@ class TripCreationFromOrdersTests(BaseFleetOpsTest):
         o1.refresh_from_db(); o2.refresh_from_db()
         self.assertEqual(o1.trip_id, trip_id)
         self.assertEqual(o2.trip_id, trip_id)
+        self.assertEqual(o1.status, "assigned")
+        self.assertEqual(o2.status, "assigned")
+        self.assertEqual(o1.vehicle_id, self.vehicle.id)
+        self.assertEqual(o2.driver_id, self.driver.id)
+        self.assertIsNotNone(o1.scheduled_at)
+        self.assertEqual(o1.activities.first().code, "ORDER_TRIP_ASSIGNED")
+        self.vehicle.refresh_from_db()
+        self.assertEqual(self.vehicle.status, "allocated")
+        self.assertEqual(self.vehicle.current_trip_id, trip_id)
         self.assertEqual(response.data["origin"], "Bhiwandi")
         self.assertEqual(response.data["destination"], "Chakan")
+
+    def test_rejects_an_order_that_has_already_finished_its_workflow(self):
+        order = self._order(number="ORD-CFO-DONE", status="completed")
+
+        response = self.client.post("/api/v1/trips/create-from-orders/", {
+            "orders": [order.id], "vehicle": self.vehicle.id, "driver": self.driver.id,
+        }, format="json")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("cannot be added", str(response.data))
+
+    def test_dispatching_trip_updates_every_linked_order_and_generates_lr(self):
+        o1 = self._order(number="ORD-CFO-DISPATCH-1")
+        o2 = self._order(number="ORD-CFO-DISPATCH-2")
+        created = self.client.post("/api/v1/trips/create-from-orders/", {
+            "orders": [o1.id, o2.id], "vehicle": self.vehicle.id, "driver": self.driver.id,
+        }, format="json")
+
+        response = self.client.post(f"/api/v1/trips/{created.data['id']}/dispatch/")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        o1.refresh_from_db(); o2.refresh_from_db()
+        self.assertEqual(o1.status, "dispatched")
+        self.assertEqual(o2.status, "dispatched")
+        self.assertIsNotNone(o1.dispatched_at)
+        self.assertIsNotNone(o2.dispatched_at)
+        self.assertIsNotNone(o1.lorry_receipt_id)
+        self.assertIsNotNone(o2.lorry_receipt_id)
+
+    def test_multi_order_trip_stays_open_until_last_order_is_completed(self):
+        o1 = self._order(number="ORD-CFO-CLOSE-1", pod_required=False)
+        o2 = self._order(number="ORD-CFO-CLOSE-2", pod_required=False)
+        created = self.client.post("/api/v1/trips/create-from-orders/", {
+            "orders": [o1.id, o2.id], "vehicle": self.vehicle.id, "driver": self.driver.id,
+        }, format="json")
+        trip = Trip.objects.get(pk=created.data["id"])
+        self.client.post(f"/api/v1/trips/{trip.id}/dispatch/")
+
+        first = self.client.post(f"/api/v1/orders/{o1.id}/complete/")
+        trip.refresh_from_db(); self.vehicle.refresh_from_db(); self.driver.refresh_from_db()
+        self.assertEqual(first.status_code, 200, first.data)
+        self.assertEqual(trip.status, "dispatched")
+        self.assertEqual(self.vehicle.status, "running")
+        self.assertEqual(self.driver.status, "on_trip")
+
+        second = self.client.post(f"/api/v1/orders/{o2.id}/complete/")
+        trip.refresh_from_db(); self.vehicle.refresh_from_db(); self.driver.refresh_from_db()
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertEqual(trip.status, "closed")
+        self.assertEqual(self.vehicle.status, "available")
+        self.assertEqual(self.driver.status, "available")
 
     def test_rejects_an_order_already_on_another_trip(self):
         o1 = self._order(number="ORD-CFO-3", driver=self.driver, vehicle=self.vehicle)
@@ -2051,25 +2135,64 @@ class OrderViewSetTest(BaseFleetOpsTest):
 
     def test_upload_returns_a_url(self):
         from io import BytesIO
-        from django.test import override_settings
-        import tempfile, os
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
         order = self._make_order()
         content = b"%PDF-1.4 fake pdf content"
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with override_settings(MEDIA_ROOT=tmpdir, MEDIA_URL="/media/"):
-                r = self.client.post(
-                    f"/api/v1/orders/{order.id}/pod-document-upload/",
-                    {"document": BytesIO(content)},
-                    format="multipart",
-                )
+        upload = SimpleUploadedFile("signed-pod.pdf", content, content_type="application/pdf")
+        with mock.patch("fleet.storage.store_upload") as store_upload:
+            r = self.client.post(
+                f"/api/v1/orders/{order.id}/pod-document-upload/",
+                {"document": upload},
+                format="multipart",
+            )
         self.assertEqual(r.status_code, 201, r.data)
-        self.assertIn("url", r.data)
-        self.assertIn("pod-documents", r.data["url"])
+        self.assertEqual(r.data["storage"], "s3")
+        self.assertIn(f"/orders/{order.id}/pod-document/", r.data["url"])
+        key = store_upload.call_args.args[0]
+        self.assertTrue(key.startswith(f"fleet/pod-documents/{order.id}/"))
+        self.assertTrue(key.endswith(".pdf"))
+
+        document_name = r.data["url"].rstrip("/").rsplit("/", 1)[-1]
+        with mock.patch("fleet.storage.open_file", return_value=BytesIO(content)) as open_file:
+            downloaded = self.client.get(r.data["url"])
+        self.assertEqual(downloaded.status_code, 200)
+        self.assertEqual(b"".join(downloaded.streaming_content), content)
+        open_file.assert_called_once_with(f"fleet/pod-documents/{order.id}/{document_name}")
 
     def test_upload_without_file_is_rejected(self):
         order = self._make_order()
         r = self.client.post(f"/api/v1/orders/{order.id}/pod-document-upload/", {}, format="json")
         self.assertEqual(r.status_code, 400)
+
+    def test_upload_rejects_non_document_content(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        order = self._make_order()
+        upload = SimpleUploadedFile("payload.exe", b"not a document", content_type="application/octet-stream")
+        with mock.patch("fleet.storage.store_upload") as store_upload:
+            r = self.client.post(
+                f"/api/v1/orders/{order.id}/pod-document-upload/",
+                {"document": upload},
+                format="multipart",
+            )
+        self.assertEqual(r.status_code, 400)
+        store_upload.assert_not_called()
+
+    def test_s3_failure_is_reported_as_service_unavailable(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from fleet.storage import DocumentStorageError
+
+        order = self._make_order()
+        upload = SimpleUploadedFile("signed-pod.pdf", b"%PDF-1.4", content_type="application/pdf")
+        with mock.patch("fleet.storage.store_upload", side_effect=DocumentStorageError("S3 is unavailable.")):
+            r = self.client.post(
+                f"/api/v1/orders/{order.id}/pod-document-upload/",
+                {"document": upload},
+                format="multipart",
+            )
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("S3 is unavailable", str(r.data))
 
 
 class InvoiceViewSetTest(AutomaticInvoiceTests):
@@ -2133,13 +2256,13 @@ class InvoiceViewSetTest(AutomaticInvoiceTests):
         self.assertEqual(self._pdf_page_count(r.content), 3)
 
     def test_pdf_embeds_an_uploaded_pod_photo(self):
-        """The full chain: a real photo uploaded through pod-document-upload,
-        attached to the capture, then actually embedded (not just referenced by
-        URL) in the invoice PDF's POD annexure."""
-        import tempfile
+        """The full chain: a real photo streamed to S3 through pod-document-
+        upload, attached to the capture, then actually embedded (not just
+        referenced by URL) in the invoice PDF's POD annexure - read back from
+        the same store the download endpoint itself serves from."""
         from io import BytesIO
 
-        from django.test import override_settings
+        from django.core.files.uploadedfile import SimpleUploadedFile
         from PIL import Image as PILImage
 
         order = self.create_order()
@@ -2149,23 +2272,54 @@ class InvoiceViewSetTest(AutomaticInvoiceTests):
 
         photo = BytesIO()
         PILImage.new("RGB", (300, 200), color=(60, 120, 90)).save(photo, "JPEG")
-        photo.seek(0)
+        photo_bytes = photo.getvalue()
+        upload_file = SimpleUploadedFile("proof.jpg", photo_bytes, content_type="image/jpeg")
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with override_settings(MEDIA_ROOT=tmpdir, MEDIA_URL="/media/"):
-                upload = self.client.post(f"/api/v1/orders/{order.id}/pod-document-upload/",
-                                          {"document": photo}, format="multipart")
-                self.assertEqual(upload.status_code, 201, upload.data)
-                self.client.post(f"/api/v1/orders/{order.id}/pod-submit/",
-                                 {"receiver_name": "Store manager", "file_url": upload.data["url"]}, format="json")
-                self.client.post(f"/api/v1/orders/{order.id}/complete/", {}, format="json")
-                inv_r = self.client.post(f"/api/v1/orders/{order.id}/invoice/", {}, format="json")
-                self.assertEqual(inv_r.status_code, 201, inv_r.data)
-                invoice_id = inv_r.data["invoice"]["id"]
+        with mock.patch("fleet.storage.store_upload") as store_upload:
+            upload = self.client.post(f"/api/v1/orders/{order.id}/pod-document-upload/",
+                                      {"document": upload_file}, format="multipart")
+        self.assertEqual(upload.status_code, 201, upload.data)
+        store_upload.assert_called_once()
 
-                r = self.client.get(f"/api/v1/invoices/{invoice_id}/pdf/")
+        self.client.post(f"/api/v1/orders/{order.id}/pod-submit/",
+                         {"receiver_name": "Store manager", "file_url": upload.data["url"]}, format="json")
+        self.client.post(f"/api/v1/orders/{order.id}/complete/", {}, format="json")
+        inv_r = self.client.post(f"/api/v1/orders/{order.id}/invoice/", {}, format="json")
+        self.assertEqual(inv_r.status_code, 201, inv_r.data)
+        invoice_id = inv_r.data["invoice"]["id"]
+
+        with mock.patch("fleet.storage.open_file", return_value=BytesIO(photo_bytes)) as open_file:
+            r = self.client.get(f"/api/v1/invoices/{invoice_id}/pdf/")
         self.assertEqual(r.status_code, 200)
+        open_file.assert_called_once()
         self.assertEqual(self._pdf_page_count(r.content), 2)  # invoice + POD (with the embedded photo)
+
+    def test_pdf_falls_back_to_a_url_reference_when_storage_cannot_be_read(self):
+        """A POD referencing this server's own download route, but which S3
+        can no longer produce - a deleted object, a transient outage - must
+        not break the whole invoice PDF; it degrades to a text reference."""
+        from io import BytesIO
+
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        order = self.create_order()
+        self.client.post(f"/api/v1/orders/{order.id}/assign/",
+                         {"driver": self.driver.id, "vehicle": self.vehicle.id}, format="json")
+        self.client.post(f"/api/v1/orders/{order.id}/dispatch/")
+        upload_file = SimpleUploadedFile("proof.jpg", b"not really a jpeg", content_type="image/jpeg")
+        with mock.patch("fleet.storage.store_upload"):
+            upload = self.client.post(f"/api/v1/orders/{order.id}/pod-document-upload/",
+                                      {"document": upload_file}, format="multipart")
+        self.client.post(f"/api/v1/orders/{order.id}/pod-submit/",
+                         {"receiver_name": "Store manager", "file_url": upload.data["url"]}, format="json")
+        self.client.post(f"/api/v1/orders/{order.id}/complete/", {}, format="json")
+        inv_r = self.client.post(f"/api/v1/orders/{order.id}/invoice/", {}, format="json")
+        invoice_id = inv_r.data["invoice"]["id"]
+
+        with mock.patch("fleet.storage.open_file", return_value=None):
+            r = self.client.get(f"/api/v1/invoices/{invoice_id}/pdf/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self._pdf_page_count(r.content), 2)  # invoice + POD (URL reference, no image)
 
     def test_consolidated_pdf_staples_annexures_for_every_order_on_it(self):
         from fleet.lr import build_lr_from_order
