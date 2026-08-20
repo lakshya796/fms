@@ -4797,19 +4797,17 @@ function SalesReport({ reloadKey, onAction }: { reloadKey: number; onAction: Not
   };
   useEffect(load, [reloadKey]);
 
-  const quotes: any[] = data?.quotes || [];
-  const visible = quotes.filter(q =>
-    (q.number + q.customer + q.lane + q.status).toLowerCase().includes(query.toLowerCase())
+  const sales: any[] = data?.sales || [];
+  const visible = sales.filter(row =>
+    [row.lr_no, row.from, row.to, row.vehicle_no, row.vehicle_type_and_capacity, row.dry_reefer,
+      row.consignor, row.consignee, row.billing_party_name].join(" ").toLowerCase().includes(query.toLowerCase())
   );
 
-  const statusBadge = (s: string) => {
-    const cls = s === "accepted" || s === "won" ? "active" : s === "draft" ? "idle" : s === "expired" || s === "lost" ? "expired" : "pending";
-    return <span className={"status " + cls}>{s}</span>;
-  };
-
   const handleDownload = () => {
-    const headers = ["Quote Number", "Customer", "GSTIN", "Origin", "Destination", "Freight (INR)", "Valid Until", "Status", "Date"];
-    const rows = visible.map((q: any) => [q.number, q.customer, q.customer_gstin, q.origin, q.destination, q.freight_amount, q.valid_until, q.status, q.created_at]);
+    const headers = ["LR No.", "LR Date", "From", "To", "Actual Delivery Date", "Expected Delivery Date", "No. of Boxes", "Weight (kg)", "Vehicle No.", "Vehicle Type and Capacity", "Freight (INR)", "Dry / Reefer", "Consignor", "Consignee", "Billing Party Name"];
+    const rows = visible.map((row: any) => [row.lr_no, row.lr_date, row.from, row.to, row.actual_delivery_date,
+      row.expected_delivery_date, row.no_of_boxes, row.weight_kg, row.vehicle_no, row.vehicle_type_and_capacity,
+      row.freight, row.dry_reefer, row.consignor, row.consignee, row.billing_party_name]);
     downloadCSV("sales-report.csv", headers, rows);
     onAction("Sales report downloaded");
   };
@@ -4817,49 +4815,48 @@ function SalesReport({ reloadKey, onAction }: { reloadKey: number; onAction: Not
   return (
     <div className="module-page">
       <div className="module-title">
-        <div><p className="eyebrow">REPORTS</p><h2>Sales Report</h2><p>Quotation pipeline, conversion rate and freight value by customer and lane.</p></div>
+        <div><p className="eyebrow">REPORTS</p><h2>Sales Report</h2><p>LR-wise freight, delivery, vehicle and billing-party register.</p></div>
         <div style={{ display: "flex", gap: "8px" }}>
           <button className="secondary module-action" onClick={handleDownload} disabled={!data || loading}>⇩ Download CSV</button>
           <button className="primary module-action" onClick={load}>↻ Refresh</button>
         </div>
       </div>
-      {data && (
+      {data?.sales_summary && (
         <div className="module-stats">
-          <div className="module-stat"><span>Total quotes</span><strong>{data.summary.total_quotes}</strong><small>In selected period</small></div>
-          <div className="module-stat"><span>Pipeline value</span><strong>{rupees(data.summary.total_value)}</strong><small>All quotes</small></div>
-          <div className="module-stat"><span>Won value</span><strong>{rupees(data.summary.won_value)}</strong><small>Accepted / won</small></div>
-          <div className="module-stat"><span>Conversion</span><strong>{data.summary.conversion_rate}%</strong><small>Won ÷ total</small></div>
-        </div>
-      )}
-      {data?.summary?.by_status && (
-        <div className="module-stats" style={{ marginTop: 0 }}>
-          {(data.summary.by_status as any[]).map((s: any) => (
-            <div className="module-stat" key={s.status}>
-              <span>{s.status}</span><strong>{rupees(s.value)}</strong><small>{s.count} quotes</small>
-            </div>
-          ))}
+          <div className="module-stat"><span>Total LRs</span><strong>{data.sales_summary.total_lrs}</strong><small>In selected period</small></div>
+          <div className="module-stat"><span>Total freight</span><strong>{rupees(data.sales_summary.total_freight)}</strong><small>LR freight value</small></div>
+          <div className="module-stat"><span>Delivered</span><strong>{data.sales_summary.delivered}</strong><small>{data.sales_summary.pending_delivery} pending</small></div>
+          <div className="module-stat"><span>On-time delivery</span><strong>{data.sales_summary.on_time_percent}%</strong><small>Delivered by expected date</small></div>
         </div>
       )}
       <ReportDateRange range={range} setRange={setRange} onApply={load} />
       <section className="module-table-card">
         <div className="module-toolbar">
-          <div><strong>All quotations</strong><span>{loading ? "Loading…" : `${visible.length} quotes`}</span></div>
+          <div><strong>LR sales register</strong><span>{loading ? "Loading…" : `${visible.length} records`}</span></div>
           <div className="toolbar-actions"><input placeholder="Search…" value={query} onChange={e => setQuery(e.target.value)} /><button onClick={load}>↻ Refresh</button><button onClick={handleDownload} disabled={!data || loading}>⇩ Export</button></div>
         </div>
-        {loading ? <div className="data-state">Loading report…</div> : !data ? <div className="data-state error">Could not load the report.</div> : visible.length === 0 ? <div className="data-state">No quotations in this period.</div> : (
+        {loading ? <div className="data-state">Loading report…</div> : !data ? <div className="data-state error">Could not load the report.</div> : visible.length === 0 ? <div className="data-state">No LRs in this period.</div> : (
           <div className="table-wrap">
             <table>
-              <thead><tr><th>Quote</th><th>Customer</th><th>Lane</th><th>Freight</th><th>Valid until</th><th>Status</th><th>Date</th></tr></thead>
+              <thead><tr><th>LR no.</th><th>LR date</th><th>From</th><th>To</th><th>Actual delivery</th><th>Expected delivery</th><th>Boxes</th><th>Weight</th><th>Vehicle no.</th><th>Vehicle type / capacity</th><th>Freight</th><th>Dry / Reefer</th><th>Consignor</th><th>Consignee</th><th>Billing party</th></tr></thead>
               <tbody>
-                {visible.map((q: any) => (
-                  <tr key={q.id}>
-                    <td><strong>{q.number}</strong></td>
-                    <td>{q.customer}</td>
-                    <td>{q.lane}</td>
-                    <td><strong>{rupees(q.freight_amount)}</strong></td>
-                    <td>{q.valid_until}</td>
-                    <td>{statusBadge(q.status)}</td>
-                    <td>{q.created_at}</td>
+                {visible.map((row: any) => (
+                  <tr key={row.id}>
+                    <td><strong>{row.lr_no}</strong></td>
+                    <td>{row.lr_date || "—"}</td>
+                    <td>{row.from || "—"}</td>
+                    <td>{row.to || "—"}</td>
+                    <td>{row.actual_delivery_date || "—"}</td>
+                    <td>{row.expected_delivery_date || "—"}</td>
+                    <td>{row.no_of_boxes}</td>
+                    <td>{Number(row.weight_kg).toLocaleString("en-IN")} kg</td>
+                    <td>{row.vehicle_no || "—"}</td>
+                    <td>{row.vehicle_type_and_capacity || "—"}</td>
+                    <td><strong>{rupees(row.freight)}</strong></td>
+                    <td>{row.dry_reefer}</td>
+                    <td>{row.consignor || "—"}</td>
+                    <td>{row.consignee || "—"}</td>
+                    <td>{row.billing_party_name || "—"}</td>
                   </tr>
                 ))}
               </tbody>

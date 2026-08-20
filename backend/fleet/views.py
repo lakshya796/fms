@@ -2,7 +2,7 @@ import json as _json
 from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Prefetch, Sum
 from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import action, api_view
@@ -2217,9 +2217,70 @@ def report_trip_profitability(request):
 @requires("reports.view")
 @api_view(["GET"])
 def report_sales(request):
-    """Sales pipeline: quotes, conversions, and revenue by customer and period."""
+    """LR-wise sales register plus the existing quotation pipeline summary.
+
+    A quotation cannot supply delivery, vehicle or consignment-note details, so
+    the operational register is built from each LR and enriched from its linked
+    order/trip.  Standalone legacy LRs are still returned with blank values for
+    details that have not been captured rather than disappearing from the report.
+    """
     from_date = request.query_params.get("from")
     to_date = request.query_params.get("to")
+
+    report_orders = Order.objects.select_related("pickup", "dropoff", "vehicle", "trip__vehicle").order_by("-created_at")
+    report_trips = Trip.objects.select_related("vehicle").order_by("-created_at")
+    lr_qs = LorryReceipt.objects.select_related("customer").prefetch_related(
+        Prefetch("orders", queryset=report_orders, to_attr="report_orders"),
+        Prefetch("trips", queryset=report_trips, to_attr="report_trips"),
+    ).order_by("-created_at")
+    if from_date:
+        lr_qs = lr_qs.filter(created_at__date__gte=from_date)
+    if to_date:
+        lr_qs = lr_qs.filter(created_at__date__lte=to_date)
+
+    def report_date(value):
+        if not value:
+            return None
+        return str(value.date() if hasattr(value, "date") else value)
+
+    sales = []
+    for lr in lr_qs:
+        order = lr.report_orders[0] if lr.report_orders else None
+        trip = order.trip if order and order.trip_id else (lr.report_trips[0] if lr.report_trips else None)
+        vehicle = order.vehicle if order and order.vehicle_id else (trip.vehicle if trip else None)
+        actual_delivery = order.completed_at if order and order.completed_at else (
+            trip.unload_date if trip and trip.unload_date else (trip.arrival_at if trip else None))
+        expected_delivery = order.expected_delivery_at if order else None
+        temperature_class = order.temperature_class if order else (
+            vehicle.temperature_class if vehicle else "dry")
+        is_reefer = temperature_class != "dry" or bool(vehicle and vehicle.body_type == "reefer")
+        capacity = vehicle.capacity_kg if vehicle else 0
+        vehicle_type_and_capacity = ""
+        if vehicle:
+            vehicle_type_and_capacity = vehicle.vehicle_type
+            if capacity:
+                vehicle_type_and_capacity += f" / {capacity:,} kg"
+        sales.append({
+            "id": lr.id,
+            "lr_no": lr.number,
+            "lr_date": report_date(lr.created_at),
+            "from": lr.origin,
+            "to": lr.destination,
+            "actual_delivery_date": report_date(actual_delivery),
+            "expected_delivery_date": report_date(expected_delivery),
+            "no_of_boxes": lr.packages,
+            "weight_kg": float(lr.weight_kg),
+            "vehicle_no": vehicle.registration_number if vehicle else "",
+            "vehicle_type_and_capacity": vehicle_type_and_capacity,
+            "vehicle_type": vehicle.vehicle_type if vehicle else "",
+            "vehicle_capacity_kg": capacity,
+            "freight": float(lr.freight_amount),
+            "dry_reefer": "Reefer" if is_reefer else "Dry",
+            "consignor": lr.consignor,
+            "consignee": lr.consignee,
+            "billing_party_name": lr.customer.billing_party_name or lr.customer.name,
+        })
+
     qs = SalesQuote.objects.select_related("customer").order_by("-created_at")
     if from_date:
         qs = qs.filter(created_at__date__gte=from_date)
@@ -2254,4 +2315,14 @@ def report_sales(request):
         "conversion_rate": round(won_value / total_value * 100, 1) if total_value else 0.0,
         "by_status": [{"status": k, **v} for k, v in by_status.items()],
     }
-    return Response({"summary": summary, "quotes": rows})
+    delivered = [row for row in sales if row["actual_delivery_date"]]
+    on_time = [row for row in delivered if row["expected_delivery_date"]
+               and row["actual_delivery_date"] <= row["expected_delivery_date"]]
+    sales_summary = {
+        "total_lrs": len(sales),
+        "total_freight": sum(row["freight"] for row in sales),
+        "delivered": len(delivered),
+        "pending_delivery": len(sales) - len(delivered),
+        "on_time_percent": round(len(on_time) / len(delivered) * 100, 1) if delivered else 0.0,
+    }
+    return Response({"sales_summary": sales_summary, "sales": sales, "summary": summary, "quotes": rows})

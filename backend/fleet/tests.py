@@ -1397,6 +1397,70 @@ class ConsolidatedInvoicingTests(BaseFleetOpsTest):
         self.assertGreater(len(pdf.content), 500)
 
 
+class SalesReportTests(BaseFleetOpsTest):
+    def test_report_contains_lr_delivery_vehicle_and_billing_details(self):
+        self.customer.billing_party_name = "Tata Consumer Accounts"
+        self.customer.save(update_fields=["billing_party_name"])
+        self.vehicle.temperature_class = "chiller"
+        self.vehicle.body_type = "reefer"
+        self.vehicle.save(update_fields=["temperature_class", "body_type"])
+
+        completed_at = timezone.now()
+        expected_at = completed_at + timedelta(hours=2)
+        lr = LorryReceipt.objects.create(
+            number="LR-SALES-01", customer=self.customer, consignor="Bhiwandi Plant",
+            consignee="Chakan Store", origin="Bhiwandi", destination="Chakan",
+            material="Cartons", weight_kg=Decimal("12400.50"), packages=480,
+            freight_amount=Decimal("28500.75"))
+        trip = Trip.objects.create(
+            number="TRP-SALES-01", vehicle=self.vehicle, driver=self.driver,
+            origin="Bhiwandi", destination="Chakan", planned_departure=timezone.now())
+        trip.lorry_receipts.add(lr)
+        Order.objects.create(
+            number="ORD-SALES-01", customer=self.customer, pickup=self.pickup, dropoff=self.dropoff,
+            lorry_receipt=lr, trip=trip, vehicle=self.vehicle, driver=self.driver,
+            packages=480, weight_kg=Decimal("12400.50"), freight_amount=Decimal("28500.75"),
+            temperature_class="chiller", expected_delivery_at=expected_at,
+            completed_at=completed_at, status="completed")
+
+        response = self.client.get("/api/v1/reports/sales/")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        row = next(item for item in response.data["sales"] if item["lr_no"] == lr.number)
+        self.assertEqual(row["lr_date"], str(lr.created_at.date()))
+        self.assertEqual(row["from"], "Bhiwandi")
+        self.assertEqual(row["to"], "Chakan")
+        self.assertEqual(row["actual_delivery_date"], str(completed_at.date()))
+        self.assertEqual(row["expected_delivery_date"], str(expected_at.date()))
+        self.assertEqual(row["no_of_boxes"], 480)
+        self.assertEqual(row["weight_kg"], 12400.5)
+        self.assertEqual(row["vehicle_no"], "MH 04 JU 9182")
+        self.assertEqual(row["vehicle_type_and_capacity"], "32 ft MXL / 16,000 kg")
+        self.assertEqual(row["freight"], 28500.75)
+        self.assertEqual(row["dry_reefer"], "Reefer")
+        self.assertEqual(row["consignor"], "Bhiwandi Plant")
+        self.assertEqual(row["consignee"], "Chakan Store")
+        self.assertEqual(row["billing_party_name"], "Tata Consumer Accounts")
+        self.assertEqual(response.data["sales_summary"]["total_lrs"], 1)
+        self.assertEqual(response.data["sales_summary"]["delivered"], 1)
+
+    def test_standalone_lr_remains_in_report_with_blank_operational_links(self):
+        lr = LorryReceipt.objects.create(
+            number="LR-SALES-LEGACY", customer=self.customer, consignor="Legacy Sender",
+            consignee="Legacy Receiver", origin="Mumbai", destination="Pune",
+            material="General cargo", weight_kg=100, packages=2, freight_amount=5000)
+
+        response = self.client.get("/api/v1/reports/sales/")
+
+        row = next(item for item in response.data["sales"] if item["lr_no"] == lr.number)
+        self.assertIsNone(row["actual_delivery_date"])
+        self.assertIsNone(row["expected_delivery_date"])
+        self.assertEqual(row["vehicle_no"], "")
+        self.assertEqual(row["vehicle_type_and_capacity"], "")
+        self.assertEqual(row["dry_reefer"], "Dry")
+        self.assertEqual(row["billing_party_name"], self.customer.name)
+
+
 class TripProfitabilityReportTests(BaseFleetOpsTest):
     """docs/ONE-TRIP-END-TO-END.md §5 Phase 5: trip-wise P&L across a date
     range, using the same apportioned cost as the Trip Cockpit."""
