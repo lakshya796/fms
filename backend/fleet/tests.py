@@ -17,7 +17,7 @@ from . import geotrackers
 
 from .models import (ComplianceDocument, Customer, Driver, Fleet, FuelEntry, Indent, Invoice, Issue, LorryReceipt,
                      MaintenanceSchedule, Order, Place, ProofOfDelivery, ServiceArea, ServiceRate, Trip, TripExpense,
-                     Vehicle, VehicleHire, Vendor, Waypoint, Zone, haversine_km)
+                     Vehicle, VehicleHire, VehicleSize, VehicleType, Vendor, Waypoint, Zone, haversine_km)
 
 class BaseFleetOpsTest(TestCase):
     def setUp(self):
@@ -39,6 +39,30 @@ class BaseFleetOpsTest(TestCase):
                                                fuel_surcharge_percent=Decimal("3.50"), gst_percent=5)
 
 
+class VehicleMasterTests(BaseFleetOpsTest):
+    def test_vehicle_size_master_can_be_created_and_listed(self):
+        created = self.client.post("/api/v1/vehicle-sizes/", {
+            "name": "40 ft HQ", "default_capacity_kg": 20000, "sort_order": 90, "status": "active",
+        }, format="json")
+
+        self.assertEqual(created.status_code, 201, created.data)
+        listed = self.client.get("/api/v1/vehicle-sizes/")
+        self.assertEqual(listed.status_code, 200)
+        self.assertIn("40 ft HQ", [row["name"] for row in listed.data["results"]])
+        self.assertTrue(VehicleSize.objects.filter(name="40 ft HQ").exists())
+
+    def test_vehicle_type_master_maps_business_label_to_planner_class(self):
+        created = self.client.post("/api/v1/vehicle-types/", {
+            "name": "Ambient dry van", "temperature_class": "dry", "body_type": "container",
+            "sort_order": 90, "status": "active",
+        }, format="json")
+
+        self.assertEqual(created.status_code, 201, created.data)
+        master = VehicleType.objects.get(name="Ambient dry van")
+        self.assertEqual(master.temperature_class, "dry")
+        self.assertEqual(master.body_type, "container")
+
+
 class IndentRequirementMappingTests(BaseFleetOpsTest):
     def test_indent_requirements_map_to_the_generated_order(self):
         required_at = timezone.now() + timedelta(hours=2)
@@ -48,7 +72,7 @@ class IndentRequirementMappingTests(BaseFleetOpsTest):
             vehicle=self.vehicle, driver=self.driver, status="allocated", indent_type="part_load",
             delivery_access="no_entry_area", required_at=required_at,
             expected_delivery_at=expected_delivery, expected_running_km=Decimal("180"),
-            temperature_class="chiller", temp_min_c=Decimal("2"), temp_max_c=Decimal("8"),
+            vehicle_type="32 ft MXL", temperature_class="chiller", temp_min_c=Decimal("2"), temp_max_c=Decimal("8"),
             temp_tolerance_c=Decimal("1"))
 
         response = self.client.post(f"/api/v1/indents/{indent.id}/convert/", {}, format="json")
@@ -60,6 +84,7 @@ class IndentRequirementMappingTests(BaseFleetOpsTest):
         self.assertEqual(order.delivery_access, "no_entry_area")
         self.assertEqual(order.expected_delivery_at, expected_delivery)
         self.assertEqual(order.expected_running_km, Decimal("180"))
+        self.assertEqual(order.vehicle_type, "32 ft MXL")
         self.assertEqual(order.temp_min_c, Decimal("2"))
         self.assertEqual(order.temp_max_c, Decimal("8"))
         self.assertEqual(order.temp_tolerance_c, Decimal("1"))
@@ -684,7 +709,8 @@ class AllocationTests(BaseFleetOpsTest):
         vendor = Vendor.objects.create(name="Anand Roadlines", code="VN-ANAND", email="ops@anandroadlines.example")
         response = self.client.post(f"/api/v1/orders/{order.id}/confirm-vehicle/", {
             "vendor": vendor.id,
-            "outside_vehicle": {"vehicle_number": "MH 12 AB 4455", "vehicle_type": "20 ft SXL", "capacity_kg": 9000},
+            "outside_vehicle": {"vehicle_number": "MH 12 AB 4455", "vehicle_type": "20 ft SXL", "capacity_kg": 9000,
+                                "temperature_class": "chiller", "body_type": "reefer"},
             "hire": {"agreed_rate": "12000", "rate_basis": "trip", "driver_name": "Suresh Patil",
                     "driver_phone": "9812345670", "advance_amount": "3000"},
         }, format="json")
@@ -695,6 +721,8 @@ class AllocationTests(BaseFleetOpsTest):
         hired_vehicle = Vehicle.objects.get(registration_number="MH 12 AB 4455")
         self.assertEqual(hired_vehicle.ownership, "outside")
         self.assertEqual(hired_vehicle.vendor_id, vendor.id)
+        self.assertEqual(hired_vehicle.temperature_class, "chiller")
+        self.assertEqual(hired_vehicle.body_type, "reefer")
         # No driver was supplied - the vendor's own driver lives on the hire, not the
         # internal driver master, so no trip has opened yet.
         self.assertIsNone(response.data["order"]["trip"])

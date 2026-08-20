@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import (Customer, Driver, Vehicle, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement, SalesQuote,
+from .models import (Customer, Driver, Vehicle, VehicleSize, VehicleType, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement, SalesQuote,
                      MaintenanceWorkOrder, VehicleStatusLog, LOAD_TYPES, EXPENSE_CATEGORY_CODES)
 
 class MaintenanceWorkOrderSerializer(serializers.ModelSerializer):
@@ -17,6 +17,14 @@ class VehicleSerializer(serializers.ModelSerializer):
     current_place_name = serializers.CharField(source="current_place.name", read_only=True, default="")
     current_trip_number = serializers.CharField(source="current_trip.number", read_only=True, default="")
     class Meta: model = Vehicle; fields = "__all__"; read_only_fields = ["status_since"]
+
+
+class VehicleSizeSerializer(serializers.ModelSerializer):
+    class Meta: model = VehicleSize; fields = "__all__"
+
+
+class VehicleTypeSerializer(serializers.ModelSerializer):
+    class Meta: model = VehicleType; fields = "__all__"
 
 
 class VehicleStatusLogSerializer(serializers.ModelSerializer):

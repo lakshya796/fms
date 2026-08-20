@@ -12,10 +12,12 @@ from rest_framework.decorators import permission_classes
 from iam.filtering import apply_filters
 from iam.permissions import HasModulePermission, requires
 from . import geotrackers
-from .models import (Customer, Driver, Vehicle, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement, SalesQuote,
+from .models import (Customer, Driver, Vehicle, VehicleSize, VehicleType, LorryReceipt, Trip, TrackingEvent, Invoice, Settlement, SalesQuote,
                      MaintenanceWorkOrder, VEHICLE_STATUSES, set_vehicle_status)
 from .serializers import (CustomerSerializer, DriverSerializer, VehicleSerializer, VehicleStatusLogSerializer,
-                          LorryReceiptSerializer, GenerateLorryReceiptInputSerializer, TripSerializer, TripSettlementInputSerializer, TrackingEventSerializer,
+                          VehicleSizeSerializer, VehicleTypeSerializer,
+                          LorryReceiptSerializer, GenerateLorryReceiptInputSerializer, TripSerializer,
+                          TripSettlementInputSerializer, TrackingEventSerializer,
                           InvoiceSerializer, SettlementSerializer, SalesQuoteSerializer, MaintenanceWorkOrderSerializer)
 
 @requires("reports.view")
@@ -140,6 +142,22 @@ class VehicleViewSet(viewsets.ModelViewSet):
             })
         results.sort(key=lambda row: (row["distance_km"] is None, row["distance_km"] or 0))
         return Response({"place": place.name if place else None, "count": len(results), "vehicles": results})
+
+
+class VehicleSizeViewSet(viewsets.ModelViewSet):
+    permission_classes = [HasModulePermission]
+    required_permission = "masters.view"; required_write_permission = "masters.manage"
+    queryset = VehicleSize.objects.all()
+    serializer_class = VehicleSizeSerializer
+
+
+class VehicleTypeViewSet(viewsets.ModelViewSet):
+    permission_classes = [HasModulePermission]
+    required_permission = "masters.view"; required_write_permission = "masters.manage"
+    queryset = VehicleType.objects.all()
+    serializer_class = VehicleTypeSerializer
+
+
 class LorryReceiptViewSet(viewsets.ModelViewSet):
     permission_classes = [HasModulePermission]
     required_permission = "operations.view"; required_write_permission = "operations.manage"
@@ -1374,6 +1392,8 @@ class OrderViewSet(FilterableViewSet):
             vehicle, _ = Vehicle.objects.get_or_create(
                 registration_number=outside["vehicle_number"],
                 defaults={"vehicle_type": outside.get("vehicle_type", ""), "capacity_kg": outside.get("capacity_kg") or 0,
+                         "temperature_class": outside.get("temperature_class", "dry"),
+                         "body_type": outside.get("body_type", "closed"),
                          "ownership": "outside", "vendor": vendor, "status": "allocated"})
         if not vehicle:
             raise ValidationError("Provide a vehicle, or outside_vehicle details with a vendor, to confirm an allocation.")
@@ -1878,6 +1898,7 @@ class IndentViewSet(FilterableViewSet):
             order_type="ptl" if indent.indent_type == "part_load" else "ftl",
             delivery_access=indent.delivery_access, expected_delivery_at=indent.expected_delivery_at,
             expected_running_km=indent.expected_running_km,
+            vehicle_type=indent.vehicle_type,
             temperature_class=indent.temperature_class,
             temp_set_point_c=indent.temp_set_point_c if indent.temp_set_point_c is not None else (
                 (indent.temp_min_c + indent.temp_max_c) / Decimal("2")

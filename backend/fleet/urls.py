@@ -2,6 +2,7 @@ from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 from rest_framework.authtoken.views import obtain_auth_token
 from .views import (health, dashboard, fleet_analytics, public_tracking, live_tracking, CustomerViewSet, DriverViewSet, VehicleViewSet,
+                    VehicleSizeViewSet, VehicleTypeViewSet,
                     LorryReceiptViewSet, TripViewSet, TrackingEventViewSet, InvoiceViewSet, SettlementViewSet,
                     SalesQuoteViewSet, MaintenanceWorkOrderViewSet, VendorViewSet, ServiceAreaViewSet, ZoneViewSet,
                     PlaceViewSet, FleetViewSet, ServiceRateViewSet, ServiceQuoteViewSet, OrderViewSet, WaypointViewSet,
@@ -15,6 +16,8 @@ router.register("quotes", SalesQuoteViewSet)
 router.register("customers", CustomerViewSet)
 router.register("drivers", DriverViewSet)
 router.register("vehicles", VehicleViewSet)
+router.register("vehicle-sizes", VehicleSizeViewSet)
+router.register("vehicle-types", VehicleTypeViewSet)
 router.register("lorry-receipts", LorryReceiptViewSet)
 router.register("trips", TripViewSet)
 router.register("tracking-events", TrackingEventViewSet)

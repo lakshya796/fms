@@ -8,12 +8,12 @@ import { UNAUTHORISED_EVENT, fmsRequest, fmsRequestRaw, login, logout } from "./
 const navGroups: { label: string; items: [string, string][] }[] = [
   { label: "WORKSPACE", items: [["Overview", "⌂"], ["Analytics", "◎"]] },
   { label: "TRANSPORT", items: [["Indents", "◰"], ["Dispatch", "▦"], ["Planning", "⛁"], ["Scenario Profiles", "⚙"], ["Orders", "◈"], ["Hires", "⚑"], ["ePOD", "✍"], ["Tracking", "⌖"], ["Operations", "▤"]] },
-  { label: "COMMERCIAL", items: [["Customers", "◇"], ["Sales", "↗"], ["Rates", "⚖"], ["Invoices", "▥"]] },
-  { label: "FLEET", items: [["Fleet", "▱"], ["Fleets", "▩"], ["Drivers", "♙"], ["Maintenance", "⚒"], ["Compliance", "▣"], ["Fuel", "⛽"], ["Issues", "⚠"]] },
-  { label: "NETWORK", items: [["Vendors", "⌸"], ["Places", "⌂"], ["Service areas", "◫"], ["Zones", "◍"]] },
+  { label: "COMMERCIAL", items: [["Sales", "↗"], ["Rates", "⚖"], ["Invoices", "▥"]] },
+  { label: "FLEET", items: [["Maintenance", "⚒"], ["Compliance", "▣"], ["Fuel", "⛽"], ["Issues", "⚠"]] },
+  { label: "MASTERS", items: [["Masters", "◆"], ["Customers", "◇"], ["Fleet", "▱"], ["Fleets", "▩"], ["Drivers", "♙"], ["Vendors", "⌸"], ["Places", "⌂"], ["Service areas", "◫"], ["Zones", "◍"], ["Branches", "⌸"]] },
   { label: "FINANCE", items: [["Expenses", "▤"], ["Settlements", "₹"]] },
   { label: "ACCOUNTS", items: [["Ledger", "▦"], ["Vouchers", "▤"], ["Vendor bills", "◳"], ["Payments", "⇄"], ["Financials", "◫"]] },
-  { label: "ADMIN", items: [["Users", "♟"], ["Roles", "⚿"], ["Branches", "⌸"], ["Audit trail", "◷"]] },
+  { label: "ADMIN", items: [["Users", "♟"], ["Roles", "⚿"], ["Audit trail", "◷"]] },
   { label: "PLATFORM", items: [["Modules", "⊞"]] },
   { label: "REPORTS", items: [["Driver & Availability", "♙"], ["Fleet Report", "▱"], ["Customer Invoices", "▥"], ["Vehicle Settlement", "₹"], ["Sales Report", "↗"]] },
 ];
@@ -143,6 +143,51 @@ function FeatureHub({ onAction }: { onAction: Notify }) {
   return <div className="module-page feature-page"><div className="module-title"><div><p className="eyebrow">COMPLETE TRANSPORT ERP</p><h2>One platform. Every fleet workflow.</h2><p>High-level capability map for modern Indian fleet owners and transporters.</p></div><button className="primary module-action" onClick={() => onAction("Capability brief exported")}>⇩ Export brief</button></div><div className="feature-grid">{featureGroups.map(group => <button className="feature-card" key={group[0]} onClick={() => onAction(`${group[1]} module opened`)}><span>{group[0]}</span><div><strong>{group[1]}</strong><p>{group[2]}</p></div><b>→</b></button>)}</div></div>;
 }
 
+const masterSections = [
+  { group: "Fleet & capacity", title: "Vehicle sizes", endpoint: "vehicle-sizes/", action: "vehiclesize", target: "", description: "14 ft, 20 ft SXL, 32 ft MXL and other reusable configurations.", label: (r: any) => `${r.name}${r.default_capacity_kg ? ` · ${Number(r.default_capacity_kg).toLocaleString("en-IN")} kg` : ""}` },
+  { group: "Fleet & capacity", title: "Vehicle types", endpoint: "vehicle-types/", action: "vehicletype", target: "", description: "Dry, Reefer, Frozen and multi-compartment operating classes.", label: (r: any) => `${r.name} · ${String(r.temperature_class).replaceAll("_", " ")}` },
+  { group: "Fleet & capacity", title: "Vehicles", endpoint: "vehicles/", action: "vehicle", target: "Fleet", description: "Registration, size, type, ownership and capacity.", label: (r: any) => `${r.registration_number} · ${r.vehicle_type}` },
+  { group: "Fleet & capacity", title: "Drivers", endpoint: "drivers/", action: "driver", target: "Drivers", description: "Driver identity, licence and availability.", label: (r: any) => r.name },
+  { group: "Fleet & capacity", title: "Fleets", endpoint: "fleets/", action: "fleet", target: "Fleets", description: "Named groups of vehicles and drivers.", label: (r: any) => r.name },
+  { group: "Parties", title: "Customers", endpoint: "customers/", action: "customer", target: "Customers", description: "Customer KYC, billing party and commercial preferences.", label: (r: any) => r.name },
+  { group: "Parties", title: "Vendors", endpoint: "vendors/", action: "vendor", target: "Vendors", description: "Transporters, brokers, workshops and other partners.", label: (r: any) => r.name },
+  { group: "Network", title: "Places", endpoint: "places/", action: "place", target: "Places", description: "Plants, warehouses, hubs and customer locations.", label: (r: any) => `${r.name} · ${r.city}` },
+  { group: "Network", title: "Service areas", endpoint: "service-areas/", action: "servicearea", target: "Service areas", description: "Operating regions used by rates and planning.", label: (r: any) => r.name },
+  { group: "Network", title: "Zones", endpoint: "zones/", action: "zone", target: "Zones", description: "Geofences for allocation and arrival detection.", label: (r: any) => r.name },
+  { group: "Organisation", title: "Branches", endpoint: "iam/branches/", action: "branch", target: "Branches", description: "Branches, depots, warehouses and workshops.", label: (r: any) => `${r.name} · ${r.code}` },
+];
+
+function MastersView({ reloadKey, openAction, onNavigate }: { reloadKey: number; openAction: (type: string) => void; onNavigate: (target: string) => void }) {
+  const [records, setRecords] = useState<Record<string, any[]>>({});
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true; setLoading(true);
+    Promise.all(masterSections.map(section => fmsRequest<any>(wholeSet(section.endpoint))
+      .then(payload => [section.endpoint, asList(payload)] as [string, any[]])
+      .catch(() => [section.endpoint, []] as [string, any[]])))
+      .then(rows => { if (active) setRecords(Object.fromEntries(rows)); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [reloadKey]);
+
+  return <div className="module-page masters-page">
+    <div className="module-title"><div><p className="eyebrow">MASTER DATA</p><h2>All masters in one workspace</h2><p>Create and review fleet, party, network and organisation masters without moving between sidebar sections.</p></div></div>
+    {["Fleet & capacity", "Parties", "Network", "Organisation"].map(group => <section className="master-section" key={group}>
+      <div className="master-section-title"><h3>{group}</h3><span>{masterSections.filter(section => section.group === group).length} masters</span></div>
+      <div className="master-grid">{masterSections.filter(section => section.group === group).map(section => {
+        const items = records[section.endpoint] || [];
+        return <article className="master-card" key={section.endpoint}>
+          <div className="master-card-head"><div><strong>{section.title}</strong><span>{loading ? "Loading…" : `${items.length} records`}</span></div><button className="primary" onClick={() => openAction(section.action)}>＋ Add</button></div>
+          <p>{section.description}</p>
+          <div className="master-preview">{items.slice(0, 3).map(item => <span key={item.id}>{section.label(item)}</span>)}{!loading && !items.length && <span>No records yet</span>}</div>
+          {section.target && <button className="master-view" onClick={() => onNavigate(section.target)}>View and manage records →</button>}
+        </article>;
+      })}</div>
+    </section>)}
+  </div>;
+}
+
 function LoginScreen({ onLogin }: { onLogin: () => void }) {
   const [username, setUsername] = useState("fleetadmin");
   const [password, setPassword] = useState("");
@@ -163,7 +208,7 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
   </section></main>;
 }
 
-type FormField = { name: string; label: string; type?: "text" | "number" | "date" | "datetime" | "select" | "textarea"; options?: [string, string][]; source?: string; value?: string; required?: boolean; multiple?: boolean; tab?: string };
+type FormField = { name: string; label: string; type?: "text" | "number" | "date" | "datetime" | "select" | "textarea"; options?: [string, string][]; source?: string; sourceValue?: string; masterType?: "vehiclesize" | "vehicletype"; value?: string; required?: boolean; multiple?: boolean; tab?: string };
 type FormSpec = { eyebrow: string; title: string; button: string; endpoint: string; fields: FormField[]; reference: (values: Record<string, string>, created: any) => string; tabs?: string[]; tabDescriptions?: Record<string, string> };
 
 const sourceLabel: Record<string, (record: any) => string> = {
@@ -176,6 +221,8 @@ const sourceLabel: Record<string, (record: any) => string> = {
   "accounting/cost-centres/": r => r.name,
   "iam/branches/": r => `${r.name} (${r.code})`,
   "iam/roles/": r => r.name,
+  "vehicle-sizes/": r => `${r.name}${r.default_capacity_kg ? ` · ${Number(r.default_capacity_kg).toLocaleString("en-IN")} kg` : ""}`,
+  "vehicle-types/": r => `${r.name} · ${String(r.temperature_class).replaceAll("_", " ")}`,
 };
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -220,7 +267,8 @@ const recordForms: Record<string, FormSpec> = {
       { name: "code", label: "Code", required: true },
       { name: "service_area", label: "Service area", type: "select", source: "service-areas/" },
       { name: "customer", label: "Customer (optional)", type: "select", source: "customers/" },
-      { name: "vehicle_type", label: "Vehicle type", value: "32 ft MXL container" },
+      { name: "vehicle_type", label: "Vehicle size", type: "select", source: "vehicle-sizes/", sourceValue: "name", masterType: "vehiclesize" },
+      { name: "temperature_class", label: "Vehicle type", type: "select", source: "vehicle-types/", sourceValue: "temperature_class", masterType: "vehicletype" },
       { name: "rate_type", label: "Charged on", type: "select", options: [["per_km", "Per km"], ["per_ton_km", "Per ton per km"], ["per_kg", "Per kg"], ["per_trip", "Fixed per trip"], ["per_hour", "Per hour"]] },
       { name: "base_charge", label: "Base charge (₹)", type: "number", value: "2500" },
       { name: "per_km_rate", label: "Per km (₹)", type: "number", value: "48" },
@@ -399,7 +447,8 @@ const recordForms: Record<string, FormSpec> = {
     reference: values => values.registration_number,
     fields: [
       { name: "registration_number", label: "Registration number", required: true },
-      { name: "vehicle_type", label: "Vehicle type", value: "32 ft MXL container", required: true },
+      { name: "vehicle_type", label: "Vehicle size", type: "select", source: "vehicle-sizes/", sourceValue: "name", masterType: "vehiclesize", required: true },
+      { name: "temperature_class", label: "Vehicle type", type: "select", source: "vehicle-types/", sourceValue: "temperature_class", masterType: "vehicletype", required: true },
       { name: "make_model", label: "Make and model" },
       { name: "capacity_kg", label: "Capacity (kg)", type: "number", value: "16000" },
       { name: "ownership", label: "Ownership", type: "select", options: [["own", "Own vehicle"], ["attached", "Attached vehicle"], ["leased", "Leased"], ["outside", "Outside-sourced (vendor hire)"]] },
@@ -413,6 +462,27 @@ const recordForms: Record<string, FormSpec> = {
       { name: "engine_number", label: "Engine number" },
       { name: "insurance_expiry", label: "Insurance valid until", type: "date" },
       { name: "permit_expiry", label: "Permit valid until", type: "date" },
+    ],
+  },
+  vehiclesize: {
+    eyebrow: "VEHICLE MASTER", title: "Add vehicle size", button: "Save vehicle size", endpoint: "vehicle-sizes/",
+    reference: values => values.name,
+    fields: [
+      { name: "name", label: "Size / configuration", value: "32 ft MXL", required: true },
+      { name: "default_capacity_kg", label: "Default capacity (kg)", type: "number", value: "16000" },
+      { name: "sort_order", label: "Display order", type: "number", value: "0" },
+      { name: "status", label: "Status", type: "select", options: [["active", "Active"], ["inactive", "Inactive"]] },
+    ],
+  },
+  vehicletype: {
+    eyebrow: "VEHICLE MASTER", title: "Add vehicle type", button: "Save vehicle type", endpoint: "vehicle-types/",
+    reference: values => values.name,
+    fields: [
+      { name: "name", label: "Type name", value: "Reefer", required: true },
+      { name: "temperature_class", label: "Operating class", type: "select", options: [["dry", "Dry"], ["chiller", "Reefer / chiller"], ["frozen", "Frozen reefer"], ["multi", "Multi-compartment reefer"]] },
+      { name: "body_type", label: "Body construction", type: "select", options: [["closed", "Closed"], ["reefer", "Reefer"], ["container", "Container"], ["open", "Open"], ["tanker", "Tanker"], ["flatbed", "Flatbed"]] },
+      { name: "sort_order", label: "Display order", type: "number", value: "0" },
+      { name: "status", label: "Status", type: "select", options: [["active", "Active"], ["inactive", "Inactive"]] },
     ],
   },
   quote: {
@@ -584,13 +654,13 @@ const recordForms: Record<string, FormSpec> = {
       { name: "branch", label: "Branch", type: "select", source: "iam/branches/" },
       { name: "pickup", label: "Loading point", type: "select", source: "places/", required: true },
       { name: "dropoff", label: "Unloading point", type: "select", source: "places/", required: true },
-      { name: "vehicle_type", label: "Vehicle required", value: "32 ft MXL container" },
+      { name: "vehicle_type", label: "Vehicle size required", type: "select", source: "vehicle-sizes/", sourceValue: "name", masterType: "vehiclesize" },
       { name: "vehicles_required", label: "How many", type: "number", value: "1" },
       { name: "material", label: "Material" },
       { name: "weight_kg", label: "Weight (kg)", type: "number", value: "12000" },
       { name: "indent_type", label: "Indent type", type: "select", options: [["part_load", "Part load"], ["ftl", "Full truck load (FTL)"]] },
       { name: "delivery_access", label: "Delivery access", type: "select", options: [["no_entry_area", "No-entry area"], ["no_restriction", "Without no-entry restriction"]] },
-      { name: "temperature_class", label: "Temperature", type: "select", options: [["dry", "Dry"], ["chiller", "Chiller"], ["frozen", "Frozen"], ["multi", "Multi-compartment"]] },
+      { name: "temperature_class", label: "Vehicle type", type: "select", source: "vehicle-types/", sourceValue: "temperature_class", masterType: "vehicletype" },
       { name: "temp_min_c", label: "Minimum temperature (°C)", type: "number", value: "2" },
       { name: "temp_max_c", label: "Maximum temperature (°C)", type: "number", value: "8" },
       { name: "temp_tolerance_c", label: "Temperature tolerance (±°C)", type: "number", value: "1" },
@@ -616,7 +686,8 @@ const recordForms: Record<string, FormSpec> = {
       { name: "payload_description", label: "Material" },
       { name: "weight_kg", label: "Weight (kg)", type: "number", value: "12000" },
       { name: "packages", label: "Packages", type: "number", value: "1" },
-      { name: "temperature_class", label: "Temperature", type: "select", options: [["dry", "Dry"], ["chiller", "Chiller"], ["frozen", "Frozen"], ["multi", "Multi-compartment"]] },
+      { name: "vehicle_type", label: "Vehicle size required", type: "select", source: "vehicle-sizes/", sourceValue: "name", masterType: "vehiclesize" },
+      { name: "temperature_class", label: "Vehicle type", type: "select", source: "vehicle-types/", sourceValue: "temperature_class", masterType: "vehicletype" },
       { name: "priority", label: "Priority", type: "select", options: [["normal", "Normal"], ["urgent", "Urgent - cannot be outsourced away"], ["low", "Low - can be deferred"]] },
       { name: "distance_km", label: "Distance (km)", type: "number" },
       { name: "declared_value", label: "Declared value (₹)", type: "number" },
@@ -633,7 +704,7 @@ const recordForms: Record<string, FormSpec> = {
       { name: "vendor", label: "Vendor", type: "select", source: "vendors/", required: true },
       { name: "hire_type", label: "Hire type", type: "select", options: [["spot", "Spot hire"], ["contract", "Contract rate"]] },
       { name: "outside_vehicle_number", label: "Vehicle number" },
-      { name: "outside_vehicle_type", label: "Vehicle type" },
+      { name: "outside_vehicle_type", label: "Vehicle size", type: "select", source: "vehicle-sizes/", sourceValue: "name", masterType: "vehiclesize" },
       { name: "outside_capacity_kg", label: "Capacity (kg)", type: "number" },
       { name: "driver_name", label: "Driver name" },
       { name: "driver_phone", label: "Driver phone" },
@@ -656,8 +727,8 @@ const recordForms: Record<string, FormSpec> = {
       { name: "vendor", label: "Vendor", type: "select", source: "vendors/", required: true },
       { name: "origin_city", label: "Origin city", required: true },
       { name: "destination_city", label: "Destination city", required: true },
-      { name: "vehicle_type", label: "Vehicle type (blank = any)" },
-      { name: "temperature_class", label: "Temperature", type: "select", options: [["dry", "Dry"], ["chiller", "Chiller"], ["frozen", "Frozen"], ["multi", "Multi-compartment"]] },
+      { name: "vehicle_type", label: "Vehicle size (blank = any)", type: "select", source: "vehicle-sizes/", sourceValue: "name", masterType: "vehiclesize" },
+      { name: "temperature_class", label: "Vehicle type", type: "select", source: "vehicle-types/", sourceValue: "temperature_class", masterType: "vehicletype" },
       { name: "rate", label: "Rate (₹)", type: "number", required: true },
       { name: "rate_basis", label: "Rate basis", type: "select", options: [["trip", "Per trip"], ["km", "Per km"], ["day", "Per day"], ["ton", "Per ton"], ["other", "Other"]] },
       { name: "valid_from", label: "Valid from", type: "date" },
@@ -674,12 +745,17 @@ const recordForms: Record<string, FormSpec> = {
 // record's real value would never visibly get selected.
 function RecordForm({ spec, record, onClose, onSaved }: { spec: FormSpec; record?: any; onClose: () => void; onSaved: (reference: string, saved: any) => void }) {
   const [options, setOptions] = useState<Record<string, any[]>>({});
+  const [sourceValues, setSourceValues] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
   const [activeTab, setActiveTab] = useState(spec.tabs?.[0] || "");
+  const [quickMaster, setQuickMaster] = useState({ field: "", name: "", capacity: "", temperatureClass: "dry", bodyType: "closed" });
+  const [quickWorking, setQuickWorking] = useState(false);
   const sources = Array.from(new Set(spec.fields.map(field => field.source).filter(Boolean) as string[]));
   useEffect(() => {
     setOptions({});
+    setSourceValues({});
+    setQuickMaster({ field: "", name: "", capacity: "", temperatureClass: "dry", bodyType: "closed" });
     setActiveTab(spec.tabs?.[0] || "");
     sources.forEach(source => {
       fmsRequest<any>(wholeSet(source)).then(payload => {
@@ -687,7 +763,7 @@ function RecordForm({ spec, record, onClose, onSaved }: { spec: FormSpec; record
       }).catch(() => undefined);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spec]);
+  }, [spec, record?.id]);
   const ready = sources.every(source => Boolean(options[source]));
 
   const defaultFor = (field: FormField): string => {
@@ -695,6 +771,22 @@ function RecordForm({ spec, record, onClose, onSaved }: { spec: FormSpec; record
     if (raw === undefined || raw === null) return field.value || (field.type === "select" && !field.source ? (field.options || [["", ""]])[0][0] : "");
     if (field.type === "datetime") return String(raw).slice(0, 16);
     return String(raw);
+  };
+
+  const createQuickMaster = async (field: FormField) => {
+    if (!field.source || !field.masterType || !quickMaster.name.trim()) return;
+    setQuickWorking(true); setError("");
+    try {
+      const payload = field.masterType === "vehiclesize"
+        ? { name: quickMaster.name.trim(), default_capacity_kg: Number(quickMaster.capacity || 0), status: "active" }
+        : { name: quickMaster.name.trim(), temperature_class: quickMaster.temperatureClass, body_type: quickMaster.bodyType, status: "active" };
+      const created = await fmsRequest<any>(field.source, { method: "POST", body: JSON.stringify(payload) });
+      setOptions(current => ({ ...current, [field.source!]: [...(current[field.source!] || []), created] }));
+      setSourceValues(current => ({ ...current, [field.name]: String(created[field.sourceValue || "id"]) }));
+      setQuickMaster({ field: "", name: "", capacity: "", temperatureClass: "dry", bodyType: "closed" });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Unable to add master");
+    } finally { setQuickWorking(false); }
   };
 
   const submit = async (event: React.FormEvent) => {
@@ -720,7 +812,7 @@ function RecordForm({ spec, record, onClose, onSaved }: { spec: FormSpec; record
       const raw = String(form.get(field.name) ?? "").trim();
       values[field.name] = raw;
       if (raw === "") continue;
-      payload[field.name] = field.type === "number" || field.source ? Number(raw) : raw;
+      payload[field.name] = field.type === "number" || (field.source && !field.sourceValue) ? Number(raw) : raw;
     }
     try {
       const endpoint = record ? `${spec.endpoint}${record.id}/` : spec.endpoint;
@@ -735,12 +827,29 @@ function RecordForm({ spec, record, onClose, onSaved }: { spec: FormSpec; record
 
   const fieldsForTab = (tab: string) => spec.fields.filter(field => (field.tab || spec.tabs?.[0]) === tab);
   const renderFields = (fields: FormField[]) => <>
-    <div className="form-grid">{fields.filter(field => field.type !== "textarea").map(field => <label key={field.name}>{field.label}
-      {field.source ? <select name={field.name} required={field.required && !spec.tabs?.length} multiple={field.multiple} defaultValue={field.multiple ? (record?.[field.name] || []).map(String) : defaultFor(field)}>
-        {!field.multiple && <option value="">{(options[field.source] || []).length ? "Select…" : "Loading…"}</option>}
-        {(options[field.source] || []).map(option => <option key={option.id} value={option.id}>{sourceLabel[field.source!] ? sourceLabel[field.source!](option) : option.name}</option>)}
-      </select>
-      : field.type === "select" ? <select name={field.name} defaultValue={defaultFor(field)}>{(field.options || []).map(option => <option key={option[0]} value={option[0]}>{option[1]}</option>)}</select>
+    <div className="form-grid">{fields.filter(field => field.type !== "textarea").map(field => field.source ? <div className="master-source-field" key={field.name}>
+      <div className="field-caption"><span>{field.label}</span>{field.masterType && <button type="button" onClick={() => setQuickMaster(current => ({ ...current, field: current.field === field.name ? "" : field.name }))}>＋ Add master</button>}</div>
+      {field.multiple ? <select name={field.name} multiple defaultValue={(record?.[field.name] || []).map(String)}>
+        {(options[field.source] || []).map(option => <option key={option.id} value={option[field.sourceValue || "id"]}>{sourceLabel[field.source!] ? sourceLabel[field.source!](option) : option.name}</option>)}
+      </select> : <select name={field.name} required={field.required && !spec.tabs?.length}
+          value={sourceValues[field.name] ?? defaultFor(field)} onChange={event => setSourceValues(current => ({ ...current, [field.name]: event.target.value }))}>
+        <option value="">{(options[field.source] || []).length ? "Select…" : "Loading…"}</option>
+        {(options[field.source] || []).map(option => <option key={option.id} value={option[field.sourceValue || "id"]}>{sourceLabel[field.source!] ? sourceLabel[field.source!](option) : option.name}</option>)}
+      </select>}
+      {quickMaster.field === field.name && <div className="quick-master-panel">
+        <input aria-label={`New ${field.label}`} placeholder={field.masterType === "vehiclesize" ? "e.g. 32 ft MXL" : "e.g. Reefer"} value={quickMaster.name} onChange={event => setQuickMaster(current => ({ ...current, name: event.target.value }))} />
+        {field.masterType === "vehiclesize" ? <input aria-label="Default capacity kg" type="number" placeholder="Capacity kg" value={quickMaster.capacity} onChange={event => setQuickMaster(current => ({ ...current, capacity: event.target.value }))} /> : <>
+          <select aria-label="Operating class" value={quickMaster.temperatureClass} onChange={event => setQuickMaster(current => ({ ...current, temperatureClass: event.target.value }))}>
+            <option value="dry">Dry</option><option value="chiller">Reefer / chiller</option><option value="frozen">Frozen reefer</option><option value="multi">Multi-compartment</option>
+          </select>
+          <select aria-label="Body construction" value={quickMaster.bodyType} onChange={event => setQuickMaster(current => ({ ...current, bodyType: event.target.value }))}>
+            <option value="closed">Closed</option><option value="reefer">Reefer</option><option value="container">Container</option><option value="open">Open</option><option value="tanker">Tanker</option><option value="flatbed">Flatbed</option>
+          </select>
+        </>}
+        <button type="button" disabled={quickWorking || !quickMaster.name.trim()} onClick={() => createQuickMaster(field)}>{quickWorking ? "Adding…" : "Add & select"}</button>
+      </div>}
+    </div> : <label key={field.name}>{field.label}
+      {field.type === "select" ? <select name={field.name} defaultValue={defaultFor(field)}>{(field.options || []).map(option => <option key={option[0]} value={option[0]}>{option[1]}</option>)}</select>
       : <input name={field.name} type={field.type === "number" ? "number" : field.type === "date" ? "date" : field.type === "datetime" ? "datetime-local" : "text"} step={field.type === "number" ? "any" : undefined} defaultValue={defaultFor(field)} required={field.required && !spec.tabs?.length} />}
     </label>)}</div>
     {fields.filter(field => field.type === "textarea").map(field => <label key={field.name}>{field.label}<textarea name={field.name} defaultValue={defaultFor(field)} /></label>)}
@@ -1027,7 +1136,7 @@ function FleetVehiclesView({ reloadKey, onAction, openAction }: { reloadKey: num
     fmsRequest<any>(`vehicles/${selected.id}/status-history/`).then(setHistory).catch(() => setHistory([]));
   }, [selected?.id]);
 
-  const rows = vehicles.filter(v => `${v.registration_number} ${v.vehicle_type} ${v.ownership} ${v.vendor_name || ""} ${v.status}`.toLowerCase().includes(query.toLowerCase()));
+  const rows = vehicles.filter(v => `${v.registration_number} ${v.vehicle_type} ${v.temperature_class} ${v.ownership} ${v.vendor_name || ""} ${v.status}`.toLowerCase().includes(query.toLowerCase()));
 
   const changeStatus = async () => {
     if (!selected || !statusChoice) return;
@@ -1079,7 +1188,7 @@ function FleetVehiclesView({ reloadKey, onAction, openAction }: { reloadKey: num
       </div>
       {availability && (availability.length ? <div className="table-wrap"><table><thead><tr><th>Vehicle</th><th>Status</th><th>Distance</th><th>Current place</th><th>Documents</th></tr></thead>
         <tbody>{availability.map(row => <tr key={row.id} className="clickable" onClick={() => setSelected(vehicles.find(v => v.id === row.id) || row)}>
-          <td><strong>{row.registration_number}</strong><small>{row.vehicle_type}</small></td>
+          <td><strong>{row.registration_number}</strong><small>{row.vehicle_type} · {String(row.temperature_class || "dry").replaceAll("_", " ")}</small></td>
           <td><span className={"status " + String(row.status).replaceAll("_", "-")}>{String(row.status).replaceAll("_", " ")}</span></td>
           <td>{row.distance_km == null ? "—" : `${Number(row.distance_km).toFixed(1)} km`}</td>
           <td>{row.current_place || "—"}</td>
@@ -1091,10 +1200,11 @@ function FleetVehiclesView({ reloadKey, onAction, openAction }: { reloadKey: num
     <section className="module-table-card">
       <div className="module-toolbar"><div><strong>All vehicles</strong><span>{loading ? "Loading…" : rows.length + " vehicles"}</span></div><div className="toolbar-actions"><input aria-label="Search vehicles" placeholder="Search vehicles..." value={query} onChange={e => setQuery(e.target.value)} /><button onClick={load}>↻ Refresh</button></div></div>
       {loading ? <div className="data-state">Loading records…</div> : !rows.length ? <div className="data-state">No vehicles found.</div> :
-      <div className="table-wrap"><table><thead><tr><th>Vehicle</th><th>Type</th><th>Ownership</th><th>Capacity</th><th>Status</th></tr></thead>
+      <div className="table-wrap"><table><thead><tr><th>Vehicle</th><th>Size</th><th>Vehicle type</th><th>Ownership</th><th>Capacity</th><th>Status</th></tr></thead>
         <tbody>{rows.map(v => <tr key={v.id} className="clickable" onClick={() => setSelected(v)}>
           <td><strong>{v.registration_number}</strong></td>
           <td>{v.vehicle_type}</td>
+          <td>{String(v.temperature_class || "dry").replaceAll("_", " ")}</td>
           <td>{v.ownership === "own" ? "Own" : `${v.ownership.replace("_", " ")}${v.vendor_name ? ` · ${v.vendor_name}` : ""}`}</td>
           <td>{Number(v.capacity_kg).toLocaleString("en-IN")} kg</td>
           <td><span className={"status " + String(v.status).replaceAll("_", "-")}>{String(v.status).replaceAll("_", " ")}</span></td>
@@ -1106,7 +1216,8 @@ function FleetVehiclesView({ reloadKey, onAction, openAction }: { reloadKey: num
       {editing ? <RecordForm spec={recordForms.vehicle} record={selected} onClose={() => setEditing(false)}
         onSaved={() => { onAction(`${selected.registration_number} updated`); setEditing(false); load(); }} /> : <>
         <div className="record-fields">
-          <div className="record-field"><span>Type</span><strong>{selected.vehicle_type}</strong></div>
+          <div className="record-field"><span>Vehicle size</span><strong>{selected.vehicle_type}</strong></div>
+          <div className="record-field"><span>Vehicle type</span><strong>{String(selected.temperature_class || "dry").replaceAll("_", " ")}</strong></div>
           <div className="record-field"><span>Ownership</span><strong>{selected.ownership}{selected.vendor_name ? ` · ${selected.vendor_name}` : ""}</strong></div>
           <div className="record-field"><span>Capacity</span><strong>{Number(selected.capacity_kg).toLocaleString("en-IN")} kg</strong></div>
           <div className="record-field"><span>Odometer</span><strong>{Number(selected.current_odometer_km).toLocaleString("en-IN")} km</strong></div>
@@ -1817,6 +1928,8 @@ function OrdersView({ reloadKey, onAction, openAction, onTripCreated }: { reload
   const [orders, setOrders] = useState<any[]>([]);
   const [drivers, setDrivers] = useState<any[]>([]);
   const [vehicles, setVehicles] = useState<any[]>([]);
+  const [vehicleSizes, setVehicleSizes] = useState<any[]>([]);
+  const [vehicleTypes, setVehicleTypes] = useState<any[]>([]);
   const [selected, setSelected] = useState<any>(null);
   const [orderTotal, setOrderTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -1847,7 +1960,9 @@ function OrdersView({ reloadKey, onAction, openAction, onTripCreated }: { reload
   useEffect(() => {
     fmsRequest<any>(wholeSet("drivers/")).then(payload => setDrivers(asList(payload))).catch(() => undefined);
     fmsRequest<any>(wholeSet("vehicles/")).then(payload => setVehicles(asList(payload))).catch(() => undefined);
-  }, []);
+    fmsRequest<any>(wholeSet("vehicle-sizes/")).then(payload => setVehicleSizes(asList(payload))).catch(() => undefined);
+    fmsRequest<any>(wholeSet("vehicle-types/")).then(payload => setVehicleTypes(asList(payload))).catch(() => undefined);
+  }, [reloadKey]);
 
   // The candidate list and any spot-hire form in progress belong to whichever order
   // is open, so a fresh selection starts clean rather than showing the last order's picks.
@@ -1965,11 +2080,19 @@ function OrdersView({ reloadKey, onAction, openAction, onTripCreated }: { reload
     event.preventDefault();
     if (!spotCandidate) return;
     const form = new FormData(event.currentTarget as HTMLFormElement);
+    const vehicleSize = String(form.get("vehicle_type") || "");
+    const temperatureClass = String(form.get("temperature_class") || "dry");
+    const sizeMaster = vehicleSizes.find(size => size.name === vehicleSize);
+    const typeMaster = vehicleTypes.find(type => type.temperature_class === temperatureClass);
     setBusy(true);
     try {
       const payload = await fmsRequest<any>(`orders/${selected.id}/confirm-vehicle/`, { method: "POST", body: JSON.stringify({
         vendor: spotCandidate.vendor_id,
-        outside_vehicle: { vehicle_number: String(form.get("vehicle_number") || ""), vehicle_type: String(form.get("vehicle_type") || "") },
+        outside_vehicle: {
+          vehicle_number: String(form.get("vehicle_number") || ""), vehicle_type: vehicleSize,
+          capacity_kg: Number(sizeMaster?.default_capacity_kg || 0), temperature_class: temperatureClass,
+          body_type: typeMaster?.body_type || (temperatureClass === "dry" ? "closed" : "reefer"),
+        },
         hire: { agreed_rate: Number(form.get("agreed_rate") || 0), rate_basis: "trip",
                driver_name: String(form.get("driver_name") || ""), driver_phone: String(form.get("driver_phone") || ""),
                advance_amount: Number(form.get("advance_amount") || 0) },
@@ -2047,7 +2170,7 @@ function OrdersView({ reloadKey, onAction, openAction, onTripCreated }: { reload
           </div>}
           <b>{order.number}</b>
           <p>{order.pickup_city} → {order.dropoff_city}</p>
-          <small>{order.customer_name} · {rupees(order.total_amount)}</small>
+          <small>{order.customer_name} · {order.vehicle_type || "any size"} · {String(order.temperature_class || "dry").replaceAll("_", " ")} · {rupees(order.total_amount)}</small>
           <small className="tracking-code">{order.tracking_number}</small>
           <div onClick={event => event.stopPropagation()}>
             {status === "created" && <button disabled={busy} onClick={() => { setSelected(order); setDriver(""); setVehicle(""); }}>Allocate</button>}
@@ -2066,6 +2189,7 @@ function OrdersView({ reloadKey, onAction, openAction, onTripCreated }: { reload
         <div className="record-field"><span>Lane</span><strong>{selected.pickup_name} → {selected.dropoff_name}</strong></div>
         <div className="record-field"><span>Material</span><strong>{selected.payload_description || "—"}</strong></div>
         <div className="record-field"><span>Weight</span><strong>{Number(selected.weight_kg).toLocaleString("en-IN")} kg · {selected.packages} pkg</strong></div>
+        <div className="record-field"><span>Vehicle requirement</span><strong>{selected.vehicle_type || "Any size"} · {String(selected.temperature_class || "dry").replaceAll("_", " ")}</strong></div>
         <div className="record-field"><span>Distance</span><strong>{Number(selected.distance_km).toFixed(1)} km</strong></div>
         <div className="record-field"><span>Freight + GST</span><strong>{rupees(selected.freight_amount)} + {rupees(selected.tax_amount)}</strong></div>
         <div className="record-field"><span>Total</span><strong>{rupees(selected.total_amount)}</strong></div>
@@ -2106,7 +2230,8 @@ function OrdersView({ reloadKey, onAction, openAction, onTripCreated }: { reload
           <p className="eyebrow">CONFIRM SPOT HIRE · {spotCandidate.vendor_name}</p>
           <div className="form-grid">
             <label>Vehicle number<input name="vehicle_number" required /></label>
-            <label>Vehicle type<input name="vehicle_type" placeholder="20 ft SXL" /></label>
+            <label><span className="inline-field-action">Vehicle size<button type="button" onClick={() => openAction("vehiclesize")}>＋ Add master</button></span><select name="vehicle_type" required><option value="">Select size…</option>{vehicleSizes.filter(size => size.status === "active").map(size => <option key={size.id} value={size.name}>{size.name}{size.default_capacity_kg ? ` · ${Number(size.default_capacity_kg).toLocaleString("en-IN")} kg` : ""}</option>)}</select></label>
+            <label><span className="inline-field-action">Vehicle type<button type="button" onClick={() => openAction("vehicletype")}>＋ Add master</button></span><select name="temperature_class" required><option value="">Select type…</option>{vehicleTypes.filter(type => type.status === "active").map(type => <option key={type.id} value={type.temperature_class}>{type.name}</option>)}</select></label>
             <label>Driver name<input name="driver_name" required /></label>
             <label>Driver phone<input name="driver_phone" /></label>
             <label>Agreed rate (₹)<input name="agreed_rate" type="number" step="any" defaultValue={spotCandidate.expected_cost} required /></label>
@@ -3051,7 +3176,7 @@ function RatesView({ reloadKey, onAction, openAction }: { reloadKey: number; onA
         <div className="module-toolbar"><div><strong>Active rate cards</strong><span>{rates.length} cards</span></div></div>
         <div className="table-wrap"><table><thead><tr><th>Rate card</th><th>Basis</th><th>Base</th><th>Per km</th><th>GST</th><th>Status</th></tr></thead>
           <tbody>{rates.map(rate => <tr key={rate.id}>
-            <td><strong>{rate.name}</strong><small>{rate.service_area_name || "All areas"} · {rate.vehicle_type || "Any vehicle"}</small></td>
+            <td><strong>{rate.name}</strong><small>{rate.service_area_name || "All areas"} · {rate.vehicle_type || "Any size"} · {String(rate.temperature_class || "dry").replaceAll("_", " ")}</small></td>
             <td>{String(rate.rate_type).replaceAll("_", " ")}</td>
             <td>{rupees(rate.base_charge)}</td>
             <td>{rupees(rate.per_km_rate)}</td>
@@ -5039,7 +5164,7 @@ export default function Home() {
             <div className="table-wrap"><table><thead><tr><th>Trip & route</th><th>Vehicle</th><th>Driver</th><th>Status</th><th>ETA / POD</th><th>Revenue</th></tr></thead><tbody>{(dashboard?.recent_trips || []).map((t: any) => <tr key={t.id}><td><strong>{t.number}</strong><small>{t.origin} → {t.destination}</small></td><td>{t.vehicle_number}</td><td>{t.driver_name}</td><td><span className={`status ${t.status.toLowerCase().replaceAll("_","-")}`}>{t.status.replaceAll("_"," ")}</span></td><td>{t.planned_departure ? new Date(t.planned_departure).toLocaleString("en-IN") : "—"}</td><td><strong>₹{Number(t.estimated_cost || 0).toLocaleString("en-IN")}</strong></td></tr>)}</tbody></table></div>
           </section>
 
-        </div> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Planning" ? <DispatchPlanningView onAction={show} /> : active === "Scenario Profiles" ? <ScenarioProfilesView reloadKey={dataVersion} onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} onTripCreated={trip => { setOpenTripId(trip.id); setActive("Dispatch"); }} /> : active === "Hires" ? <HiresView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Fleet" ? <FleetVehiclesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Tracking" ? <TrackingView reloadKey={dataVersion} onAction={show} /> : active === "Fleets" ? <FleetsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : active === "Driver & Availability" ? <DriverAvailabilityReport reloadKey={dataVersion} onAction={show} /> : active === "Fleet Report" ? <FleetReport reloadKey={dataVersion} onAction={show} /> : active === "Customer Invoices" ? <CustomerInvoicesReport reloadKey={dataVersion} onAction={show} /> : active === "Vehicle Settlement" ? <VehicleSettlementReport reloadKey={dataVersion} onAction={show} /> : active === "Sales Report" ? <SalesReport reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} openTripId={openTripId} onTripOpened={() => setOpenTripId(null)} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
+        </div> : active === "Masters" ? <MastersView reloadKey={dataVersion} openAction={setAction} onNavigate={setActive} /> : active === "Modules" ? <FeatureHub onAction={show} /> : active === "Planning" ? <DispatchPlanningView onAction={show} /> : active === "Scenario Profiles" ? <ScenarioProfilesView reloadKey={dataVersion} onAction={show} /> : active === "Orders" ? <OrdersView reloadKey={dataVersion} onAction={show} openAction={setAction} onTripCreated={trip => { setOpenTripId(trip.id); setActive("Dispatch"); }} /> : active === "Hires" ? <HiresView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Fleet" ? <FleetVehiclesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Rates" ? <RatesView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Compliance" ? <ComplianceView reloadKey={dataVersion} openAction={setAction} /> : active === "ePOD" ? <EpodView reloadKey={dataVersion} onAction={show} /> : active === "Tracking" ? <TrackingView reloadKey={dataVersion} onAction={show} /> : active === "Fleets" ? <FleetsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Indents" ? <IndentsView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Users" ? <UsersView reloadKey={dataVersion} onAction={show} openAction={setAction} /> : active === "Roles" ? <RolesView reloadKey={dataVersion} onAction={show} /> : active === "Vouchers" ? <VouchersView reloadKey={dataVersion} onAction={show} /> : active === "Payments" ? <PaymentsView reloadKey={dataVersion} onAction={show} /> : active === "Financials" ? <FinancialsView reloadKey={dataVersion} onAction={show} /> : active === "Driver & Availability" ? <DriverAvailabilityReport reloadKey={dataVersion} onAction={show} /> : active === "Fleet Report" ? <FleetReport reloadKey={dataVersion} onAction={show} /> : active === "Customer Invoices" ? <CustomerInvoicesReport reloadKey={dataVersion} onAction={show} /> : active === "Vehicle Settlement" ? <VehicleSettlementReport reloadKey={dataVersion} onAction={show} /> : active === "Sales Report" ? <SalesReport reloadKey={dataVersion} onAction={show} /> : fleetOpsPages.includes(active) ? <FleetOpsView name={active} reloadKey={dataVersion} onAction={show} openAction={setAction} openTripId={openTripId} onTripOpened={() => setOpenTripId(null)} /> : <ModuleView name={active as keyof typeof modules} reloadKey={dataVersion} onAction={show} openAction={setAction} />}
       </section>
       {action && <ActionPanel type={action} onClose={() => setAction("")} onCreated={() => setDataVersion(v => v + 1)} />}
       {toast && <div className={"toast " + toast.tone}>{toast.tone === "warn" ? "⚠" : "✓"} {toast.text}</div>}

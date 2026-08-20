@@ -76,6 +76,40 @@ VEHICLE_STATUSES = [
 VEHICLE_TEMPERATURE_CLASSES = [("dry", "Dry"), ("chiller", "Chiller"), ("frozen", "Frozen"), ("multi", "Multi-compartment")]
 VEHICLE_BODY_TYPES = [("open", "Open"), ("closed", "Closed"), ("container", "Container"),
                       ("tanker", "Tanker"), ("flatbed", "Flatbed"), ("reefer", "Reefer")]
+MASTER_STATUSES = [("active", "Active"), ("inactive", "Inactive")]
+
+
+class VehicleSize(Timestamped):
+    """Reusable vehicle configuration such as 20 ft SXL or 32 ft MXL.
+
+    Operational tables keep their existing text snapshots so historical rates,
+    indents and hires never change when a master label is edited.
+    """
+    name = models.CharField(max_length=60, unique=True)
+    default_capacity_kg = models.PositiveIntegerField(default=0)
+    sort_order = models.PositiveSmallIntegerField(default=0)
+    status = models.CharField(max_length=10, choices=MASTER_STATUSES, default="active")
+
+    class Meta:
+        ordering = ["sort_order", "name"]
+
+    def __str__(self):
+        return self.name
+
+
+class VehicleType(Timestamped):
+    """Business-facing Dry/Reefer type mapped to the planner's safe classes."""
+    name = models.CharField(max_length=60, unique=True)
+    temperature_class = models.CharField(max_length=10, choices=VEHICLE_TEMPERATURE_CLASSES, default="dry")
+    body_type = models.CharField(max_length=20, choices=VEHICLE_BODY_TYPES, default="closed")
+    sort_order = models.PositiveSmallIntegerField(default=0)
+    status = models.CharField(max_length=10, choices=MASTER_STATUSES, default="active")
+
+    class Meta:
+        ordering = ["sort_order", "name"]
+
+    def __str__(self):
+        return self.name
 
 
 class Vehicle(Timestamped):
@@ -465,6 +499,7 @@ class ServiceRate(Timestamped):
     service_area = models.ForeignKey(ServiceArea, on_delete=models.SET_NULL, null=True, blank=True, related_name="service_rates")
     customer = models.ForeignKey(Customer, on_delete=models.SET_NULL, null=True, blank=True, related_name="service_rates")
     vehicle_type = models.CharField(max_length=60, blank=True)
+    temperature_class = models.CharField(max_length=10, choices=VEHICLE_TEMPERATURE_CLASSES, default="dry")
     rate_type = models.CharField(max_length=20, choices=RATE_TYPES, default="per_km")
     base_charge = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     per_km_rate = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -572,6 +607,7 @@ class Order(Timestamped):
     payment_mode = models.CharField(max_length=20, choices=PAYMENT_MODES, default="to_pay")
     eway_bill_number = models.CharField(max_length=30, blank=True)
     priority = models.CharField(max_length=20, default="normal")
+    vehicle_type = models.CharField(max_length=60, blank=True)
     temperature_class = models.CharField(max_length=10, choices=VEHICLE_TEMPERATURE_CLASSES, default="dry")
     temp_set_point_c = models.DecimalField(max_digits=5, decimal_places=1, null=True, blank=True)
     delivery_access = models.CharField(max_length=20, choices=DELIVERY_ACCESS_TYPES, default="no_restriction")
