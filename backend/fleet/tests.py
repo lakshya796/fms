@@ -832,7 +832,8 @@ class TripCostApportionmentTests(BaseFleetOpsTest):
         TripCostApportionmentTests._order_counter += 1
         defaults = dict(number=f"ORD-APRT-{TripCostApportionmentTests._order_counter}",
                         customer=self.customer, pickup=self.pickup, dropoff=self.dropoff,
-                        distance_km=distance_km, weight_kg=weight_kg, total_amount=10000, status="created",
+                        distance_km=distance_km, weight_kg=weight_kg, freight_amount=10000,
+                        total_amount=10000, status="created",
                         driver=self.driver, vehicle=self.vehicle)
         defaults.update(overrides)
         return Order.objects.create(**defaults)
@@ -952,6 +953,12 @@ class TripCostApportionmentTests(BaseFleetOpsTest):
         self.assertEqual(response.data["fuel"], 0.0)
         self.assertEqual(response.data["trip_expenses"], 400.0)
         self.assertEqual(response.data["cost_basis"], "order_only")
+
+    def test_order_profitability_excludes_gst_from_revenue(self):
+        order = self._order(distance_km=100, weight_kg=1000, freight_amount=10000,
+                            tax_amount=500, total_amount=10500)
+        response = self.client.get(f"/api/v1/orders/{order.id}/profitability/")
+        self.assertEqual(response.data["revenue"], 10000.0)
 
     def test_tripexpense_save_backfills_trip_from_the_orders_trip(self):
         """An expense written with only `order` set must not go missing from
@@ -1282,6 +1289,17 @@ class TripCockpitTests(BaseFleetOpsTest):
         # The cockpit's own headline figures must not repeat that omission.
         self.assertEqual(response.data["costs"]["total_cost"], 5880.0 + 450.0)
         self.assertEqual(response.data["profit"]["total"], 11550.0 - 5880.0 - 450.0)
+
+    def test_cockpit_combines_only_freight_for_every_order_on_the_trip(self):
+        first = self._order(number="ORD-CKPT-FREIGHT-A", freight_amount=10000,
+                            tax_amount=500, total_amount=10500)
+        trip = first.ensure_trip()
+        self._order(number="ORD-CKPT-FREIGHT-B", trip=trip, freight_amount=7000,
+                    tax_amount=350, total_amount=7350)
+
+        response = self.client.get(f"/api/v1/trips/{trip.id}/cockpit/")
+        self.assertEqual(response.data["revenue"]["total"], 17000.0)
+        self.assertEqual(sum(row["revenue"] for row in response.data["orders"]), 17000.0)
 
     def test_cockpit_blockers_report_missing_lr_unverified_pod_and_unbilled_orders(self):
         order = self._order(pod_required=True)
@@ -1702,23 +1720,24 @@ class TripProfitabilityReportTests(BaseFleetOpsTest):
 
     def _order(self, number, **overrides):
         defaults = dict(number=number, customer=self.customer, pickup=self.pickup, dropoff=self.dropoff,
-                        distance_km=100, weight_kg=1000, freight_amount=10000, total_amount=10000, status="completed",
+                        distance_km=100, weight_kg=1000, freight_amount=10000,
+                        total_amount=10000, status="completed",
                         driver=self.driver, vehicle=self.vehicle)
         defaults.update(overrides)
         return Order.objects.create(**defaults)
 
     def test_report_returns_apportioned_revenue_cost_and_margin_per_trip(self):
-        order = self._order("ORD-TPR-1")
+        order = self._order("ORD-TPR-1", freight_amount=9500, tax_amount=500, total_amount=10000)
         trip = order.ensure_trip()
         FuelEntry.objects.create(vehicle=self.vehicle, trip=trip, volume_litres=50, rate_per_litre=100, amount=5000)
 
         response = self.client.get("/api/v1/reports/trip-profitability/")
         self.assertEqual(response.status_code, 200)
         row = next(r for r in response.data["trips"] if r["number"] == trip.number)
-        self.assertEqual(row["revenue"], 10000.0)
+        self.assertEqual(row["revenue"], 9500.0)
         self.assertEqual(row["fuel"], 5000.0)
         self.assertEqual(row["cost"], 5000.0)
-        self.assertEqual(row["margin"], 5000.0)
+        self.assertEqual(row["margin"], 4500.0)
         self.assertEqual(row["order_count"], 1)
 
     def test_report_excludes_trips_with_no_orders(self):
@@ -2037,7 +2056,6 @@ class TripSettlementTests(BaseFleetOpsTest):
                          {"passed_km": 100, "expenses": {"diesel": "2000"}}, format="json")
         response = self.client.get(f"/api/v1/trips/{order.trip_id}/settlement/")
         self.assertEqual(response.data["summary"]["freight"], float(order.freight_amount))
-        self.assertLess(order.freight_amount, order.total_amount)   # GST is excluded, not just equal by luck
 
     def test_vehicle_keeps_the_registration_the_operator_typed(self):
         response = self.client.post("/api/v1/vehicles/", {

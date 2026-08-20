@@ -1635,7 +1635,7 @@ function TripCockpitPanel({ trip, onAction, onOrderChanged }: { trip: any; onAct
       : <div className="constraint-breaches">{data.blockers.map((b: string, i: number) => <p key={i} className="breach-line">⚠ {b}</p>)}</div>}
 
     <div className="margin-strip">
-      <div><span>Revenue</span><strong>{rupees(data.revenue.total)}</strong></div>
+      <div><span>Combined freight</span><strong>{rupees(data.revenue.total)}</strong></div>
       <div><span>Trip cost (fuel + on-road)</span><strong>{rupees(data.costs.total_cost)}</strong></div>
       <div><span>Trip profit</span><strong className={data.profit.total >= 0 ? "good" : "bad"}>{rupees(data.profit.total)}</strong></div>
     </div>
@@ -1658,7 +1658,7 @@ function TripCockpitPanel({ trip, onAction, onOrderChanged }: { trip: any; onAct
 
     <div className="table-wrap" style={{ marginTop: 12 }}>
       <table>
-        <thead><tr><th>Order</th><th>Status</th><th>LR</th><th>POD</th><th>Invoice</th><th>Revenue</th><th>Cost</th><th>Profit</th></tr></thead>
+        <thead><tr><th>Order</th><th>Status</th><th>LR</th><th>POD</th><th>Invoice</th><th>Freight</th><th>Cost</th><th>Profit</th></tr></thead>
         <tbody>{data.orders.map((row: any) => <tr key={row.id}>
           <td><strong>{row.number}</strong><small>{row.customer}</small></td>
           <td><span className={"status " + row.status}>{row.status}</span></td>
@@ -2502,7 +2502,7 @@ function OrdersView({ reloadKey, onAction, openAction, onTripCreated }: { reload
       {settlement && (settlement.customer || settlement.vendor || settlement.vehicle.fuel || settlement.vehicle.trip_expenses) && <div className="record-section">
         <p className="eyebrow">SETTLEMENT</p>
         <div className="margin-strip">
-          <div><span>Revenue</span><strong>{rupees(settlement.revenue)}</strong></div>
+          <div><span>Freight revenue</span><strong>{rupees(settlement.revenue)}</strong></div>
           <div><span>Total cost</span><strong>{rupees(settlement.total_cost)}</strong></div>
           <div><span>Actual profit</span><strong className={settlement.actual_profit >= 0 ? "good" : "bad"}>{rupees(settlement.actual_profit)}</strong></div>
         </div>
