@@ -6,3 +6,4 @@ psycopg[binary]==3.2.9
 whitenoise==6.9.0
 reportlab==5.0.0
 boto3==1.35.36
+pypdf==6.16.1

@@ -565,6 +565,9 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         from reportlab.lib.enums import TA_RIGHT, TA_CENTER
         from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
 
+        from .lr_pdf import render_lr_pdf
+        from .pdfs import merge_pdfs, render_pod_pdf
+
         invoice = self.get_object()
         order = invoice.order
         customer = invoice.customer
@@ -715,7 +718,31 @@ class InvoiceViewSet(viewsets.ModelViewSet):
 
         doc.build(elems)
         buffer.seek(0)
-        response = HttpResponse(buffer.read(), content_type="application/pdf")
+        invoice_pdf = buffer.read()
+
+        # ---- Annexures: the lorry receipt and proof of delivery behind every
+        # consignment this invoice bills, single or consolidated - each a
+        # separately rendered PDF in its own right, stapled on as further
+        # pages so the tax invoice a customer receives carries its own backup
+        # rather than sending them to three separate screens for it.
+        if invoice.line_items:
+            annexure_orders = list(invoice.orders.select_related("pickup", "dropoff", "vehicle", "lorry_receipt")
+                                                  .prefetch_related("proofs").order_by("id"))
+        elif order:
+            annexure_orders = [order]
+        else:
+            annexure_orders = []
+        annexures = []
+        for annexure_order in annexure_orders:
+            lr = annexure_order.lorry_receipt
+            if lr:
+                annexures.append(render_lr_pdf(lr))
+            proof = annexure_order.proofs.first()  # at most one - see ProofOfDelivery.order
+            if proof and proof.captured_at:
+                annexures.append(render_pod_pdf(proof, annexure_order, request))
+
+        final_pdf = merge_pdfs(invoice_pdf, *annexures) if annexures else invoice_pdf
+        response = HttpResponse(final_pdf, content_type="application/pdf")
         response["Content-Disposition"] = f'inline; filename="{invoice.number}.pdf"'
         return response
 
@@ -967,6 +994,19 @@ class OrderViewSet(FilterableViewSet):
         return order.proofs.filter(status__in=["awaiting", "rejected"]).order_by("-created_at").first()
 
     @staticmethod
+    def _refuse_second_proof(order):
+        """An order gets exactly one ePOD (`ProofOfDelivery.order` is unique). A
+        rejected or still-awaiting capture is corrected in place via `_open_proof`
+        above; this only fires when one is already submitted or verified, where
+        opening a second proof would leave two competing records for one delivery."""
+        latest = order.proofs.order_by("-created_at").first()
+        if latest is None:
+            return
+        if latest.status == "verified":
+            raise ValidationError("This consignment's ePOD is already verified. Only one ePOD is allowed per consignment.")
+        raise ValidationError("This consignment's ePOD is awaiting office review. Verify or reject it before capturing another.")
+
+    @staticmethod
     def _capture(proof, data):
         """Record what the driver captured at the drop and settle its review state."""
         supplied = str(data.get("otp") or "").strip()
@@ -1007,6 +1047,7 @@ class OrderViewSet(FilterableViewSet):
             raise ValidationError("A cancelled consignment has nothing to deliver.")
         proof = self._open_proof(order)
         if proof is None:
+            self._refuse_second_proof(order)
             proof = ProofOfDelivery.objects.create(
                 order=order, waypoint_id=request.data.get("waypoint") or None,
                 proof_type=request.data.get("proof_type", "signature"),
@@ -1025,7 +1066,10 @@ class OrderViewSet(FilterableViewSet):
         order = self.get_object()
         if not request.data.get("receiver_name") and not request.data.get("file_url"):
             raise ValidationError("Record who took delivery, or attach the signed POD.")
-        proof = self._open_proof(order) or ProofOfDelivery.objects.create(order=order)
+        proof = self._open_proof(order)
+        if proof is None:
+            self._refuse_second_proof(order)
+            proof = ProofOfDelivery.objects.create(order=order)
         self._capture(proof, request.data)
         order.log(order.status, "POD_CAPTURED",
                   f"Received by {proof.receiver_name or 'consignee'}"
@@ -1096,10 +1140,13 @@ class OrderViewSet(FilterableViewSet):
         order = self.get_object()
         proof = None
         if order.pod_required:
-            # Delivering straight from the board captures the ePOD in the same call.
-            if any(request.data.get(field) for field in ("receiver_name", "file_url", "otp")):
+            proof = order.proofs.filter(captured_at__isnull=False).order_by("-created_at").first()
+            # Delivering straight from the board resends a placeholder receiver_name on
+            # every call, so only actually capture from it when nothing has been captured
+            # yet - an order gets exactly one ePOD (see ProofOfDelivery.order), and the
+            # ePOD screen's own capture, if there was one, already stands.
+            if proof is None and any(request.data.get(field) for field in ("receiver_name", "file_url", "otp")):
                 proof = self._capture(self._open_proof(order) or ProofOfDelivery.objects.create(order=order), request.data)
-            proof = proof or order.proofs.filter(captured_at__isnull=False).order_by("-created_at").first()
             if proof is None:
                 raise ValidationError("This consignment needs an ePOD. Capture who took delivery before completing it.")
         order.status = "completed"
