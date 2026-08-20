@@ -268,13 +268,22 @@ class Trip(Timestamped):
         # A trip carries every order allocated to it (a consolidated multi-drop route
         # is several orders on one trip), so its freight is their sum - pricing from a
         # single order here silently dropped the rest of a consolidated trip's revenue.
-        orders_total = self.orders.aggregate(value=models.Sum("total_amount"))["value"]
-        freight = money(orders_total) if orders_total else money(self.freight_amount)
+        # Summed from freight_amount, not total_amount: total_amount includes GST, which
+        # is collected on the government's behalf, not earned - see docs/MULTIPOINT-FREIGHT.md §2.5.
+        # `self.orders.model.objects.filter(...)`, not `self.orders.all()`: a caller that
+        # fetched this trip through a prefetched queryset (the trip API views all do) has a
+        # stale `orders` prefetch cache the moment an order's own fields change elsewhere in
+        # the same request - this always hits the database.
+        orders = list(self.orders.model.objects.filter(trip=self))
+        freight_total = money(sum((money(o.freight_amount) for o in orders), Decimal("0")))
+        tax_total = money(sum((money(o.tax_amount) for o in orders), Decimal("0")))
+        freight = freight_total if orders else money(self.freight_amount)
         distance = self.passed_km or self.running_km or 0
         return {
             "total_exp": float(total_exp), "diesel_given": float(money(self.advance_amount)),
             "difference": float(money(total_exp - self.advance_amount)),
-            "freight": float(freight), "running_km": self.running_km, "passed_km": self.passed_km,
+            "freight": float(freight), "tax": float(tax_total) if orders else 0.0,
+            "running_km": self.running_km, "passed_km": self.passed_km,
             "per_km_exp": float(money(total_exp / distance)) if distance else 0.0,
             "per_km_rev": float(money(freight / distance)) if distance else 0.0,
             "trip_profit": float(money(freight - total_exp)),
@@ -511,6 +520,13 @@ class ServiceRate(Timestamped):
     unloading_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     halting_charge_per_day = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     fuel_surcharge_percent = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    fixed_charge_scope = models.CharField(max_length=20, default="per_trip",
+                                          choices=[("per_trip", "Once per trip"), ("per_consignment", "Once per consignment")],
+                                          help_text="How base charge, minimum charge, per-hour and halting are levied "
+                                                    "on a multi-point run carrying several orders: once for the whole "
+                                                    "trip and divided among them (the right default for a lorry rate "
+                                                    "card), or once per consignment (for a parcel/PTL card whose base "
+                                                    "charge is really a per-booking fee). See docs/MULTIPOINT-FREIGHT.md.")
     gst_percent = models.DecimalField(max_digits=5, decimal_places=2, default=5, help_text="5% GTA without ITC, 12% with ITC")
     reverse_charge = models.BooleanField(default=False, help_text="GST payable by consignee under RCM")
     effective_from = models.DateField(null=True, blank=True)
@@ -600,6 +616,12 @@ class Order(Timestamped):
     declared_value = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     distance_km = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     freight_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    freight_source = models.CharField(max_length=20, default="manual",
+                                      choices=[("rate_card", "Priced from its own rate card"),
+                                              ("trip_share", "Share of a trip-level freight"),
+                                              ("mixed", "Own rate card plus a trip share"),
+                                              ("manual", "Entered by hand")],
+                                      help_text="Where freight_amount came from - see fleet.freight.apportion_trip_freight")
     other_charges = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     tax_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     total_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -631,15 +653,40 @@ class Order(Timestamped):
         super().save(*args, **kwargs)
 
     def price_from_rate_card(self, save=True):
-        """Recalculate freight, GST and total from the linked rate card."""
+        """Recalculate freight, GST and total from the linked rate card.
+
+        On a trip carrying other orders, prices through
+        `fleet.freight.apportion_trip_freight` instead of `ServiceRate.quote()`
+        directly, so a trip-level component of the rate card (its base charge,
+        minimum, loading...) is divided across the trip's orders rather than
+        charged in full to every one of them - see docs/MULTIPOINT-FREIGHT.md.
+        Reduces to plain `quote()` for a solo order, exactly.
+        """
         if not self.service_rate:
             return None
+        if self.trip_id and self.trip.orders.exclude(pk=self.pk).exists():
+            from .freight import apportion_trip_freight
+            split = apportion_trip_freight(self.trip)
+            row = split["orders"].get(self.pk)
+            if row and row["source"] != "manual":
+                self.freight_amount = row["freight_amount"]
+                self.tax_amount = row["tax_amount"]
+                self.total_amount = row["total_amount"]
+                self.freight_source = row["source"]
+                if save:
+                    self.save(update_fields=["freight_amount", "tax_amount", "total_amount",
+                                             "freight_source", "updated_at"])
+                return {"rate_card": self.service_rate.name, "rate_type": self.service_rate.rate_type,
+                        "freight": float(self.freight_amount), "gst_percent": float(self.service_rate.gst_percent),
+                        "gst_amount": float(self.tax_amount), "total": float(self.total_amount),
+                        "source": row["source"], "basis": split["basis"]}
         breakdown = self.service_rate.quote(distance_km=self.distance_km, weight_kg=self.weight_kg, other_charges=self.other_charges)
         self.freight_amount = money(breakdown["freight"] + breakdown["fuel_surcharge"] + breakdown["handling_charges"])
         self.tax_amount = money(breakdown["gst_amount"])
         self.total_amount = money(breakdown["total"])
+        self.freight_source = "rate_card"
         if save:
-            self.save(update_fields=["freight_amount", "tax_amount", "total_amount", "updated_at"])
+            self.save(update_fields=["freight_amount", "tax_amount", "total_amount", "freight_source", "updated_at"])
         return breakdown
 
     def log(self, status, code, details="", latitude=None, longitude=None, city=""):
