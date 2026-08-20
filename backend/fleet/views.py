@@ -151,96 +151,18 @@ class LorryReceiptViewSet(viewsets.ModelViewSet):
         consignee signs, generated the same way the invoice PDF is."""
         from io import BytesIO
         from django.http import HttpResponse
-        from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.units import mm
-        from reportlab.lib.styles import ParagraphStyle
-        from reportlab.lib.enums import TA_RIGHT
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
+        from reportlab.platypus import SimpleDocTemplate
+
+        from .pdfs import lr_elements
 
         lr = self.get_object()
         order = lr.orders.first()
 
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=15*mm, leftMargin=15*mm, topMargin=15*mm, bottomMargin=15*mm)
-
-        brand = colors.HexColor("#0d5f45")
-        light = colors.HexColor("#f0f4f2")
-        mid = colors.HexColor("#666666")
-
-        def ps(name, **kw): return ParagraphStyle(name, **kw)
-        h1 = ps("h1", fontSize=22, fontName="Helvetica-Bold", textColor=brand)
-        h2 = ps("h2", fontSize=11, fontName="Helvetica-Bold")
-        body = ps("body", fontSize=9, fontName="Helvetica")
-        small = ps("small", fontSize=8, fontName="Helvetica", textColor=mid)
-        r_bold = ps("r_bold", fontSize=10, fontName="Helvetica-Bold", alignment=TA_RIGHT, textColor=brand)
-        lbl = ps("lbl", fontSize=7, fontName="Helvetica-Bold", textColor=mid)
-
-        elems = []
-        hdr = [
-            [Paragraph("PHLOZ FMS", h1),
-             Paragraph("LORRY RECEIPT", ps("lr", fontSize=16, fontName="Helvetica-Bold", alignment=TA_RIGHT, textColor=brand))],
-            [Paragraph("Fleet Management System", small),
-             Paragraph(f"<b>{lr.number}</b>", ps("lrno", fontSize=11, fontName="Helvetica-Bold", alignment=TA_RIGHT))],
-            [Paragraph("", body),
-             Paragraph(f"Date: {lr.created_at.strftime('%d %b %Y')}", ps("d", fontSize=9, alignment=TA_RIGHT))],
-        ]
-        hdr_t = Table(hdr, colWidths=[100*mm, 75*mm])
-        hdr_t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
-                                   ("LINEBELOW", (0, -1), (-1, -1), 2, brand), ("BOTTOMPADDING", (0, -1), (-1, -1), 6)]))
-        elems.append(hdr_t)
-        elems.append(Spacer(1, 5*mm))
-
-        parties = [
-            [Paragraph("CONSIGNOR", lbl), Paragraph("CONSIGNEE", lbl)],
-            [Paragraph(f"<b>{lr.consignor}</b>", h2), Paragraph(f"<b>{lr.consignee}</b>", h2)],
-            [Paragraph(f"From: {lr.origin}", small), Paragraph(f"To: {lr.destination}", small)],
-        ]
-        parties_t = Table(parties, colWidths=[87.5*mm, 87.5*mm])
-        parties_t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("BACKGROUND", (0, 0), (-1, 0), light),
-                                       ("TOPPADDING", (0, 0), (-1, 0), 3), ("BOTTOMPADDING", (0, 0), (-1, 0), 3),
-                                       ("LINEBELOW", (0, -1), (-1, -1), 0.5, colors.HexColor("#cccccc"))]))
-        elems.append(parties_t)
-        elems.append(Spacer(1, 4*mm))
-
-        if order:
-            ref = [
-                [Paragraph("CONSIGNMENT", lbl), Paragraph("VEHICLE", lbl), Paragraph("E-WAY BILL", lbl)],
-                [Paragraph(f"<b>{order.number}</b>", h2),
-                 Paragraph(order.vehicle.registration_number if order.vehicle else "—", body),
-                 Paragraph(lr.eway_bill_number or "—", body)],
-            ]
-            ref_t = Table(ref, colWidths=[60*mm, 60*mm, 55*mm])
-            ref_t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("BACKGROUND", (0, 0), (-1, 0), light),
-                                       ("TOPPADDING", (0, 0), (-1, 0), 3), ("BOTTOMPADDING", (0, 0), (-1, 0), 3),
-                                       ("LINEBELOW", (0, -1), (-1, -1), 0.5, colors.HexColor("#cccccc"))]))
-            elems.append(ref_t)
-            elems.append(Spacer(1, 4*mm))
-
-        rows = [
-            [Paragraph("Particulars", ps("th", fontSize=9, fontName="Helvetica-Bold", textColor=colors.white)),
-             Paragraph("Detail", ps("th_r", fontSize=9, fontName="Helvetica-Bold", textColor=colors.white, alignment=TA_RIGHT))],
-            ["Material", Paragraph(lr.material, ps("r", fontSize=9, alignment=TA_RIGHT))],
-            ["Packages", Paragraph(str(lr.packages), ps("r2", fontSize=9, alignment=TA_RIGHT))],
-            ["Weight", Paragraph(f"{float(lr.weight_kg):,.0f} kg", ps("r3", fontSize=9, alignment=TA_RIGHT))],
-            [Paragraph("FREIGHT", h2), Paragraph(f"₹ {float(lr.freight_amount):,.2f}", r_bold)],
-        ]
-        table = Table(rows, colWidths=[130*mm, 45*mm])
-        table.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("BACKGROUND", (0, 0), (-1, 0), brand),
-            ("LINEABOVE", (0, -1), (-1, -1), 1.5, brand), ("BACKGROUND", (0, -1), (-1, -1), light),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor("#fafafa")]),
-            ("PADDING", (0, 0), (-1, -1), 7), ("LINEBELOW", (0, 1), (-1, -3), 0.3, colors.HexColor("#e0e0e0")),
-        ]))
-        elems.append(table)
-        elems.append(Spacer(1, 6*mm))
-        elems.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#cccccc")))
-        elems.append(Spacer(1, 3*mm))
-        elems.append(Paragraph(
-            "Goods carried at owner's risk. Subject to the terms and conditions of carriage. "
-            "This is a computer-generated document and requires no signature to be valid for despatch.", small))
-
-        doc.build(elems)
+        doc.build(lr_elements(lr, order))
         buffer.seek(0)
         response = HttpResponse(buffer.read(), content_type="application/pdf")
         response["Content-Disposition"] = f'inline; filename="{lr.number}.pdf"'
@@ -546,6 +468,8 @@ class InvoiceViewSet(viewsets.ModelViewSet):
         from reportlab.lib.enums import TA_RIGHT, TA_CENTER
         from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
 
+        from .pdfs import annexure_heading, lr_elements, pod_elements
+
         invoice = self.get_object()
         order = invoice.order
         customer = invoice.customer
@@ -693,6 +617,27 @@ class InvoiceViewSet(viewsets.ModelViewSet):
             f"Payment due by {invoice.due_date.strftime('%d %B %Y')}. "
             "This is a computer-generated document and requires no signature.",
             small))
+
+        # ---- Annexures: the lorry receipt and proof of delivery behind every
+        # consignment this invoice bills, single or consolidated, each on its own
+        # page(s) - so the tax invoice a customer receives carries its own backup
+        # rather than sending them to three separate screens for it.
+        if invoice.line_items:
+            annexure_orders = list(invoice.orders.select_related("pickup", "dropoff", "vehicle", "lorry_receipt")
+                                                  .prefetch_related("proofs").order_by("id"))
+        elif order:
+            annexure_orders = [order]
+        else:
+            annexure_orders = []
+        for annexure_order in annexure_orders:
+            lr = annexure_order.lorry_receipt
+            if lr:
+                elems.extend(annexure_heading(f"ANNEXURE · LORRY RECEIPT — {annexure_order.number}"))
+                elems.extend(lr_elements(lr, annexure_order))
+            proof = annexure_order.proofs.first()  # at most one - see ProofOfDelivery.order
+            if proof and proof.captured_at:
+                elems.extend(annexure_heading(f"ANNEXURE · PROOF OF DELIVERY — {annexure_order.number}"))
+                elems.extend(pod_elements(proof, annexure_order, request))
 
         doc.build(elems)
         buffer.seek(0)
@@ -943,6 +888,19 @@ class OrderViewSet(FilterableViewSet):
         return order.proofs.filter(status__in=["awaiting", "rejected"]).order_by("-created_at").first()
 
     @staticmethod
+    def _refuse_second_proof(order):
+        """An order gets exactly one ePOD (`ProofOfDelivery.order` is unique). A
+        rejected or still-awaiting capture is corrected in place via `_open_proof`
+        above; this only fires when one is already submitted or verified, where
+        opening a second proof would leave two competing records for one delivery."""
+        latest = order.proofs.order_by("-created_at").first()
+        if latest is None:
+            return
+        if latest.status == "verified":
+            raise ValidationError("This consignment's ePOD is already verified. Only one ePOD is allowed per consignment.")
+        raise ValidationError("This consignment's ePOD is awaiting office review. Verify or reject it before capturing another.")
+
+    @staticmethod
     def _capture(proof, data):
         """Record what the driver captured at the drop and settle its review state."""
         supplied = str(data.get("otp") or "").strip()
@@ -983,6 +941,7 @@ class OrderViewSet(FilterableViewSet):
             raise ValidationError("A cancelled consignment has nothing to deliver.")
         proof = self._open_proof(order)
         if proof is None:
+            self._refuse_second_proof(order)
             proof = ProofOfDelivery.objects.create(
                 order=order, waypoint_id=request.data.get("waypoint") or None,
                 proof_type=request.data.get("proof_type", "signature"),
@@ -1001,7 +960,10 @@ class OrderViewSet(FilterableViewSet):
         order = self.get_object()
         if not request.data.get("receiver_name") and not request.data.get("file_url"):
             raise ValidationError("Record who took delivery, or attach the signed POD.")
-        proof = self._open_proof(order) or ProofOfDelivery.objects.create(order=order)
+        proof = self._open_proof(order)
+        if proof is None:
+            self._refuse_second_proof(order)
+            proof = ProofOfDelivery.objects.create(order=order)
         self._capture(proof, request.data)
         order.log(order.status, "POD_CAPTURED",
                   f"Received by {proof.receiver_name or 'consignee'}"
@@ -1037,10 +999,13 @@ class OrderViewSet(FilterableViewSet):
         order = self.get_object()
         proof = None
         if order.pod_required:
-            # Delivering straight from the board captures the ePOD in the same call.
-            if any(request.data.get(field) for field in ("receiver_name", "file_url", "otp")):
+            proof = order.proofs.filter(captured_at__isnull=False).order_by("-created_at").first()
+            # Delivering straight from the board resends a placeholder receiver_name on
+            # every call, so only actually capture from it when nothing has been captured
+            # yet - an order gets exactly one ePOD (see ProofOfDelivery.order), and the
+            # ePOD screen's own capture, if there was one, already stands.
+            if proof is None and any(request.data.get(field) for field in ("receiver_name", "file_url", "otp")):
                 proof = self._capture(self._open_proof(order) or ProofOfDelivery.objects.create(order=order), request.data)
-            proof = proof or order.proofs.filter(captured_at__isnull=False).order_by("-created_at").first()
             if proof is None:
                 raise ValidationError("This consignment needs an ePOD. Capture who took delivery before completing it.")
         order.status = "completed"

@@ -354,6 +354,57 @@ class EpodWorkflowTests(OrderLifecycleTests):
         order.save(update_fields=["pod_required"])
         self.assertEqual(self.client.post(f"/api/v1/orders/{order.id}/complete/", {}, format="json").status_code, 200)
 
+    def test_a_verified_epod_refuses_a_second_pod_request(self):
+        order = self.create_order()
+        self.deliver(order)
+        issued = self.client.post(f"/api/v1/orders/{order.id}/pod-request/", {}, format="json")
+        self.client.post(f"/api/v1/orders/{order.id}/pod-submit/",
+                         {"receiver_name": "Store manager", "otp": issued.data["otp"]}, format="json")
+        self.assertEqual(ProofOfDelivery.objects.get(order=order).status, "verified")
+
+        refused = self.client.post(f"/api/v1/orders/{order.id}/pod-request/", {}, format="json")
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("already verified", str(refused.data))
+        self.assertEqual(ProofOfDelivery.objects.filter(order=order).count(), 1)
+
+    def test_a_pod_awaiting_review_refuses_a_second_pod_submit(self):
+        order = self.create_order()
+        self.deliver(order)
+        issued = self.client.post(f"/api/v1/orders/{order.id}/pod-request/", {}, format="json")
+        self.client.post(f"/api/v1/orders/{order.id}/pod-submit/", {
+            "receiver_name": "Store manager", "otp": issued.data["otp"], "shortage_kg": 120}, format="json")
+        self.assertEqual(ProofOfDelivery.objects.get(order=order).status, "submitted")
+
+        refused = self.client.post(f"/api/v1/orders/{order.id}/pod-submit/",
+                                   {"receiver_name": "Someone else"}, format="json")
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("awaiting office review", str(refused.data))
+        self.assertEqual(ProofOfDelivery.objects.filter(order=order).count(), 1)
+
+    def test_completing_an_order_reuses_its_already_verified_epod(self):
+        """The Orders board resends a placeholder receiver_name on every drag-to-
+        Delivered - completing an order that already cleared ePOD on the ePOD
+        screen must not try to open a second proof against it."""
+        order = self.create_order()
+        self.deliver(order)
+        issued = self.client.post(f"/api/v1/orders/{order.id}/pod-request/", {}, format="json")
+        self.client.post(f"/api/v1/orders/{order.id}/pod-submit/",
+                         {"receiver_name": "Store manager", "otp": issued.data["otp"]}, format="json")
+        verified_id = ProofOfDelivery.objects.get(order=order).id
+
+        response = self.client.post(f"/api/v1/orders/{order.id}/complete/",
+                                    {"receiver_name": "Consignee", "proof_type": "signature"}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(ProofOfDelivery.objects.filter(order=order).count(), 1)
+        self.assertEqual(ProofOfDelivery.objects.get(order=order).id, verified_id)
+
+    def test_the_database_itself_refuses_a_second_proof_for_one_order(self):
+        from django.db import IntegrityError, transaction as _tx
+        order = self.create_order()
+        ProofOfDelivery.objects.create(order=order)
+        with self.assertRaises(IntegrityError), _tx.atomic():
+            ProofOfDelivery.objects.create(order=order)
+
 
 class PhysicalPodCourierTests(OrderLifecycleTests):
     """The signed physical copy a consignee insists on, tracked back to the office by courier."""
@@ -2044,3 +2095,96 @@ class InvoiceViewSetTest(AutomaticInvoiceTests):
         r = self.client.get(f"/api/v1/invoices/{invoice_id}/pdf/")
         self.assertIn(invoice_number, r.get("Content-Disposition", ""))
         self.assertGreater(len(r.content), 1024)  # a meaningful PDF is at least 1 KB
+
+    @staticmethod
+    def _pdf_page_count(pdf_bytes):
+        import re
+        return len(re.findall(rb"/Type\s*/Page[^s]", pdf_bytes))
+
+    def test_pdf_has_no_annexures_when_there_is_no_lr_or_pod(self):
+        # pod_required=False and no pod-request/pod-submit call: genuinely nothing
+        # to staple on, unlike deliver() below, which always captures an ePOD.
+        order = self.create_order(pod_required=False)
+        self.client.post(f"/api/v1/orders/{order.id}/assign/",
+                         {"driver": self.driver.id, "vehicle": self.vehicle.id}, format="json")
+        self.client.post(f"/api/v1/orders/{order.id}/dispatch/")
+        self.client.post(f"/api/v1/orders/{order.id}/complete/", {}, format="json")
+        inv_r = self.client.post(f"/api/v1/orders/{order.id}/invoice/", {}, format="json")
+        self.assertEqual(inv_r.status_code, 201, inv_r.data)
+        invoice_id = inv_r.data["invoice"]["id"]
+        r = self.client.get(f"/api/v1/invoices/{invoice_id}/pdf/")
+        self.assertEqual(self._pdf_page_count(r.content), 1)
+
+    def test_pdf_staples_the_lr_and_pod_as_further_pages(self):
+        """docs: an invoice's PDF carries its own backup - the lorry receipt and
+        the verified proof of delivery for every consignment it bills - so the
+        customer isn't sent to three separate screens to assemble it by hand."""
+        from fleet.lr import build_lr_from_order
+
+        order = self.create_order()
+        self.deliver(order)
+        build_lr_from_order(order)
+        inv_r = self.client.post(f"/api/v1/orders/{order.id}/invoice/", {}, format="json")
+        invoice_id = inv_r.data["invoice"]["id"]
+
+        r = self.client.get(f"/api/v1/invoices/{invoice_id}/pdf/")
+        self.assertEqual(r.status_code, 200)
+        # invoice page + LR annexure page + POD annexure page
+        self.assertEqual(self._pdf_page_count(r.content), 3)
+
+    def test_pdf_embeds_an_uploaded_pod_photo(self):
+        """The full chain: a real photo uploaded through pod-document-upload,
+        attached to the capture, then actually embedded (not just referenced by
+        URL) in the invoice PDF's POD annexure."""
+        import tempfile
+        from io import BytesIO
+
+        from django.test import override_settings
+        from PIL import Image as PILImage
+
+        order = self.create_order()
+        self.client.post(f"/api/v1/orders/{order.id}/assign/",
+                         {"driver": self.driver.id, "vehicle": self.vehicle.id}, format="json")
+        self.client.post(f"/api/v1/orders/{order.id}/dispatch/")
+
+        photo = BytesIO()
+        PILImage.new("RGB", (300, 200), color=(60, 120, 90)).save(photo, "JPEG")
+        photo.seek(0)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with override_settings(MEDIA_ROOT=tmpdir, MEDIA_URL="/media/"):
+                upload = self.client.post(f"/api/v1/orders/{order.id}/pod-document-upload/",
+                                          {"document": photo}, format="multipart")
+                self.assertEqual(upload.status_code, 201, upload.data)
+                self.client.post(f"/api/v1/orders/{order.id}/pod-submit/",
+                                 {"receiver_name": "Store manager", "file_url": upload.data["url"]}, format="json")
+                self.client.post(f"/api/v1/orders/{order.id}/complete/", {}, format="json")
+                inv_r = self.client.post(f"/api/v1/orders/{order.id}/invoice/", {}, format="json")
+                self.assertEqual(inv_r.status_code, 201, inv_r.data)
+                invoice_id = inv_r.data["invoice"]["id"]
+
+                r = self.client.get(f"/api/v1/invoices/{invoice_id}/pdf/")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self._pdf_page_count(r.content), 2)  # invoice + POD (with the embedded photo)
+
+    def test_consolidated_pdf_staples_annexures_for_every_order_on_it(self):
+        from fleet.lr import build_lr_from_order
+
+        o1 = self.create_order()
+        self.deliver(o1)
+        build_lr_from_order(o1)
+        o2 = self.create_order()
+        self.deliver(o2)
+        build_lr_from_order(o2)
+        o1.refresh_from_db(); o2.refresh_from_db()
+        trip = o1.ensure_trip()
+        o2.trip = trip; o2.save(update_fields=["trip"])
+
+        result = self.client.post(f"/api/v1/trips/{trip.id}/consolidate-invoice/", {}, format="json")
+        self.assertEqual(result.status_code, 201, result.data)
+        invoice_id = result.data["invoices"][0]["id"]
+
+        r = self.client.get(f"/api/v1/invoices/{invoice_id}/pdf/")
+        self.assertEqual(r.status_code, 200)
+        # invoice page + (LR + POD) annexure pages for each of the 2 orders
+        self.assertEqual(self._pdf_page_count(r.content), 5)

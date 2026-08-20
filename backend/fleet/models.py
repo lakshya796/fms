@@ -718,7 +718,9 @@ class ProofOfDelivery(Timestamped):
     An order that requires proof cannot be completed, and cannot be invoiced, until a
     proof here reaches `verified`.
     """
-    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="proofs")
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="proofs", unique=True,
+                              help_text="One ePOD per consignment - a rejected capture is corrected in place "
+                                        "(see ProofOfDeliveryViewSet.reject), not replaced with a second row")
     waypoint = models.ForeignKey(Waypoint, on_delete=models.SET_NULL, null=True, blank=True, related_name="proofs")
     proof_type = models.CharField(max_length=20, default="signature")
     receiver_name = models.CharField(max_length=120, blank=True)
