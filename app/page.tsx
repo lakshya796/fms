@@ -208,8 +208,132 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
   </section></main>;
 }
 
-type FormField = { name: string; label: string; type?: "text" | "number" | "date" | "datetime" | "select" | "textarea"; options?: [string, string][]; source?: string; sourceValue?: string; masterType?: "vehiclesize" | "vehicletype"; value?: string; required?: boolean; multiple?: boolean; tab?: string };
+type FormField = { name: string; label: string; type?: "text" | "number" | "date" | "datetime" | "select" | "textarea"; options?: [string, string][]; source?: string; sourceValue?: string; masterType?: "vehiclesize" | "vehicletype"; value?: string; required?: boolean; multiple?: boolean; searchable?: boolean; tab?: string };
 type FormSpec = { eyebrow: string; title: string; button: string; endpoint: string; fields: FormField[]; reference: (values: Record<string, string>, created: any) => string; tabs?: string[]; tabDescriptions?: Record<string, string> };
+
+type SearchOption = { value: string; label: string };
+
+const matchingOptions = (options: SearchOption[], query: string) => {
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return options;
+  return options.filter(option => {
+    const haystack = `${option.label} ${option.value}`.toLowerCase();
+    return terms.every(term => haystack.includes(term));
+  });
+};
+
+function SearchableSelect({ name, value, options, onChange, placeholder = "Search and select…", required = false, disabled = false, ariaLabel }: {
+  name?: string; value: string; options: SearchOption[]; onChange: (value: string) => void;
+  placeholder?: string; required?: boolean; disabled?: boolean; ariaLabel?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const selectedLabel = options.find(option => option.value === String(value))?.label || "";
+  const filteredOptions = matchingOptions(options, query);
+
+  useEffect(() => {
+    if (!open) setQuery(selectedLabel);
+  }, [open, selectedLabel]);
+
+  const choose = (option?: SearchOption) => {
+    onChange(option?.value || "");
+    setQuery(option?.label || "");
+    setOpen(false);
+    setActiveIndex(0);
+  };
+
+  const openPicker = () => {
+    if (disabled) return;
+    setOpen(true);
+    setQuery("");
+    setActiveIndex(0);
+  };
+
+  return <div className="searchable-select" onBlur={event => {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+  }}>
+    {name && <input type="hidden" name={name} value={value} />}
+    <input ref={inputRef} className="searchable-select-input" role="combobox" aria-expanded={open}
+      aria-autocomplete="list" aria-label={ariaLabel} aria-required={required} disabled={disabled}
+      value={open ? query : selectedLabel} placeholder={open && selectedLabel ? selectedLabel : placeholder}
+      onFocus={openPicker} onChange={event => { setQuery(event.target.value); setOpen(true); setActiveIndex(0); }}
+      onKeyDown={event => {
+        if (event.key === "ArrowDown") {
+          event.preventDefault(); setOpen(true); setActiveIndex(index => Math.min(index + 1, Math.max(filteredOptions.length - 1, 0)));
+        } else if (event.key === "ArrowUp") {
+          event.preventDefault(); setActiveIndex(index => Math.max(index - 1, 0));
+        } else if (event.key === "Enter" && open && filteredOptions.length) {
+          event.preventDefault(); choose(filteredOptions[activeIndex] || filteredOptions[0]);
+        } else if (event.key === "Escape") {
+          event.preventDefault(); setOpen(false);
+        }
+      }} />
+    <button className="searchable-select-toggle" type="button" tabIndex={-1} disabled={disabled}
+      aria-label={open ? "Close options" : "Open options"} onMouseDown={event => event.preventDefault()}
+      onClick={() => { if (open) setOpen(false); else { openPicker(); inputRef.current?.focus(); } }}>⌄</button>
+    {open && <div className="searchable-select-menu" role="listbox">
+      {!required && value && <button type="button" className="searchable-select-clear" onMouseDown={event => event.preventDefault()} onClick={() => choose()}>
+        Clear selection
+      </button>}
+      {filteredOptions.map((option, index) => <button type="button" role="option" aria-selected={option.value === String(value)}
+        className={(option.value === String(value) ? " selected" : "") + (index === activeIndex ? " active" : "")}
+        key={`${option.value}-${index}`} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => choose(option)}>
+        {option.label}
+      </button>)}
+      {!filteredOptions.length && <div className="searchable-select-empty">No matching options</div>}
+    </div>}
+  </div>;
+}
+
+function SearchableMultiSelect({ name, values, options, onChange, placeholder = "Search options…", ariaLabel }: {
+  name?: string; values: string[]; options: SearchOption[]; onChange: (values: string[]) => void;
+  placeholder?: string; ariaLabel?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const filteredOptions = matchingOptions(options, query);
+  const selectedOptions = values.map(value => options.find(option => option.value === value)).filter(Boolean) as SearchOption[];
+
+  const toggle = (option: SearchOption) => {
+    onChange(values.includes(option.value) ? values.filter(value => value !== option.value) : [...values, option.value]);
+    setQuery("");
+    setActiveIndex(0);
+  };
+
+  return <div className="searchable-multi-select" onBlur={event => {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) { setOpen(false); setQuery(""); }
+  }}>
+    {name && values.map(value => <input key={value} type="hidden" name={name} value={value} />)}
+    {!!selectedOptions.length && <div className="searchable-multi-values">{selectedOptions.map(option => <button type="button" key={option.value}
+      title={`Remove ${option.label}`} onClick={() => toggle(option)}>{option.label}<span>×</span></button>)}</div>}
+    <input className="searchable-select-input" role="combobox" aria-expanded={open} aria-autocomplete="list" aria-label={ariaLabel}
+      value={query} placeholder={values.length ? `${values.length} selected — search for more…` : placeholder}
+      onFocus={() => { setOpen(true); setActiveIndex(0); }} onChange={event => { setQuery(event.target.value); setOpen(true); setActiveIndex(0); }}
+      onKeyDown={event => {
+        if (event.key === "ArrowDown") {
+          event.preventDefault(); setOpen(true); setActiveIndex(index => Math.min(index + 1, Math.max(filteredOptions.length - 1, 0)));
+        } else if (event.key === "ArrowUp") {
+          event.preventDefault(); setActiveIndex(index => Math.max(index - 1, 0));
+        } else if (event.key === "Enter" && open && filteredOptions.length) {
+          event.preventDefault(); toggle(filteredOptions[activeIndex] || filteredOptions[0]);
+        } else if (event.key === "Escape") {
+          event.preventDefault(); setOpen(false);
+        }
+      }} />
+    {open && <div className="searchable-select-menu" role="listbox" aria-multiselectable="true">
+      {filteredOptions.map((option, index) => <button type="button" role="option" aria-selected={values.includes(option.value)}
+        className={(values.includes(option.value) ? " selected" : "") + (index === activeIndex ? " active" : "")}
+        key={`${option.value}-${index}`} onMouseDown={event => event.preventDefault()} onMouseEnter={() => setActiveIndex(index)} onClick={() => toggle(option)}>
+        <span className="searchable-option-check">{values.includes(option.value) ? "✓" : ""}</span>{option.label}
+      </button>)}
+      {!filteredOptions.length && <div className="searchable-select-empty">No matching options</div>}
+      {!!values.length && <button type="button" className="searchable-select-clear" onMouseDown={event => event.preventDefault()} onClick={() => onChange([])}>Clear all</button>}
+    </div>}
+  </div>;
+}
 
 const sourceLabel: Record<string, (record: any) => string> = {
   "customers/": r => r.name, "vehicles/": r => r.registration_number, "drivers/": r => r.name,
@@ -521,9 +645,9 @@ const recordForms: Record<string, FormSpec> = {
     reference: (_values, created) => created?.number || "Trip",
     fields: [
       { name: "number", label: "Trip number", value: "TRP-" + Date.now().toString().slice(-5), required: true },
-      { name: "vehicle", label: "Vehicle", type: "select", source: "vehicles/", required: true },
-      { name: "driver", label: "Driver", type: "select", source: "drivers/", required: true },
-      { name: "lorry_receipts", label: "Consignments (LRs) on this trip", type: "select", source: "lorry-receipts/", multiple: true },
+      { name: "vehicle", label: "Vehicle", type: "select", source: "vehicles/", required: true, searchable: true },
+      { name: "driver", label: "Driver", type: "select", source: "drivers/", required: true, searchable: true },
+      { name: "lorry_receipts", label: "Consignments (LRs) on this trip", type: "select", source: "lorry-receipts/", multiple: true, searchable: true },
       { name: "origin", label: "Origin", required: true },
       { name: "destination", label: "Destination", required: true },
       { name: "planned_departure", label: "Planned departure", type: "datetime", required: true },
@@ -677,17 +801,17 @@ const recordForms: Record<string, FormSpec> = {
     eyebrow: "FLEETOPS BOOKING", title: "Create consignment order", button: "Create order", endpoint: "orders/",
     reference: (_values, created) => created?.tracking_number || "Order",
     fields: [
-      { name: "customer", label: "Customer", type: "select", source: "customers/", required: true },
+      { name: "customer", label: "Customer", type: "select", source: "customers/", required: true, searchable: true },
       { name: "order_type", label: "Order type", type: "select", options: [["ftl", "Full truck load"], ["ptl", "Part truck load"], ["parcel", "Parcel"], ["rental", "Vehicle rental"], ["reverse", "Reverse pickup"]] },
-      { name: "pickup", label: "Pickup place", type: "select", source: "places/", required: true },
-      { name: "dropoff", label: "Drop place", type: "select", source: "places/", required: true },
-      { name: "service_rate", label: "Rate card", type: "select", source: "service-rates/" },
-      { name: "fleet", label: "Fleet", type: "select", source: "fleets/" },
+      { name: "pickup", label: "Pickup place", type: "select", source: "places/", required: true, searchable: true },
+      { name: "dropoff", label: "Drop place", type: "select", source: "places/", required: true, searchable: true },
+      { name: "service_rate", label: "Rate card", type: "select", source: "service-rates/", searchable: true },
+      { name: "fleet", label: "Fleet", type: "select", source: "fleets/", searchable: true },
       { name: "payload_description", label: "Material" },
       { name: "weight_kg", label: "Weight (kg)", type: "number", value: "12000" },
       { name: "packages", label: "Packages", type: "number", value: "1" },
-      { name: "vehicle_type", label: "Vehicle size required", type: "select", source: "vehicle-sizes/", sourceValue: "name", masterType: "vehiclesize" },
-      { name: "temperature_class", label: "Vehicle type", type: "select", source: "vehicle-types/", sourceValue: "temperature_class", masterType: "vehicletype" },
+      { name: "vehicle_type", label: "Vehicle size required", type: "select", source: "vehicle-sizes/", sourceValue: "name", masterType: "vehiclesize", searchable: true },
+      { name: "temperature_class", label: "Vehicle type", type: "select", source: "vehicle-types/", sourceValue: "temperature_class", masterType: "vehicletype", searchable: true },
       { name: "priority", label: "Priority", type: "select", options: [["normal", "Normal"], ["urgent", "Urgent - cannot be outsourced away"], ["low", "Low - can be deferred"]] },
       { name: "distance_km", label: "Distance (km)", type: "number" },
       { name: "declared_value", label: "Declared value (₹)", type: "number" },
@@ -746,6 +870,7 @@ const recordForms: Record<string, FormSpec> = {
 function RecordForm({ spec, record, onClose, onSaved }: { spec: FormSpec; record?: any; onClose: () => void; onSaved: (reference: string, saved: any) => void }) {
   const [options, setOptions] = useState<Record<string, any[]>>({});
   const [sourceValues, setSourceValues] = useState<Record<string, string>>({});
+  const [sourceMultiValues, setSourceMultiValues] = useState<Record<string, string[]>>({});
   const [error, setError] = useState("");
   const [working, setWorking] = useState(false);
   const [activeTab, setActiveTab] = useState(spec.tabs?.[0] || "");
@@ -755,6 +880,7 @@ function RecordForm({ spec, record, onClose, onSaved }: { spec: FormSpec; record
   useEffect(() => {
     setOptions({});
     setSourceValues({});
+    setSourceMultiValues({});
     setQuickMaster({ field: "", name: "", capacity: "", temperatureClass: "dry", bodyType: "closed" });
     setActiveTab(spec.tabs?.[0] || "");
     sources.forEach(source => {
@@ -829,13 +955,22 @@ function RecordForm({ spec, record, onClose, onSaved }: { spec: FormSpec; record
   const renderFields = (fields: FormField[]) => <>
     <div className="form-grid">{fields.filter(field => field.type !== "textarea").map(field => field.source ? <div className="master-source-field" key={field.name}>
       <div className="field-caption"><span>{field.label}</span>{field.masterType && <button type="button" onClick={() => setQuickMaster(current => ({ ...current, field: current.field === field.name ? "" : field.name }))}>＋ Add master</button>}</div>
-      {field.multiple ? <select name={field.name} multiple defaultValue={(record?.[field.name] || []).map(String)}>
+      {field.multiple ? (field.searchable ? <SearchableMultiSelect name={field.name}
+        values={sourceMultiValues[field.name] ?? (record?.[field.name] || []).map(String)}
+        onChange={values => setSourceMultiValues(current => ({ ...current, [field.name]: values }))}
+        options={(options[field.source] || []).map(option => ({ value: String(option[field.sourceValue || "id"]), label: sourceLabel[field.source!] ? sourceLabel[field.source!](option) : option.name }))}
+        placeholder={`Search ${field.label.toLowerCase()}…`} ariaLabel={field.label} />
+      : <select name={field.name} multiple defaultValue={(record?.[field.name] || []).map(String)}>
         {(options[field.source] || []).map(option => <option key={option.id} value={option[field.sourceValue || "id"]}>{sourceLabel[field.source!] ? sourceLabel[field.source!](option) : option.name}</option>)}
-      </select> : <select name={field.name} required={field.required && !spec.tabs?.length}
+      </select>) : (field.searchable ? <SearchableSelect name={field.name} required={field.required && !spec.tabs?.length}
+        value={sourceValues[field.name] ?? defaultFor(field)} onChange={value => setSourceValues(current => ({ ...current, [field.name]: value }))}
+        options={(options[field.source] || []).map(option => ({ value: String(option[field.sourceValue || "id"]), label: sourceLabel[field.source!] ? sourceLabel[field.source!](option) : option.name }))}
+        placeholder={`Search ${field.label.toLowerCase()}…`} ariaLabel={field.label} />
+      : <select name={field.name} required={field.required && !spec.tabs?.length}
           value={sourceValues[field.name] ?? defaultFor(field)} onChange={event => setSourceValues(current => ({ ...current, [field.name]: event.target.value }))}>
         <option value="">{(options[field.source] || []).length ? "Select…" : "Loading…"}</option>
         {(options[field.source] || []).map(option => <option key={option.id} value={option[field.sourceValue || "id"]}>{sourceLabel[field.source!] ? sourceLabel[field.source!](option) : option.name}</option>)}
-      </select>}
+      </select>)}
       {quickMaster.field === field.name && <div className="quick-master-panel">
         <input aria-label={`New ${field.label}`} placeholder={field.masterType === "vehiclesize" ? "e.g. 32 ft MXL" : "e.g. Reefer"} value={quickMaster.name} onChange={event => setQuickMaster(current => ({ ...current, name: event.target.value }))} />
         {field.masterType === "vehiclesize" ? <input aria-label="Default capacity kg" type="number" placeholder="Capacity kg" value={quickMaster.capacity} onChange={event => setQuickMaster(current => ({ ...current, capacity: event.target.value }))} /> : <>
@@ -1719,7 +1854,7 @@ function FleetOpsView({ name, onAction, reloadKey, openAction, openTripId, onTri
   }, onAction, (trip, status) => setTripStatus(trip, status));
   if (name === "Dispatch") return <div className="module-page"><div className="module-title"><div><p className="eyebrow">FLEET-OPS DISPATCH</p><h2>Dispatch command board</h2><p>Drag a trip between columns to progress it, or click one to open the trip sheet.</p></div><button className="primary module-action" onClick={() => openAction("trip")}>＋ Create trip</button></div>
     <div className="dispatch-board">{["planned","dispatched","in_transit","closed"].map(status => <section {...board.columnProps(status)} key={status}>
-      <header><strong>{status.replaceAll("_"," ")}</strong><span>{records.filter(r => r.status === status).length}</span></header>
+      <header key="header"><strong>{status.replaceAll("_"," ")}</strong><span>{records.filter(r => r.status === status).length}</span></header>
       {records.filter(r => r.status === status).map(trip => <article key={trip.id} {...board.cardProps(trip, openTripDetail)}>
         <b>{trip.number}</b><p>{trip.origin} → {trip.destination}</p>
         <small>{trip.vehicle_number} · {trip.driver_name}</small>
@@ -1730,7 +1865,7 @@ function FleetOpsView({ name, onAction, reloadKey, openAction, openTripId, onTri
           {status !== "closed" && status !== "planned" && <button onClick={() => tripAction(trip,"close")}>Close trip</button>}
         </div>
       </article>)}
-      {!loading && !records.some(r => r.status === status) && <div className="empty-column">Drop a card here</div>}
+      {!loading && !records.some(r => r.status === status) && <div key="empty" className="empty-column">Drop a card here</div>}
     </section>)}</div>
     {tripDetail && <DetailDrawer eyebrow="TRIP SHEET" title={tripDetail.number} status={tripDetail.status} onClose={() => setTripDetail(null)}
       fields={[["Route", `${tripDetail.origin} → ${tripDetail.destination}`], ["Vehicle", tripDetail.vehicle_number],
@@ -1763,12 +1898,9 @@ function FleetOpsView({ name, onAction, reloadKey, openAction, openTripId, onTri
             </div>)}
           </div>}
         {linkOrders.length > 0 && <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <select value={linkOrderId} onChange={event => setLinkOrderId(event.target.value)}
-                  style={{ flex: 1 }} aria-label="Order to link">
-            <option value="">Select an order to add…</option>
-            {linkOrders.filter(o => !(tripDetail.linked_orders || []).some((lo: any) => lo.id === o.id))
-              .map((o: any) => <option key={o.id} value={o.id}>{o.number} · {o.customer_name} ({o.status})</option>)}
-          </select>
+          <SearchableSelect value={linkOrderId} onChange={setLinkOrderId} placeholder="Search orders to add…" ariaLabel="Order to link"
+            options={linkOrders.filter(o => !(tripDetail.linked_orders || []).some((lo: any) => lo.id === o.id))
+              .map((o: any) => ({ value: String(o.id), label: `${o.number} · ${o.customer_name} (${o.status})` }))} />
           <button className="primary" disabled={!linkOrderId || linking} onClick={addOrderToTrip}
                   style={{ whiteSpace: "nowrap" }}>{linking ? "Linking…" : "Add to trip"}</button>
         </div>}
@@ -1939,6 +2071,8 @@ function OrdersView({ reloadKey, onAction, openAction, onTripCreated }: { reload
   const [candidates, setCandidates] = useState<any[] | null>(null);
   const [recommending, setRecommending] = useState(false);
   const [spotCandidate, setSpotCandidate] = useState<any>(null);
+  const [spotVehicleSize, setSpotVehicleSize] = useState("");
+  const [spotTemperatureClass, setSpotTemperatureClass] = useState("dry");
   const [settlement, setSettlement] = useState<any>(null);
   // Booking a trip straight from a set of ticked orders, instead of creating an
   // empty trip and linking each order back to it one at a time.
@@ -1966,7 +2100,16 @@ function OrdersView({ reloadKey, onAction, openAction, onTripCreated }: { reload
 
   // The candidate list and any spot-hire form in progress belong to whichever order
   // is open, so a fresh selection starts clean rather than showing the last order's picks.
-  useEffect(() => { setCandidates(null); setSpotCandidate(null); }, [selected?.id]);
+  useEffect(() => {
+    setCandidates(null); setSpotCandidate(null); setSpotVehicleSize("");
+    setSpotTemperatureClass(selected?.temperature_class || "dry");
+  }, [selected?.id]);
+
+  useEffect(() => {
+    if (!spotCandidate) return;
+    setSpotVehicleSize(vehicleSizes.some(size => size.name === selected?.vehicle_type) ? selected.vehicle_type : "");
+    setSpotTemperatureClass(selected?.temperature_class || "dry");
+  }, [spotCandidate?.vendor_id]);
 
   // The settlement sheet is safe to fetch for any order - it comes back with nulls
   // for the sides that have not happened yet rather than an error.
@@ -2082,6 +2225,10 @@ function OrdersView({ reloadKey, onAction, openAction, onTripCreated }: { reload
     const form = new FormData(event.currentTarget as HTMLFormElement);
     const vehicleSize = String(form.get("vehicle_type") || "");
     const temperatureClass = String(form.get("temperature_class") || "dry");
+    if (!vehicleSize || !temperatureClass) {
+      onAction("Select a vehicle size and vehicle type", "warn");
+      return;
+    }
     const sizeMaster = vehicleSizes.find(size => size.name === vehicleSize);
     const typeMaster = vehicleTypes.find(type => type.temperature_class === temperatureClass);
     setBusy(true);
@@ -2140,14 +2287,10 @@ function OrdersView({ reloadKey, onAction, openAction, onTripCreated }: { reload
         </div>
       </div>
       {bookingTrip && <div className="allocate-grid" style={{ marginTop: 12 }}>
-        <label>Vehicle<select value={tripVehicle} onChange={event => setTripVehicle(event.target.value)}>
-          <option value="">Select vehicle</option>
-          {vehicles.map(v => <option key={v.id} value={v.id}>{v.registration_number}</option>)}
-        </select></label>
-        <label>Driver<select value={tripDriver} onChange={event => setTripDriver(event.target.value)}>
-          <option value="">Select driver</option>
-          {drivers.map(d => <option key={d.id} value={d.id}>{d.name} · {d.status}</option>)}
-        </select></label>
+        <label>Vehicle<SearchableSelect value={tripVehicle} onChange={setTripVehicle} placeholder="Search vehicles…" ariaLabel="Trip vehicle"
+          options={vehicles.map(v => ({ value: String(v.id), label: `${v.registration_number} · ${v.vehicle_type} · ${v.status}` }))} /></label>
+        <label>Driver<SearchableSelect value={tripDriver} onChange={setTripDriver} placeholder="Search drivers…" ariaLabel="Trip driver"
+          options={drivers.map(d => ({ value: String(d.id), label: `${d.name} · ${d.phone || "no phone"} · ${d.status}` }))} /></label>
         <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
           <button className="secondary" onClick={() => setBookingTrip(false)}>Cancel</button>
           <button className="primary" disabled={creatingTrip || !tripVehicle || !tripDriver} onClick={createTripFromOrders}>
@@ -2160,7 +2303,7 @@ function OrdersView({ reloadKey, onAction, openAction, onTripCreated }: { reload
     <div className="dispatch-board">{orderColumns.map(([status, label]) => {
       const bucket = orders.filter(order => order.status === status);
       return <section {...board.columnProps(status)} key={status}>
-        <header><strong>{label}</strong><span>{bucket.length}</span></header>
+        <header key="header"><strong>{label}</strong><span>{bucket.length}</span></header>
         {bucket.map(order => <article key={order.id}
             {...board.cardProps(order, opened => { setSelected(opened); setDriver(opened.driver || ""); setVehicle(opened.vehicle || ""); })}>
           {!order.trip && status !== "completed" && <div onClick={event => event.stopPropagation()} style={{ marginBottom: 4 }}>
@@ -2178,7 +2321,7 @@ function OrdersView({ reloadKey, onAction, openAction, onTripCreated }: { reload
             {["dispatched", "in_transit"].includes(status) && <button disabled={busy} onClick={() => run(order, "complete", { receiver_name: "Consignee", proof_type: "signature" })}>Deliver</button>}
           </div>
         </article>)}
-        {!loading && bucket.length === 0 && <div className="empty-column">Drop a card here</div>}
+        {!loading && bucket.length === 0 && <div key="empty" className="empty-column">Drop a card here</div>}
       </section>;
     })}</div>
 
@@ -2200,7 +2343,8 @@ function OrdersView({ reloadKey, onAction, openAction, onTripCreated }: { reload
       {selected.status === "created" || !selected.driver ? <div className="allocate-box">
         <p className="eyebrow">ALLOCATE VEHICLE & DRIVER</p>
         <div className="allocate-grid">
-          <label>Driver (optional for a vendor hire)<select value={driver} onChange={event => setDriver(event.target.value)}><option value="">Select driver</option>{drivers.map(record => <option key={record.id} value={record.id}>{record.name} · {record.status}</option>)}</select></label>
+          <label>Driver (optional for a vendor hire)<SearchableSelect value={driver} onChange={setDriver} placeholder="Search drivers…" ariaLabel="Driver"
+            options={drivers.map(record => ({ value: String(record.id), label: `${record.name} · ${record.phone || "no phone"} · ${record.status}` }))} /></label>
         </div>
         <button className="secondary full-button" disabled={recommending} onClick={recommend}>{recommending ? "Finding the best truck…" : candidates ? "↻ Re-run recommendation" : "Find best vehicle"}</button>
 
@@ -2230,8 +2374,14 @@ function OrdersView({ reloadKey, onAction, openAction, onTripCreated }: { reload
           <p className="eyebrow">CONFIRM SPOT HIRE · {spotCandidate.vendor_name}</p>
           <div className="form-grid">
             <label>Vehicle number<input name="vehicle_number" required /></label>
-            <label><span className="inline-field-action">Vehicle size<button type="button" onClick={() => openAction("vehiclesize")}>＋ Add master</button></span><select name="vehicle_type" required><option value="">Select size…</option>{vehicleSizes.filter(size => size.status === "active").map(size => <option key={size.id} value={size.name}>{size.name}{size.default_capacity_kg ? ` · ${Number(size.default_capacity_kg).toLocaleString("en-IN")} kg` : ""}</option>)}</select></label>
-            <label><span className="inline-field-action">Vehicle type<button type="button" onClick={() => openAction("vehicletype")}>＋ Add master</button></span><select name="temperature_class" required><option value="">Select type…</option>{vehicleTypes.filter(type => type.status === "active").map(type => <option key={type.id} value={type.temperature_class}>{type.name}</option>)}</select></label>
+            <label><span className="inline-field-action">Vehicle size<button type="button" onClick={() => openAction("vehiclesize")}>＋ Add master</button></span>
+              <SearchableSelect name="vehicle_type" required value={spotVehicleSize} onChange={setSpotVehicleSize} placeholder="Search vehicle sizes…" ariaLabel="Vehicle size"
+                options={vehicleSizes.filter(size => size.status === "active").map(size => ({ value: String(size.name), label: `${size.name}${size.default_capacity_kg ? ` · ${Number(size.default_capacity_kg).toLocaleString("en-IN")} kg` : ""}` }))} />
+            </label>
+            <label><span className="inline-field-action">Vehicle type<button type="button" onClick={() => openAction("vehicletype")}>＋ Add master</button></span>
+              <SearchableSelect name="temperature_class" required value={spotTemperatureClass} onChange={setSpotTemperatureClass} placeholder="Search vehicle types…" ariaLabel="Vehicle type"
+                options={vehicleTypes.filter(type => type.status === "active").map(type => ({ value: String(type.temperature_class), label: type.name }))} />
+            </label>
             <label>Driver name<input name="driver_name" required /></label>
             <label>Driver phone<input name="driver_phone" /></label>
             <label>Agreed rate (₹)<input name="agreed_rate" type="number" step="any" defaultValue={spotCandidate.expected_cost} required /></label>
@@ -2242,7 +2392,8 @@ function OrdersView({ reloadKey, onAction, openAction, onTripCreated }: { reload
 
         <p className="eyebrow" style={{ marginTop: 18 }}>OR ASSIGN DIRECTLY</p>
         <div className="allocate-grid">
-          <label>Vehicle<select value={vehicle} onChange={event => setVehicle(event.target.value)}><option value="">Select vehicle</option>{vehicles.map(record => <option key={record.id} value={record.id}>{record.registration_number} · {record.status}</option>)}</select></label>
+          <label>Vehicle<SearchableSelect value={vehicle} onChange={setVehicle} placeholder="Search vehicles…" ariaLabel="Vehicle"
+            options={vehicles.map(record => ({ value: String(record.id), label: `${record.registration_number} · ${record.vehicle_type} · ${record.status}` }))} /></label>
         </div>
         <button className="primary full-button" disabled={busy || !driver || !vehicle} onClick={() => run(selected, "assign", { driver: Number(driver), vehicle: Number(vehicle) })}>Assign to order</button>
       </div> : <div className="allocate-box"><p className="eyebrow">ALLOCATION</p><div className="tracking-grid">
@@ -2556,16 +2707,16 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
             </label>
           </div>
           <label><span>Customers (leave empty for all)</span>
-            <select multiple value={collectFilters.customers} size={4}
-                    onChange={event => setCollectFilters(prev => ({ ...prev, customers: Array.from(event.target.selectedOptions, o => o.value) }))}>
-              {customersList.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
+            <SearchableMultiSelect values={collectFilters.customers}
+              onChange={customers => setCollectFilters(prev => ({ ...prev, customers }))}
+              options={customersList.map(c => ({ value: String(c.id), label: `${c.name}${c.gstin ? ` · ${c.gstin}` : ""}` }))}
+              placeholder="Search customers…" ariaLabel="Customers" />
           </label>
           <label><span>Pickup places (leave empty for all)</span>
-            <select multiple value={collectFilters.pickup_places} size={4}
-                    onChange={event => setCollectFilters(prev => ({ ...prev, pickup_places: Array.from(event.target.selectedOptions, o => o.value) }))}>
-              {placesList.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
+            <SearchableMultiSelect values={collectFilters.pickup_places}
+              onChange={pickup_places => setCollectFilters(prev => ({ ...prev, pickup_places }))}
+              options={placesList.map(p => ({ value: String(p.id), label: `${p.name}${p.city ? ` · ${p.city}` : ""}` }))}
+              placeholder="Search pickup places…" ariaLabel="Pickup places" />
           </label>
         </div>}
       </div>}
@@ -2746,20 +2897,17 @@ function DispatchPlanningView({ onAction }: { onAction: Notify }) {
             {(route.stops || []).map((stop: any) => <div key={stop.id} className="stop-override-row">
               <span>{stop.stop_type === "pickup" ? "▲" : "▼"} {stop.place_name} ({stop.load_after_kg}kg){stop.order_number ? ` · ${stop.order_number}` : ""}</span>
               {stop.stop_type === "drop" && stop.task_id && !route.committed_trip && <span className="stop-override-actions">
-                <select defaultValue="" onChange={event => { moveTask(stop.task_id, event.target.value); event.target.value = ""; }}>
-                  <option value="">Move to…</option>
-                  {(selected.routes || []).filter((r: any) => r.id !== route.id).map((r: any) =>
-                    <option key={r.id} value={r.id}>{r.plan_vehicle_detail?.registration_number || "Route #" + r.sequence}</option>)}
-                </select>
+                <SearchableSelect value="" onChange={value => { if (value) moveTask(stop.task_id, value); }} placeholder="Search routes…" ariaLabel="Move task to route"
+                  options={(selected.routes || []).filter((r: any) => r.id !== route.id).map((r: any) => ({
+                    value: String(r.id), label: `${r.plan_vehicle_detail?.registration_number || "Route #" + r.sequence}${r.plan_vehicle_detail?.driver_name ? ` · ${r.plan_vehicle_detail.driver_name}` : ""}`,
+                  }))} />
                 <button className="row-action" disabled={busy} onClick={() => unrouteTask(stop.task_id)}>Unroute</button>
               </span>}
             </div>)}
           </div>
           {!route.plan_vehicle_detail?.driver && !route.committed_trip && <div className="assign-row" style={{ marginTop: 6 }}>
-            <select onChange={event => assignDriver(route.id, event.target.value)} defaultValue="">
-              <option value="">Assign a driver…</option>
-              {drivers.map(d => <option key={d.id} value={d.id}>{d.name} · {d.phone}</option>)}
-            </select>
+            <SearchableSelect value="" onChange={value => { if (value) assignDriver(route.id, value); }} placeholder="Search drivers…" ariaLabel="Assign driver"
+              options={drivers.map(d => ({ value: String(d.id), label: `${d.name} · ${d.phone || "no phone"} · ${d.status}` }))} />
           </div>}
         </div>)}
       </div>}
