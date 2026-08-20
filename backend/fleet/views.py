@@ -462,7 +462,9 @@ class TripViewSet(viewsets.ModelViewSet):
             pending_proof = next((p for p in proofs if p.status == "submitted"), None)
             cost_row = split["orders"].get(order.id, {"fuel": Decimal("0"), "shared_expenses": Decimal("0"),
                                                        "attributed_expenses": Decimal("0"), "total_cost": Decimal("0")})
-            revenue = money(order.total_amount)
+            # P&L revenue is freight only. Order.total_amount includes GST and must
+            # not inflate the margin when several orders share this trip.
+            revenue = money(order.freight_amount)
             order_rows.append({
                 "id": order.id, "number": order.number, "status": order.status,
                 "customer": order.customer.name, "route": f"{order.pickup.city} → {order.dropoff.city}",
@@ -494,7 +496,7 @@ class TripViewSet(viewsets.ModelViewSet):
                 unbilled += 1
             if order.pod_required and not verified and order.status != "cancelled":
                 unverified_pod += 1
-            if not order.total_amount:
+            if not order.freight_amount:
                 unpriced += 1
 
         if unposted_lr:
@@ -1340,7 +1342,9 @@ class OrderViewSet(FilterableViewSet):
             expenses = money(TripExpense.objects.filter(order=order).aggregate(value=Sum("amount"))["value"] or 0)
         vehicle_side = {"fuel": float(fuel), "trip_expenses": float(expenses), "total_cost": float(money(fuel + expenses))}
 
-        revenue = money(invoice.total_amount if invoice else order.total_amount)
+        # Customer settlement still exposes the full invoice separately, while P&L
+        # revenue is the order's freight exclusive of GST.
+        revenue = money(order.freight_amount)
         vendor_cost = money(vendor_side["payable"]["gross_amount"]) if vendor_side else Decimal("0")
         total_cost = money(vendor_cost + fuel + expenses)
         actual_profit = money(revenue - total_cost)
@@ -1946,7 +1950,8 @@ def order_profitability(request, pk):
     ).first()
     if not order:
         return Response({"detail": "Order not found."}, status=404)
-    revenue = money(order.total_amount)
+    # Freight is the earned trip revenue; GST in total_amount is not income.
+    revenue = money(order.freight_amount)
     if order.trip_id:
         split = apportion_trip_cost(order.trip)
         row = split["orders"].get(order.id, {"fuel": Decimal("0"), "shared_expenses": Decimal("0"),
@@ -2216,7 +2221,8 @@ def report_trip_profitability(request):
         if not orders:
             continue   # a trip with nothing on it yet has no revenue to report
         split = apportion_trip_cost(trip)
-        revenue = money(sum((money(o.total_amount) for o in orders), Decimal("0")))
+        # Combine every linked order's freight, excluding GST/other billed totals.
+        revenue = money(sum((money(o.freight_amount) for o in orders), Decimal("0")))
         cost = money(sum((row["total_cost"] for row in split["orders"].values()), Decimal("0")))
         margin = money(revenue - cost)
         distance = trip.passed_km or trip.running_km or 0
