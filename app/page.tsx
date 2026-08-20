@@ -1510,6 +1510,9 @@ function TripCockpitPanel({ trip, onAction, onOrderChanged }: { trip: any; onAct
   const [lrDialogOrder, setLrDialogOrder] = useState<any>(null);
   const [lrNumberMode, setLrNumberMode] = useState<"auto" | "manual">("auto");
   const [manualLrNumber, setManualLrNumber] = useState("");
+  const [recalcPreview, setRecalcPreview] = useState<any>(null);
+  const [recalcBasis, setRecalcBasis] = useState<"" | "distance" | "weight" | "equal">("");
+  const [recalcBusy, setRecalcBusy] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -1571,6 +1574,40 @@ function TripCockpitPanel({ trip, onAction, onOrderChanged }: { trip: any; onAct
     } finally { setBusyKey(""); }
   };
 
+  // Multi-point delivery: a trip-level component of a shared rate card (a
+  // fixed per-trip rate, the base charge, the minimum, loading) is divided
+  // across the orders that ride it rather than charged in full to each -
+  // see docs/MULTIPOINT-FREIGHT.md. Always preview first; nothing is
+  // written until the desk explicitly applies it.
+  const previewRecalculate = async () => {
+    setRecalcBusy(true);
+    try {
+      const payload = await fmsRequest<any>(`trips/${trip.id}/recalculate-freight/`, {
+        method: "POST",
+        body: JSON.stringify({ preview: true, ...(recalcBasis ? { basis: recalcBasis } : {}) }),
+      });
+      setRecalcPreview(payload);
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 150) : "Could not preview the recalculation", "warn");
+    } finally { setRecalcBusy(false); }
+  };
+
+  const applyRecalculate = async () => {
+    setRecalcBusy(true);
+    try {
+      const payload = await fmsRequest<any>(`trips/${trip.id}/recalculate-freight/`, {
+        method: "POST",
+        body: JSON.stringify({ preview: false, ...(recalcBasis ? { basis: recalcBasis } : {}) }),
+      });
+      onAction(`Freight recalculated · ${rupees(payload.total_before)} → ${rupees(payload.total_after)}`);
+      setRecalcPreview(null);
+      load();
+      onOrderChanged();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 150) : "Could not recalculate freight", "warn");
+    } finally { setRecalcBusy(false); }
+  };
+
   const consolidateInvoice = async () => {
     setBusyKey("consolidate");
     try {
@@ -1606,10 +1643,18 @@ function TripCockpitPanel({ trip, onAction, onOrderChanged }: { trip: any; onAct
       Shared cost split by <strong>{data.costs.basis}</strong> across {data.orders.length} order{data.orders.length === 1 ? "" : "s"} —
       fuel {rupees(data.costs.shared_fuel)}, on-road {rupees(data.costs.shared_expenses)}.
     </p>
-    {unbilledOrders > 1 && <button className="secondary" style={{ marginTop: 10 }} disabled={busyKey === "consolidate"}
-             onClick={consolidateInvoice}>
-      {busyKey === "consolidate" ? "Raising…" : `Consolidate & raise invoices for ${unbilledOrders} delivered orders`}
-    </button>}
+    <div className="chip-list" style={{ marginTop: 10, gap: 8, display: "flex", alignItems: "center" }}>
+      {unbilledOrders > 1 && <button className="secondary" disabled={busyKey === "consolidate"}
+               onClick={consolidateInvoice}>
+        {busyKey === "consolidate" ? "Raising…" : `Consolidate & raise invoices for ${unbilledOrders} delivered orders`}
+      </button>}
+      {data.orders.length > 1 && <button className="secondary" disabled={recalcBusy} onClick={previewRecalculate}>
+        {recalcBusy ? "Calculating…" : "Recalculate freight"}
+      </button>}
+    </div>
+    {!data.freight_reconciliation?.balanced && <p className="breach-line" style={{ marginTop: 8 }}>
+      ⚠ Stored freight no longer matches what the rate card(s) would produce — recalculate to catch it up.
+    </p>}
 
     <div className="table-wrap" style={{ marginTop: 12 }}>
       <table>
@@ -1629,7 +1674,9 @@ function TripCockpitPanel({ trip, onAction, onOrderChanged }: { trip: any; onAct
             ? <button className="row-action" onClick={() => downloadPdf(`invoices/${row.invoice.id}/pdf/`, `${row.invoice.number}.pdf`)}>{row.invoice.number}</button>
             : row.status === "completed" ? <button className="row-action" disabled={busyKey === `inv-${row.id}`}
                      onClick={() => runAction(`inv-${row.id}`, `orders/${row.id}/invoice/`, "Invoice raised")}>Raise</button> : "—"}</td>
-          <td>{rupees(row.revenue)}</td>
+          <td>{rupees(row.revenue)}
+            {row.freight_source && row.freight_source !== "manual" && row.freight_source !== "rate_card" &&
+              <small style={{ display: "block" }}>{row.freight_source === "trip_share" ? "share of trip freight" : "rate card + trip share"}</small>}</td>
           <td>{rupees(row.cost.total)}</td>
           <td className={row.profit >= 0 ? "good" : "bad"}>{rupees(row.profit)}</td>
         </tr>)}</tbody>
@@ -1673,6 +1720,52 @@ function TripCockpitPanel({ trip, onAction, onOrderChanged }: { trip: any; onAct
             </button>
           </div>
         </form>
+      </section>
+    </div>}
+
+    {recalcPreview && <div className="modal-backdrop" onMouseDown={() => !recalcBusy && setRecalcPreview(null)}>
+      <section className="action-panel" role="dialog" aria-modal="true" aria-labelledby="recalc-title"
+               onMouseDown={event => event.stopPropagation()}>
+        <div className="panel-head"><div><p className="eyebrow">MULTI-POINT FREIGHT</p><h2 id="recalc-title">Recalculate freight</h2></div>
+          <button type="button" className="panel-close" aria-label="Close" disabled={recalcBusy} onClick={() => setRecalcPreview(null)}>×</button></div>
+        <p style={{ fontSize: 12, color: "#5b665f" }}>
+          Every order is repriced from its own rate card; a shared trip-level charge (a fixed
+          per-trip rate, base charge, minimum, loading) is divided across the orders on this
+          trip rather than charged in full to each. Nothing is written until you apply it.
+        </p>
+        <label style={{ display: "block", margin: "10px 0" }}>Split basis
+          <select value={recalcBasis} onChange={event => setRecalcBasis(event.target.value as any)} style={{ marginLeft: 8 }}>
+            <option value="">Auto (distance, then weight, then equal)</option>
+            <option value="distance">Distance</option>
+            <option value="weight">Weight</option>
+            <option value="equal">Equal</option>
+          </select>
+          <button type="button" className="row-action" style={{ marginLeft: 8 }} disabled={recalcBusy} onClick={previewRecalculate}>Refresh</button>
+        </label>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>Order</th><th>Before</th><th>After</th><th>Delta</th><th>Source</th></tr></thead>
+            <tbody>{recalcPreview.orders.map((row: any) => <tr key={row.id}>
+              <td><strong>{row.number}</strong>{row.blocked && <small style={{ display: "block", color: "#a3402f" }}>{row.blocked}</small>}</td>
+              <td>{rupees(row.before)}</td>
+              <td>{rupees(row.after)}</td>
+              <td className={row.delta === 0 ? "" : row.delta < 0 ? "good" : "bad"}>{row.delta > 0 ? "+" : ""}{rupees(row.delta)}</td>
+              <td>{row.source}</td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+        <div className="margin-strip" style={{ marginTop: 10 }}>
+          <div><span>Total before</span><strong>{rupees(recalcPreview.total_before)}</strong></div>
+          <div><span>Total after</span><strong>{rupees(recalcPreview.total_after)}</strong></div>
+          <div><span>Delta</span><strong className={recalcPreview.delta <= 0 ? "good" : "bad"}>{rupees(recalcPreview.delta)}</strong></div>
+        </div>
+        <p style={{ fontSize: 10, color: "#8a938e" }}>{recalcPreview.note}</p>
+        <div className="form-actions">
+          <button type="button" className="secondary" disabled={recalcBusy} onClick={() => setRecalcPreview(null)}>Cancel</button>
+          <button type="button" className="primary" disabled={recalcBusy} onClick={applyRecalculate}>
+            {recalcBusy ? "Applying…" : "Apply"}
+          </button>
+        </div>
       </section>
     </div>}
   </div>;
@@ -2334,7 +2427,10 @@ function OrdersView({ reloadKey, onAction, openAction, onTripCreated }: { reload
         <div className="record-field"><span>Weight</span><strong>{Number(selected.weight_kg).toLocaleString("en-IN")} kg · {selected.packages} pkg</strong></div>
         <div className="record-field"><span>Vehicle requirement</span><strong>{selected.vehicle_type || "Any size"} · {String(selected.temperature_class || "dry").replaceAll("_", " ")}</strong></div>
         <div className="record-field"><span>Distance</span><strong>{Number(selected.distance_km).toFixed(1)} km</strong></div>
-        <div className="record-field"><span>Freight + GST</span><strong>{rupees(selected.freight_amount)} + {rupees(selected.tax_amount)}</strong></div>
+        <div className="record-field"><span>Freight + GST</span><strong>{rupees(selected.freight_amount)} + {rupees(selected.tax_amount)}</strong>
+          {selected.freight_source === "trip_share" && <small>Share of a trip-level freight, divided across the orders riding this trip</small>}
+          {selected.freight_source === "mixed" && <small>Own rate card plus a share of a trip-level freight</small>}
+        </div>
         <div className="record-field"><span>Total</span><strong>{rupees(selected.total_amount)}</strong></div>
         <div className="record-field"><span>E-way bill</span><strong>{selected.eway_bill_number || "—"}</strong></div>
         <div className="record-field"><span>Created</span><strong>{stamp(selected.created_at)}</strong></div>

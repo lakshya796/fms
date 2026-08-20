@@ -17,7 +17,7 @@ from . import geotrackers
 
 from .models import (ComplianceDocument, Customer, Driver, Fleet, FuelEntry, Indent, Invoice, Issue, LorryReceipt,
                      MaintenanceSchedule, Order, Place, ProofOfDelivery, ServiceArea, ServiceRate, Trip, TripExpense,
-                     Vehicle, VehicleHire, VehicleSize, VehicleType, Vendor, Waypoint, Zone, haversine_km)
+                     Vehicle, VehicleHire, VehicleSize, VehicleType, Vendor, Waypoint, Zone, haversine_km, money)
 
 class BaseFleetOpsTest(TestCase):
     def setUp(self):
@@ -1467,6 +1467,189 @@ class ConsolidatedInvoicingTests(BaseFleetOpsTest):
         self.assertGreater(len(pdf.content), 500)
 
 
+class MultiPointFreightTests(BaseFleetOpsTest):
+    """docs/MULTIPOINT-FREIGHT.md: a multi-point trip's rate-card freight was
+    charged in full to every order riding it, rather than divided among them -
+    a fixed per-trip card on three drops billed 3x. `fleet.freight` fixes it;
+    these are its regression tests."""
+
+    def _order(self, number, **overrides):
+        defaults = dict(number=number, customer=self.customer, pickup=self.pickup, dropoff=self.dropoff,
+                        distance_km=100, weight_kg=1000, service_rate=self.rate,
+                        status="completed", driver=self.driver, vehicle=self.vehicle, pod_required=False)
+        defaults.update(overrides)
+        return Order.objects.create(**defaults)
+
+    def test_a_shared_rate_cards_trip_level_charge_is_divided_not_replicated(self):
+        """Three orders on one trip, one rate card with a base charge, a
+        minimum and loading/unloading - the trip-level components must be
+        charged once for the trip and divided, not once per drop."""
+        o1 = self._order("ORD-MPF-1")
+        trip = o1.ensure_trip()
+        o2 = self._order("ORD-MPF-2", trip=trip)
+        o3 = self._order("ORD-MPF-3", trip=trip)
+
+        for order in (o1, o2, o3):
+            order.price_from_rate_card()
+
+        solo_breakdown = self.rate.quote(distance_km=100, weight_kg=1000)
+        solo_freight = solo_breakdown["freight"] + solo_breakdown["fuel_surcharge"] + solo_breakdown["handling_charges"]
+
+        o1.refresh_from_db(); o2.refresh_from_db(); o3.refresh_from_db()
+        pooled_total = o1.freight_amount + o2.freight_amount + o3.freight_amount
+        # Three equal-distance drops split a shared base/minimum/loading evenly, but
+        # each still pays its own per-km leg, so the pooled total is somewhat more
+        # than one order's solo freight - the point is it must be far below 3x it.
+        self.assertLess(pooled_total, solo_freight * 3)
+        self.assertGreater(pooled_total, solo_freight)
+        # Each order still has its own per-km leg alongside its share of the
+        # shared base/minimum/loading, so the source is "mixed", not "trip_share".
+        for order in (o1, o2, o3):
+            self.assertEqual(order.freight_source, "mixed")
+
+    def test_an_order_with_a_different_rate_card_is_priced_on_its_own(self):
+        """§3: an order with its own rate card is priced from it, not pooled
+        with a sibling's card."""
+        milk_run = self._order("ORD-MPF-SHARED")
+        trip = milk_run.ensure_trip()
+        solo_rate = ServiceRate.objects.create(name="Solo lane", code="RC-MPF-SOLO",
+                                               rate_type="per_km", per_km_rate=40, gst_percent=5)
+        solo = self._order("ORD-MPF-SOLO", trip=trip, service_rate=solo_rate, distance_km=50)
+
+        milk_run.price_from_rate_card()
+        solo.price_from_rate_card()
+        solo.refresh_from_db()
+        self.assertEqual(solo.freight_amount, Decimal("2000.00"))   # 50 * 40, untouched by the other card
+        self.assertEqual(solo.freight_source, "rate_card")
+
+    def test_a_solo_order_prices_identically_to_plain_quote(self):
+        """Backward compatibility: an order alone on its trip must price
+        exactly as `ServiceRate.quote()` always has."""
+        order = self._order("ORD-MPF-SOLO-2")
+        order.ensure_trip()
+        direct = self.rate.quote(distance_km=100, weight_kg=1000)
+        order.price_from_rate_card()
+        self.assertEqual(order.freight_amount, money(direct["freight"] + direct["fuel_surcharge"] + direct["handling_charges"]))
+        self.assertEqual(order.tax_amount, money(direct["gst_amount"]))
+        self.assertEqual(order.total_amount, money(direct["total"]))
+        self.assertEqual(order.freight_source, "rate_card")
+
+    def test_settlement_freight_excludes_gst(self):
+        order = self._order("ORD-MPF-GST")
+        trip = order.ensure_trip()
+        order.price_from_rate_card()
+        order.refresh_from_db()
+        summary = trip.settlement_summary()
+        self.assertEqual(summary["freight"], float(order.freight_amount))
+        self.assertLess(order.freight_amount, order.total_amount)
+
+    def test_consolidated_invoice_does_not_triple_bill_a_three_drop_milk_run(self):
+        o1 = self._order("ORD-MPF-INV-1")
+        trip = o1.ensure_trip()
+        o2 = self._order("ORD-MPF-INV-2", trip=trip)
+        o3 = self._order("ORD-MPF-INV-3", trip=trip)
+
+        response = self.client.post(f"/api/v1/trips/{trip.id}/consolidate-invoice/")
+        self.assertEqual(response.status_code, 201, response.data)
+        invoice = response.data["invoices"][0]
+        solo_breakdown = self.rate.quote(distance_km=100, weight_kg=1000)
+        solo_total = solo_breakdown["freight"] + solo_breakdown["fuel_surcharge"] + solo_breakdown["handling_charges"]
+        self.assertLess(float(invoice["freight_amount"]), solo_total * 3)
+
+    def test_recalculate_freight_previews_by_default_and_writes_nothing(self):
+        o1 = self._order("ORD-MPF-RC-1")
+        trip = o1.ensure_trip()
+        o2 = self._order("ORD-MPF-RC-2", trip=trip)
+
+        response = self.client.post(f"/api/v1/trips/{trip.id}/recalculate-freight/", {}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertTrue(response.data["preview"])
+        self.assertGreater(response.data["total_after"], 0)
+        o1.refresh_from_db(); o2.refresh_from_db()
+        self.assertEqual(o1.freight_amount, Decimal("0.00"))   # preview must not mutate
+        self.assertEqual(o2.freight_amount, Decimal("0.00"))
+
+    def test_recalculate_freight_applies_when_preview_is_false(self):
+        o1 = self._order("ORD-MPF-RC-3")
+        trip = o1.ensure_trip()
+        o2 = self._order("ORD-MPF-RC-4", trip=trip)
+
+        response = self.client.post(f"/api/v1/trips/{trip.id}/recalculate-freight/",
+                                    {"preview": False}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertFalse(response.data["preview"])
+        self.assertTrue(response.data["reconciliation"]["balanced"])
+        o1.refresh_from_db(); o2.refresh_from_db()
+        self.assertGreater(o1.freight_amount, 0)
+        self.assertGreater(o2.freight_amount, 0)
+
+    def test_recalculate_freight_is_idempotent(self):
+        o1 = self._order("ORD-MPF-RC-5")
+        trip = o1.ensure_trip()
+        self._order("ORD-MPF-RC-6", trip=trip)
+
+        first = self.client.post(f"/api/v1/trips/{trip.id}/recalculate-freight/", {"preview": False}, format="json")
+        second = self.client.post(f"/api/v1/trips/{trip.id}/recalculate-freight/", {"preview": False}, format="json")
+        self.assertEqual(first.data["total_after"], second.data["total_after"])
+        self.assertTrue(all(row["delta"] == 0 for row in second.data["orders"]))
+
+    def test_recalculate_freight_skips_an_invoiced_order_without_force(self):
+        o1 = self._order("ORD-MPF-RC-7")
+        trip = o1.ensure_trip()
+        o2 = self._order("ORD-MPF-RC-8", trip=trip)
+        self.client.post(f"/api/v1/trips/{trip.id}/recalculate-freight/", {"preview": False}, format="json")
+        o1.refresh_from_db()
+        from fleet.billing import build_invoice_from_order
+        build_invoice_from_order(o1)
+
+        response = self.client.post(f"/api/v1/trips/{trip.id}/recalculate-freight/",
+                                    {"preview": False}, format="json")
+        row = next(r for r in response.data["orders"] if r["number"] == "ORD-MPF-RC-7")
+        self.assertEqual(row["blocked"], "already invoiced")
+
+    def test_adding_an_order_to_a_trip_reprices_every_order_on_it(self):
+        """Adding an order changes every other order's share (§4.4) - the
+        sibling created first must not be left stale at its solo price."""
+        o1 = self._order("ORD-MPF-ADD-1")
+        trip = o1.ensure_trip()
+        o1.price_from_rate_card()
+        o1.refresh_from_db()
+        solo_freight = o1.freight_amount
+        self.assertGreater(solo_freight, 0)
+
+        o2 = self._order("ORD-MPF-ADD-2", status="created", driver=None, vehicle=None)
+        response = self.client.post(f"/api/v1/trips/{trip.id}/add-order/", {"order": o2.id}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+
+        o1.refresh_from_db(); o2.refresh_from_db()
+        self.assertNotEqual(o1.freight_amount, solo_freight, "the first order must be repriced too, not left stale")
+        self.assertGreater(o2.freight_amount, 0)
+
+    def test_reconcile_trip_freight_flags_a_stale_order(self):
+        from fleet.freight import reconcile_trip_freight
+        o1 = self._order("ORD-MPF-STALE-1")
+        trip = o1.ensure_trip()
+        o1.price_from_rate_card()
+        self._order("ORD-MPF-STALE-2", trip=trip)   # joined after o1 was priced, never repriced
+
+        reconciliation = reconcile_trip_freight(trip)
+        self.assertFalse(reconciliation["balanced"])
+        self.assertEqual(len(reconciliation["stale_orders"]), 2)
+
+        self.client.post(f"/api/v1/trips/{trip.id}/recalculate-freight/", {"preview": False}, format="json")
+        self.assertTrue(reconcile_trip_freight(trip)["balanced"])
+
+    def test_cockpit_surfaces_the_recalculate_blocker(self):
+        o1 = self._order("ORD-MPF-CKPT-1")
+        trip = o1.ensure_trip()
+        o1.price_from_rate_card()
+        self._order("ORD-MPF-CKPT-2", trip=trip)
+
+        cockpit = self.client.get(f"/api/v1/trips/{trip.id}/cockpit/")
+        self.assertFalse(cockpit.data["freight_reconciliation"]["balanced"])
+        self.assertTrue(any("recalculate freight" in b for b in cockpit.data["blockers"]))
+
+
 class SalesReportTests(BaseFleetOpsTest):
     def test_report_contains_lr_delivery_vehicle_and_billing_details(self):
         self.customer.billing_party_name = "Tata Consumer Accounts"
@@ -1584,9 +1767,9 @@ class TripProfitabilityReportTests(BaseFleetOpsTest):
         self.assertNotIn(trip.number, [r["number"] for r in other_result.data["trips"]])
 
     def test_report_summary_totals_match_the_row_sums(self):
-        o1 = self._order("ORD-TPR-4", total_amount=8000)
+        o1 = self._order("ORD-TPR-4", freight_amount=8000, total_amount=8000)
         trip1 = o1.ensure_trip()
-        o2 = self._order("ORD-TPR-5", total_amount=6000)
+        o2 = self._order("ORD-TPR-5", freight_amount=6000, total_amount=6000)
         trip2 = o2.ensure_trip()
 
         response = self.client.get("/api/v1/reports/trip-profitability/")
@@ -1860,7 +2043,8 @@ class TripSettlementTests(BaseFleetOpsTest):
 
     def test_get_settlement_reflects_a_linked_orders_freight(self):
         """A trip created from an order prices its settlement off that order,
-        not a manually typed freight figure."""
+        not a manually typed freight figure. freight_amount, not total_amount:
+        settlement freight excludes GST - see docs/MULTIPOINT-FREIGHT.md §2.5."""
         order_response = self.client.post("/api/v1/orders/", {
             "customer": self.customer.id, "pickup": self.pickup.id, "dropoff": self.dropoff.id,
             "service_rate": self.rate.id, "weight_kg": 12400}, format="json")

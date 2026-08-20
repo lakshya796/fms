@@ -280,6 +280,8 @@ class TripViewSet(viewsets.ModelViewSet):
         for order in orders:
             self._assign_order_to_trip(order, trip)
         set_vehicle_status(vehicle, "allocated", trip=trip, reason=f"Assigned to trip {trip.number}")
+        from .freight import price_trip_orders
+        price_trip_orders(trip, save=True)
         return Response(self.get_serializer(trip).data, status=http_status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"], url_path="add-order")
@@ -302,6 +304,11 @@ class TripViewSet(viewsets.ModelViewSet):
         if order.trip_id == trip.pk:
             return Response(self.get_serializer(self.get_object()).data)
         self._assign_order_to_trip(order, trip)
+        # A new order changes every other order's share of the trip's rate cards
+        # (docs/MULTIPOINT-FREIGHT.md §4.4) - reprice the whole trip, not just the
+        # one that joined. Already-invoiced orders are left alone (force=False).
+        from .freight import price_trip_orders
+        price_trip_orders(trip, save=True)
         return Response(self.get_serializer(self.get_object()).data)
 
     @action(detail=True, methods=["post"], url_path="remove-order")
@@ -325,7 +332,41 @@ class TripViewSet(viewsets.ModelViewSet):
         order.log("created", "ORDER_TRIP_REMOVED", f"Removed from trip {trip.number}")
         if not trip.orders.exists():
             set_vehicle_status(trip.vehicle, "available", trip=None, reason=f"Last order removed from {trip.number}")
+        else:
+            # The remaining orders' shares of the trip's rate cards grew - see add-order.
+            from .freight import price_trip_orders
+            price_trip_orders(trip, save=True)
         return Response(self.get_serializer(self.get_object()).data)
+
+    @action(detail=True, methods=["post"], url_path="recalculate-freight")
+    @transaction.atomic
+    def recalculate_freight(self, request, pk=None):
+        """Reprice every order on this trip from its rate card, dividing any
+        trip-level component of the card (a fixed per-trip rate, the base
+        charge, the minimum, loading) across the orders that share it instead
+        of charging it in full to each - see docs/MULTIPOINT-FREIGHT.md.
+
+        `preview` (default true): compute and return the before/after table
+        without writing anything - the console always previews before
+        offering Apply. `basis` picks the apportionment basis explicitly
+        ("distance" | "weight" | "equal"); omitted, it walks distance -> weight
+        -> equal same as `fleet.costing.apportion_trip_cost`. `force`
+        reprices an order that already carries an invoice; the invoice itself
+        is not corrected - that is a credit/debit note, raised separately.
+        """
+        from .freight import price_trip_orders, reconcile_trip_freight
+        trip = self.get_object()
+        preview = bool(request.data.get("preview", True))
+        basis = request.data.get("basis") or None
+        force = bool(request.data.get("force", False))
+        result = price_trip_orders(trip, basis=basis, force=force, save=not preview)
+        reconciliation = None if preview else reconcile_trip_freight(trip)
+        return Response({
+            "trip": trip.number, "preview": preview, **result,
+            "reconciliation": reconciliation,
+            "note": "Orders already invoiced are skipped unless force is set; raising a "
+                   "credit or debit note for a repriced invoice is not automatic.",
+        })
 
     @action(detail=True, methods=["post"], url_path="dispatch")
     @transaction.atomic
@@ -474,6 +515,7 @@ class TripViewSet(viewsets.ModelViewSet):
                         "attributed_expenses": float(cost_row["attributed_expenses"]),
                         "total": float(cost_row["total_cost"])},
                 "profit": float(money(revenue - cost_row["total_cost"])),
+                "freight_source": order.freight_source,
                 "lorry_receipt": {"id": lr.id, "number": lr.number, "status": lr.status} if lr else None,
                 "pod": {"captured": captured, "verified": verified, "required": order.pod_required,
                        "pending_proof_id": pending_proof.id if pending_proof else None},
@@ -512,6 +554,11 @@ class TripViewSet(viewsets.ModelViewSet):
         unapproved = money(trip.expenses.filter(status="pending").aggregate(v=Sum("amount"))["v"] or 0)
         if unapproved:
             blockers.append(f"₹{unapproved:,.2f} of expenses are awaiting approval.")
+        from .freight import reconcile_trip_freight
+        reconciliation = reconcile_trip_freight(trip)
+        if not reconciliation["balanced"]:
+            blockers.append(f"{len(reconciliation['stale_orders'])} order(s) have a freight amount that no "
+                            f"longer matches their rate card - recalculate freight.")
 
         # The all-in figures - what the cockpit is for - summed from the same
         # per-order apportionment above, so fuel is always in the total cost.
@@ -536,6 +583,7 @@ class TripViewSet(viewsets.ModelViewSet):
             "revenue": {"total": float(total_revenue)},
             "profit": {"total": float(total_profit)},
             "pnl": summary,
+            "freight_reconciliation": reconciliation,
             "documents": documents,
             "blockers": blockers,
             "ready_to_close": not blockers,
