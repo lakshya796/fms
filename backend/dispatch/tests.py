@@ -271,7 +271,6 @@ class FleetBugFixRegressionTests(TestCase):
                                    origin="A", destination="B", planned_departure=timezone.now())
         for i in range(3):
             Order.objects.create(number=f"ORD-REG-{i}", customer=self.customer, pickup=self.pickup, dropoff=self.dropoff,
-
                                  trip=trip, freight_amount=Decimal("1000"), tax_amount=Decimal("50"),
                                  total_amount=Decimal("1050"), status="assigned")
         summary = trip.settlement_summary()

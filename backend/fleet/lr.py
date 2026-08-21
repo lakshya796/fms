@@ -7,6 +7,7 @@ re-typed consignor, consignee, origin, destination, material and weight into a
 separate `LorryReceipt` record instead. `build_lr_from_order` is what populates it.
 See docs/ONE-TRIP-END-TO-END.md §3.1/§5 Phase 1.
 """
+from decimal import Decimal
 from uuid import uuid4
 
 from django.utils import timezone
@@ -50,3 +51,35 @@ def build_lr_from_order(order, number=None):
     if order.trip_id:
         order.trip.lorry_receipts.add(lr)
     return lr, True
+
+
+def sync_lorry_receipt_freight(lr, save=True):
+    """Refresh `lr.freight_amount` from the order(s) linked to it right now.
+
+    The snapshot above is deliberate - an LR is a legal document, not a live
+    view of the order - but a snapshot taken before the order was ever priced,
+    or before a multi-point trip's freight was correctly divided among the
+    orders riding it (see `fleet.freight`), freezes at the wrong number and
+    nothing revisits it on its own: an LR generated at dispatch time, ahead of
+    pricing, shows zero freight forever. This is the explicit correction,
+    called when an order behind an LR has just been (re)priced - not a silent
+    background rewrite of an issued document.
+
+    `lr.freight_amount` becomes the sum of every order currently linked to it
+    (ordinarily exactly one - `build_lr_from_order` issues one LR per order -
+    but the FK allows more, so this does not assume there is only one).
+
+    Returns `(lr, before, after)`. Raises `ValueError` if no order is linked
+    to this LR - there is nothing to sync freight from, and typing a figure
+    in by hand is the only way to fill it, not a calculation bug.
+    """
+    orders = list(lr.orders.all())
+    if not orders:
+        raise ValueError(f"Lorry receipt {lr.number} has no order linked to it - nothing to sync freight from.")
+    before = money(lr.freight_amount)
+    after = money(sum((money(o.freight_amount) for o in orders), Decimal("0")))
+    if after != before:
+        lr.freight_amount = after
+        if save:
+            lr.save(update_fields=["freight_amount", "updated_at"])
+    return lr, before, after

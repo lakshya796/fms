@@ -173,6 +173,26 @@ class LorryReceiptViewSet(viewsets.ModelViewSet):
         response = HttpResponse(render_lr_pdf(lr), content_type="application/pdf")
         response["Content-Disposition"] = f'inline; filename="{lr.number}.pdf"'
         return response
+
+    @action(detail=True, methods=["post"], url_path="sync-freight")
+    def sync_freight(self, request, pk=None):
+        """Refresh this LR's freight_amount from its linked order(s) now.
+
+        `build_lr_from_order` snapshots freight at issue time and never
+        revisits it - an LR generated before its order was priced (or before
+        a multi-point trip's freight was correctly divided among the orders
+        riding it, see fleet.freight) is stuck showing the wrong figure,
+        including zero, even after the order behind it is later repriced.
+        This is the explicit fix for that: it does not run automatically.
+        """
+        from .lr import sync_lorry_receipt_freight
+        lr = self.get_object()
+        try:
+            lr, before, after = sync_lorry_receipt_freight(lr)
+        except ValueError as error:
+            raise ValidationError(str(error))
+        return Response({"lorry_receipt": LorryReceiptSerializer(lr).data,
+                         "before": float(before), "after": float(after), "changed": before != after})
 class TrackingEventViewSet(viewsets.ModelViewSet):
     permission_classes = [HasModulePermission]
     required_permission = "operations.view"; required_write_permission = "operations.manage"

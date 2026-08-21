@@ -1120,6 +1120,85 @@ class LorryReceiptGenerationTests(BaseFleetOpsTest):
                          "Rupees Twelve Thousand Thirty Six and Paise Ten Only")
 
 
+class LorryReceiptFreightSyncTests(BaseFleetOpsTest):
+    """An LR generated before its order was priced freezes at the wrong
+    freight - usually zero - forever, because build_lr_from_order snapshots
+    it once and nothing revisits it. fleet.lr.sync_lorry_receipt_freight and
+    POST /lorry-receipts/{id}/sync-freight/ are the explicit fix."""
+
+    def _order(self, **overrides):
+        defaults = dict(number="ORD-LRS-1", customer=self.customer, pickup=self.pickup, dropoff=self.dropoff,
+                        weight_kg=1000, distance_km=100, status="created")
+        defaults.update(overrides)
+        return Order.objects.create(**defaults)
+
+    def test_an_lr_generated_before_pricing_is_stuck_at_zero_until_synced(self):
+        from fleet.lr import build_lr_from_order, sync_lorry_receipt_freight
+        order = self._order()   # no service_rate yet - freight_amount is 0
+        lr, _ = build_lr_from_order(order)
+        self.assertEqual(lr.freight_amount, Decimal("0.00"))
+
+        order.service_rate = self.rate
+        order.price_from_rate_card()
+        order.refresh_from_db()
+        self.assertGreater(order.freight_amount, 0)
+
+        lr.refresh_from_db()
+        self.assertEqual(lr.freight_amount, Decimal("0.00"), "the LR must still be stuck - nothing has synced it yet")
+
+        lr, before, after = sync_lorry_receipt_freight(lr)
+        self.assertEqual(before, Decimal("0.00"))
+        self.assertEqual(after, order.freight_amount)
+        self.assertEqual(lr.freight_amount, order.freight_amount)
+
+    def test_sync_freight_endpoint_updates_the_lr(self):
+        order = self._order(service_rate=self.rate)
+        order.price_from_rate_card()
+        order.refresh_from_db()
+        from fleet.lr import build_lr_from_order
+        lr, _ = build_lr_from_order(order)
+        LorryReceipt.objects.filter(pk=lr.pk).update(freight_amount=0)   # simulate a stale snapshot
+
+        response = self.client.post(f"/api/v1/lorry-receipts/{lr.pk}/sync-freight/")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertTrue(response.data["changed"])
+        self.assertEqual(response.data["after"], float(order.freight_amount))
+        lr.refresh_from_db()
+        self.assertEqual(lr.freight_amount, order.freight_amount)
+
+    def test_sync_freight_rejects_a_standalone_lr_with_no_order(self):
+        lr = LorryReceipt.objects.create(number="LR-STANDALONE-1", customer=self.customer,
+                                         consignor="X", consignee="Y", origin="A", destination="B",
+                                         material="General cargo", weight_kg=1000)
+        response = self.client.post(f"/api/v1/lorry-receipts/{lr.pk}/sync-freight/")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("no order linked", str(response.data).lower())
+
+    def test_recalculating_a_trips_freight_also_syncs_its_lorry_receipts(self):
+        """The scenario this exists for: a three-drop milk run whose LRs were
+        generated before the trip's freight was correctly apportioned."""
+        from fleet.lr import build_lr_from_order
+        o1 = self._order(number="ORD-LRS-2", service_rate=self.rate, driver=self.driver, vehicle=self.vehicle,
+                         status="completed", pod_required=False)
+        trip = o1.ensure_trip()
+        o2 = self._order(number="ORD-LRS-3", service_rate=self.rate, trip=trip, driver=self.driver,
+                         vehicle=self.vehicle, status="completed", pod_required=False)
+        lr1, _ = build_lr_from_order(o1)   # generated while freight_amount was still 0
+        lr2, _ = build_lr_from_order(o2)
+        self.assertEqual(lr1.freight_amount, Decimal("0.00"))
+        self.assertEqual(lr2.freight_amount, Decimal("0.00"))
+
+        response = self.client.post(f"/api/v1/trips/{trip.id}/recalculate-freight/",
+                                    {"preview": False}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(set(response.data["lorry_receipts_synced"]), {lr1.number, lr2.number})
+
+        o1.refresh_from_db(); o2.refresh_from_db(); lr1.refresh_from_db(); lr2.refresh_from_db()
+        self.assertEqual(lr1.freight_amount, o1.freight_amount)
+        self.assertEqual(lr2.freight_amount, o2.freight_amount)
+        self.assertGreater(lr1.freight_amount, 0)
+
+
 class TripCreationFromOrdersTests(BaseFleetOpsTest):
     """The Orders screen lets an operator pick several orders and book a trip
     for them in one call, instead of creating the trip and then linking each

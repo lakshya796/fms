@@ -18,7 +18,7 @@ twice.
 from decimal import Decimal
 
 from .costing import _split_by_share
-from .models import Order, money
+from .models import LorryReceipt, Order, money
 
 
 def _trip_orders(trip):
@@ -220,10 +220,17 @@ def price_trip_orders(trip, *, basis=None, force=False, save=True):
     set - repricing it changes what was billed without correcting the bill,
     which is a credit/debit note, not something this function does.
 
+    A repriced order's lorry receipt (if it has one) is refreshed too - see
+    `fleet.lr.sync_lorry_receipt_freight`. An LR is otherwise a frozen
+    snapshot from whenever it was issued; without this, an LR generated
+    before its order was priced shows zero freight forever, surviving even a
+    correct recalculation of the order behind it.
+
     Returns the before/after table the `recalculate-freight` endpoint and its
     console preview render: `{"basis": str, "orders": [{"id", "number",
     "before", "after", "delta", "source", "blocked"}], "total_before":
-    float, "total_after": float, "delta": float}`.
+    float, "total_after": float, "delta": float, "lorry_receipts_synced":
+    [str, ...]}`.
     """
     split = apportion_trip_freight(trip, basis=basis)
     orders = {o.id: o for o in _trip_orders(trip)}
@@ -251,7 +258,17 @@ def price_trip_orders(trip, *, basis=None, force=False, save=True):
             order.save(update_fields=["freight_amount", "tax_amount", "total_amount",
                                       "freight_source", "updated_at"])
 
+    lr_numbers_synced = []
+    if save and to_save:
+        from .lr import sync_lorry_receipt_freight
+        lr_ids = {order.lorry_receipt_id for order in to_save if order.lorry_receipt_id}
+        for lr in LorryReceipt.objects.filter(id__in=lr_ids):
+            _, lr_before, lr_after = sync_lorry_receipt_freight(lr)
+            if lr_after != lr_before:
+                lr_numbers_synced.append(lr.number)
+
     total_before = money(sum((Decimal(str(r["before"])) for r in rows), Decimal("0")))
     total_after = money(sum((Decimal(str(r["after"])) for r in rows), Decimal("0")))
     return {"basis": split["basis"], "orders": rows, "total_before": float(total_before),
-           "total_after": float(total_after), "delta": float(money(total_after - total_before))}
+           "total_after": float(total_after), "delta": float(money(total_after - total_before)),
+           "lorry_receipts_synced": lr_numbers_synced}
