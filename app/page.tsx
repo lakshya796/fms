@@ -1543,6 +1543,19 @@ function TripCockpitPanel({ trip, onAction, onOrderChanged }: { trip: any; onAct
     } finally { setBusyKey(""); }
   };
 
+  const issueOtp = async (row: any) => {
+    const key = `otp-${row.id}`;
+    setBusyKey(key);
+    try {
+      const result = await fmsRequest<any>(`orders/${row.id}/pod-request/`, { method: "POST", body: "{}" });
+      onAction(`Delivery OTP ${result.otp} issued · valid ${result.valid_hours}h`);
+      load();
+      onOrderChanged();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 150) : "Could not issue the OTP", "warn");
+    } finally { setBusyKey(""); }
+  };
+
   // An LR's freight is a snapshot taken when it was generated - if that happened
   // before the order was priced, it is stuck at the wrong figure (often zero)
   // even after the order itself is correctly priced. See docs/MULTIPOINT-FREIGHT.md.
@@ -1695,7 +1708,13 @@ function TripCockpitPanel({ trip, onAction, onOrderChanged }: { trip: any; onAct
           <td>{row.pod.verified ? "✓ verified"
             : row.pod.pending_proof_id ? <button className="row-action" disabled={busyKey === `pod-${row.id}`}
                      onClick={() => runAction(`pod-${row.id}`, `proofs/${row.pod.pending_proof_id}/verify/`, "POD verified")}>Verify</button>
-            : row.pod.captured ? "captured" : row.pod.required ? "awaited" : "not required"}</td>
+            : row.pod.captured ? "captured"
+            : row.pod.required && !["cancelled", "completed"].includes(row.status)
+              ? <button className="row-action" disabled={busyKey === `otp-${row.id}`}
+                       onClick={() => issueOtp(row)}>
+                  {busyKey === `otp-${row.id}` ? "Issuing…" : "Issue OTP"}
+                </button>
+            : row.pod.required ? "awaited" : "not required"}</td>
           <td>{row.invoice
             ? <button className="row-action" onClick={() => downloadPdf(`invoices/${row.invoice.id}/pdf/`, `${row.invoice.number}.pdf`)}>{row.invoice.number}</button>
             : row.status === "completed" ? <button className="row-action" disabled={busyKey === `inv-${row.id}`}
