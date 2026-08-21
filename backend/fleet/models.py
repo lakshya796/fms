@@ -268,14 +268,17 @@ class Trip(Timestamped):
         # A consolidated trip's P&L combines the freight from every linked order.
         # Use freight_amount exclusively: total_amount also contains GST, which is a
         # tax liability rather than trip revenue. The trip-level freight is only the
-        # fallback for a trip with no linked orders at all.
-        orders_freight = self.orders.aggregate(value=models.Sum("freight_amount"))["value"]
-        freight = money(orders_freight) if orders_freight is not None else money(self.freight_amount)
+        # fallback for a trip with no linked orders at all. `.aggregate()` always
+        # queries fresh (unlike `.all()`, it never serves a stale prefetch cache), so
+        # this is safe to call in the same request as an order's freight just changed.
+        totals = self.orders.aggregate(freight=models.Sum("freight_amount"), tax=models.Sum("tax_amount"))
+        has_orders = totals["freight"] is not None
+        freight = money(totals["freight"]) if has_orders else money(self.freight_amount)
         distance = self.passed_km or self.running_km or 0
         return {
             "total_exp": float(total_exp), "diesel_given": float(money(self.advance_amount)),
             "difference": float(money(total_exp - self.advance_amount)),
-            "freight": float(freight), "tax": float(tax_total) if orders else 0.0,
+            "freight": float(freight), "tax": float(money(totals["tax"])) if has_orders else 0.0,
             "running_km": self.running_km, "passed_km": self.passed_km,
             "per_km_exp": float(money(total_exp / distance)) if distance else 0.0,
             "per_km_rev": float(money(freight / distance)) if distance else 0.0,
