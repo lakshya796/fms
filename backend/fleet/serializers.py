@@ -54,6 +54,9 @@ class TripSerializer(serializers.ModelSerializer):
     tracking_events = TrackingEventSerializer(many=True, read_only=True)
     running_km = serializers.IntegerField(read_only=True)
     linked_orders = serializers.SerializerMethodField()
+    order_count = serializers.SerializerMethodField()
+    lorry_receipt_count = serializers.SerializerMethodField()
+    customer_names = serializers.SerializerMethodField()
     class Meta:
         model = Trip; fields = "__all__"
         # A trip sheet is often opened before consignments are attached to it.
@@ -66,6 +69,22 @@ class TripSerializer(serializers.ModelSerializer):
              "route": f"{o.pickup.city} → {o.dropoff.city}"}
             for o in trip.orders.select_related("customer", "pickup", "dropoff").all()
         ]
+
+    def get_order_count(self, trip):
+        return len(trip.orders.all())
+
+    def get_lorry_receipt_count(self, trip):
+        return len(trip.lorry_receipts.all())
+
+    def get_customer_names(self, trip):
+        """A trip may be built from orders, legacy LRs, or both.
+
+        Give the dispatch board one de-duplicated customer list regardless of how
+        the trip was created, while keeping the first-seen operational order.
+        """
+        names = [order.customer.name for order in trip.orders.all()]
+        names.extend(receipt.customer.name for receipt in trip.lorry_receipts.all())
+        return list(dict.fromkeys(name for name in names if name))
 
 
 class TripSettlementInputSerializer(serializers.Serializer):
