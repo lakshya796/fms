@@ -2156,6 +2156,61 @@ class TripSettlementTests(BaseFleetOpsTest):
         self.assertEqual(Decimal(response.data["settlement"]["approved_expenses"]), Decimal("26400.00"))
         self.assertEqual(Settlement.objects.filter(trip=trip, driver=self.driver).count(), 1)
 
+
+class SettlementBackfillMigrationTests(BaseFleetOpsTest):
+    """Trips settled before the settlement-save -> Settlement sync existed (migration
+    0021) need the same catch-up, run here against the live models the same way the
+    migration's RunPython step does."""
+
+    def run_backfill(self):
+        import importlib
+        from django.apps import apps
+        migration = importlib.import_module("fleet.migrations.0021_backfill_settlement_from_existing_trips")
+        migration.backfill_settlements(apps, None)
+
+    def create_trip(self, number="TRP-BACKFILL"):
+        response = self.client.post("/api/v1/trips/", {
+            "number": number, "vehicle": self.vehicle.id, "driver": self.driver.id,
+            "origin": "Surat", "destination": "Delhi-Noida", "planned_departure": "2026-07-05T08:00:00Z"}, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        return Trip.objects.get(pk=response.data["id"])
+
+    def test_backfill_creates_a_settlement_for_a_trip_with_expenses_but_no_settlement_row(self):
+        trip = self.create_trip()
+        trip.advance_amount = Decimal("39000.00"); trip.save(update_fields=["advance_amount"])
+        TripExpense.objects.create(trip=trip, driver=self.driver, vehicle=self.vehicle,
+                                   category="diesel", amount=Decimal("26400.00"), status="approved")
+        TripExpense.objects.create(trip=trip, driver=self.driver, vehicle=self.vehicle,
+                                   category="halting", amount=Decimal("2500.00"), status="approved")
+
+        self.run_backfill()
+
+        settlement = Settlement.objects.get(trip=trip, driver=self.driver)
+        self.assertEqual(settlement.advance_amount, Decimal("39000.00"))
+        self.assertEqual(settlement.approved_expenses, Decimal("28900.00"))
+        self.assertEqual(settlement.net_payable, Decimal("-10100.00"))
+        self.assertEqual(settlement.status, "pending")
+
+    def test_backfill_skips_a_trip_with_neither_expenses_nor_an_advance(self):
+        self.create_trip()
+        self.run_backfill()
+        self.assertEqual(Settlement.objects.count(), 0)
+
+    def test_backfill_never_touches_a_trip_that_already_has_a_settlement(self):
+        trip = self.create_trip()
+        TripExpense.objects.create(trip=trip, driver=self.driver, vehicle=self.vehicle,
+                                   category="diesel", amount=Decimal("5000.00"), status="approved")
+        Settlement.objects.create(trip=trip, driver=self.driver, advance_amount=Decimal("1000.00"),
+                                  approved_expenses=Decimal("500.00"), net_payable=Decimal("-500.00"),
+                                  status="approved")
+
+        self.run_backfill()
+
+        self.assertEqual(Settlement.objects.filter(trip=trip, driver=self.driver).count(), 1)
+        settlement = Settlement.objects.get(trip=trip, driver=self.driver)
+        self.assertEqual(settlement.approved_expenses, Decimal("500.00"))   # untouched, not recomputed to 5000
+        self.assertEqual(settlement.status, "approved")
+
     def test_settlement_rejects_an_unknown_expense_category(self):
         trip = self.create_trip()
         response = self.client.post(f"/api/v1/trips/{trip.id}/settlement/",
