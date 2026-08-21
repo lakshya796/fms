@@ -462,8 +462,10 @@ class TripViewSet(viewsets.ModelViewSet):
             return {row["category"]: float(row["total"]) for row in rows}
 
         if request.method == "GET":
+            settlement = trip.settlements.order_by("-created_at").first()
             return Response({"trip": self.get_serializer(trip).data, "summary": trip.settlement_summary(),
-                             "expenses": expense_breakdown()})
+                             "expenses": expense_breakdown(),
+                             "settlement": SettlementSerializer(settlement).data if settlement else None})
 
         form = TripSettlementInputSerializer(data=request.data)
         form.is_valid(raise_exception=True)
@@ -494,8 +496,24 @@ class TripViewSet(viewsets.ModelViewSet):
                 TripExpense.objects.filter(trip=trip, category=category).delete()
 
         trip.refresh_from_db()
-        return Response({"trip": self.get_serializer(trip).data, "summary": trip.settlement_summary(),
-                         "expenses": expense_breakdown()})
+        summary = trip.settlement_summary()
+
+        # Keep the driver's settlement ledger in sync with this trip sheet: one row per
+        # trip/driver, its money fields recomputed from the same expense/advance figures
+        # shown above. Once accounting has moved a settlement past "pending" (approved or
+        # paid), a later edit here no longer overwrites it - the ledger entry is locked in.
+        settlement, created = Settlement.objects.get_or_create(
+            trip=trip, driver=trip.driver,
+            defaults={"advance_amount": trip.advance_amount, "approved_expenses": summary["total_exp"],
+                     "net_payable": summary["difference"]})
+        if not created and settlement.status == "pending":
+            settlement.advance_amount = trip.advance_amount
+            settlement.approved_expenses = summary["total_exp"]
+            settlement.net_payable = summary["difference"]
+            settlement.save(update_fields=["advance_amount", "approved_expenses", "net_payable", "updated_at"])
+
+        return Response({"trip": self.get_serializer(trip).data, "summary": summary,
+                         "expenses": expense_breakdown(), "settlement": SettlementSerializer(settlement).data})
 
     @action(detail=True, methods=["get"])
     def cockpit(self, request, pk=None):

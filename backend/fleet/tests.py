@@ -16,8 +16,9 @@ from iam.models import OutboundMessage
 from . import geotrackers
 
 from .models import (ComplianceDocument, Customer, Driver, Fleet, FuelEntry, Indent, Invoice, Issue, LorryReceipt,
-                     MaintenanceSchedule, Order, Place, ProofOfDelivery, ServiceArea, ServiceRate, Trip, TripExpense,
-                     Vehicle, VehicleHire, VehicleSize, VehicleType, Vendor, Waypoint, Zone, haversine_km, money)
+                     MaintenanceSchedule, Order, Place, ProofOfDelivery, ServiceArea, ServiceRate, Settlement, Trip,
+                     TripExpense, Vehicle, VehicleHire, VehicleSize, VehicleType, Vendor, Waypoint, Zone,
+                     haversine_km, money)
 
 class BaseFleetOpsTest(TestCase):
     def setUp(self):
@@ -2113,6 +2114,47 @@ class TripSettlementTests(BaseFleetOpsTest):
                          {"expenses": {"diesel": "27000", "parking": "0"}}, format="json")
         self.assertEqual(TripExpense.objects.filter(trip=trip).count(), 1)   # parking cleared, not left stale
         self.assertEqual(TripExpense.objects.get(trip=trip, category="diesel").amount, Decimal("27000.00"))
+
+    def test_saving_the_trip_settlement_syncs_the_driver_settlement_ledger(self):
+        """The whole point of the trip sheet is that accounting shouldn't have to
+        re-type these same numbers into the driver settlement module by hand."""
+        trip = self.create_trip()
+        response = self.client.post(f"/api/v1/trips/{trip.id}/settlement/", {
+            "diesel_given": "39000", "expenses": {"diesel": "26400", "halting": "2500"},
+        }, format="json")
+        settlement = response.data["settlement"]
+        self.assertEqual(settlement["trip"], trip.id)
+        self.assertEqual(settlement["driver"], self.driver.id)
+        self.assertEqual(Decimal(settlement["advance_amount"]), Decimal("39000.00"))
+        self.assertEqual(Decimal(settlement["approved_expenses"]), Decimal("28900.00"))
+        self.assertEqual(Decimal(settlement["net_payable"]), Decimal("-10100.00"))
+        self.assertEqual(settlement["status"], "pending")
+        self.assertEqual(Settlement.objects.filter(trip=trip, driver=self.driver).count(), 1)
+
+        get_response = self.client.get(f"/api/v1/trips/{trip.id}/settlement/")
+        self.assertEqual(get_response.data["settlement"]["id"], settlement["id"])
+
+        # Resubmitting with different figures keeps updating the same row while it's pending.
+        # "halting" is untouched by this payload, so its 2,500 line survives alongside the new diesel figure.
+        response = self.client.post(f"/api/v1/trips/{trip.id}/settlement/",
+                                    {"diesel_given": "39000", "expenses": {"diesel": "30000"}}, format="json")
+        self.assertEqual(response.data["settlement"]["id"], settlement["id"])
+        self.assertEqual(Decimal(response.data["settlement"]["approved_expenses"]), Decimal("32500.00"))
+        self.assertEqual(Settlement.objects.filter(trip=trip, driver=self.driver).count(), 1)
+
+    def test_an_approved_settlement_is_not_silently_overwritten_by_a_later_trip_sheet_edit(self):
+        trip = self.create_trip()
+        first = self.client.post(f"/api/v1/trips/{trip.id}/settlement/",
+                                 {"diesel_given": "39000", "expenses": {"diesel": "26400"}}, format="json")
+        settlement_id = first.data["settlement"]["id"]
+        settlement = Settlement.objects.get(pk=settlement_id)
+        settlement.status = "approved"; settlement.save(update_fields=["status"])
+
+        response = self.client.post(f"/api/v1/trips/{trip.id}/settlement/",
+                                    {"diesel_given": "39000", "expenses": {"diesel": "50000"}}, format="json")
+        self.assertEqual(response.data["settlement"]["status"], "approved")
+        self.assertEqual(Decimal(response.data["settlement"]["approved_expenses"]), Decimal("26400.00"))
+        self.assertEqual(Settlement.objects.filter(trip=trip, driver=self.driver).count(), 1)
 
     def test_settlement_rejects_an_unknown_expense_category(self):
         trip = self.create_trip()

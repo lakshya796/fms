@@ -1824,6 +1824,7 @@ function TripSettlementPanel({ trip, onAction, onSaved }: { trip: any; onAction:
   const [loading, setLoading] = useState(true);
   const [summary, setSummary] = useState<any>(null);
   const [expenses, setExpenses] = useState<Record<string, number>>({});
+  const [settlement, setSettlement] = useState<any>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -1831,6 +1832,7 @@ function TripSettlementPanel({ trip, onAction, onSaved }: { trip: any; onAction:
     fmsRequest<any>(`trips/${trip.id}/settlement/`).then(payload => {
       setSummary(payload.summary);
       setExpenses(payload.expenses || {});
+      setSettlement(payload.settlement || null);
     }).catch(() => undefined).finally(() => setLoading(false));
   }, [trip.id]);
 
@@ -1852,9 +1854,10 @@ function TripSettlementPanel({ trip, onAction, onSaved }: { trip: any; onAction:
         start_odometer_km: num("start_odometer_km"), end_odometer_km: num("end_odometer_km"),
         freight_amount: num("freight_amount"), diesel_given: num("diesel_given"), expenses: expensePayload,
       }) });
-      onAction("Trip settlement saved");
+      onAction(`Trip settlement saved · driver settlement ${payload.settlement?.status || "pending"} at ${rupees(payload.settlement?.net_payable || 0)}`);
       setSummary(payload.summary);
       setExpenses(payload.expenses || {});
+      setSettlement(payload.settlement || null);
       onSaved(payload.trip);
     } catch (e) {
       onAction(e instanceof Error ? e.message.slice(0, 150) : "Could not save the trip settlement", "warn");
@@ -1894,10 +1897,15 @@ function TripSettlementPanel({ trip, onAction, onSaved }: { trip: any; onAction:
       <div><span>Per km revenue</span><strong>₹{summary.per_km_rev}</strong></div>
       <div><span>Margin (excl. fuel)</span><strong className={summary.trip_profit >= 0 ? "good" : "bad"}>{rupees(summary.trip_profit)}</strong></div>
     </div>}
+    {settlement && <div className="margin-strip" style={{ marginTop: 8 }}>
+      <div><span>Driver settlement</span><strong className={settlement.status === "pending" ? "" : "good"}>{settlement.status}</strong></div>
+      <div><span>Net payable to driver</span><strong className={settlement.net_payable <= 0 ? "good" : "bad"}>{rupees(settlement.net_payable)}</strong></div>
+    </div>}
     <p style={{ fontSize: 10, color: "#8a938e", marginTop: 8 }}>
       The figures above are the driver's cash-advance reconciliation and deliberately exclude fuel,
       which may be paid on a company card rather than the driver's own advance — see the all-in
-      revenue, cost and profit in the Trip Cockpit above.
+      revenue, cost and profit in the Trip Cockpit above. Saving here also updates this driver's
+      settlement ledger, the Expenses list, and every report that reads from them.
     </p>
     <button className="primary full-button" disabled={busy} style={{ marginTop: 16 }}>{busy ? "Saving…" : "Save trip settlement"}</button>
   </form>;
