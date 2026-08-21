@@ -265,19 +265,12 @@ class Trip(Timestamped):
         """The trip-sheet numbers an accountant fills in by hand today: total expense,
         the diesel/cash advance settled against it, and cost/revenue per km."""
         total_exp = money(self.expenses.aggregate(value=models.Sum("amount"))["value"] or 0)
-        # A trip carries every order allocated to it (a consolidated multi-drop route
-        # is several orders on one trip), so its freight is their sum - pricing from a
-        # single order here silently dropped the rest of a consolidated trip's revenue.
-        # Summed from freight_amount, not total_amount: total_amount includes GST, which
-        # is collected on the government's behalf, not earned - see docs/MULTIPOINT-FREIGHT.md §2.5.
-        # `self.orders.model.objects.filter(...)`, not `self.orders.all()`: a caller that
-        # fetched this trip through a prefetched queryset (the trip API views all do) has a
-        # stale `orders` prefetch cache the moment an order's own fields change elsewhere in
-        # the same request - this always hits the database.
-        orders = list(self.orders.model.objects.filter(trip=self))
-        freight_total = money(sum((money(o.freight_amount) for o in orders), Decimal("0")))
-        tax_total = money(sum((money(o.tax_amount) for o in orders), Decimal("0")))
-        freight = freight_total if orders else money(self.freight_amount)
+        # A consolidated trip's P&L combines the freight from every linked order.
+        # Use freight_amount exclusively: total_amount also contains GST, which is a
+        # tax liability rather than trip revenue. The trip-level freight is only the
+        # fallback for a trip with no linked orders at all.
+        orders_freight = self.orders.aggregate(value=models.Sum("freight_amount"))["value"]
+        freight = money(orders_freight) if orders_freight is not None else money(self.freight_amount)
         distance = self.passed_km or self.running_km or 0
         return {
             "total_exp": float(total_exp), "diesel_given": float(money(self.advance_amount)),
