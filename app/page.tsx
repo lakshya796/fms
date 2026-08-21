@@ -1543,6 +1543,23 @@ function TripCockpitPanel({ trip, onAction, onOrderChanged }: { trip: any; onAct
     } finally { setBusyKey(""); }
   };
 
+  // An LR's freight is a snapshot taken when it was generated - if that happened
+  // before the order was priced, it is stuck at the wrong figure (often zero)
+  // even after the order itself is correctly priced. See docs/MULTIPOINT-FREIGHT.md.
+  const syncLrFreight = async (row: any) => {
+    const key = `lr-sync-${row.id}`;
+    setBusyKey(key);
+    try {
+      const payload = await fmsRequest<any>(`lorry-receipts/${row.lorry_receipt.id}/sync-freight/`, { method: "POST", body: "{}" });
+      onAction(payload.changed
+        ? `${row.lorry_receipt.number} freight updated · ${rupees(payload.before)} → ${rupees(payload.after)}`
+        : `${row.lorry_receipt.number} already matches its order`);
+      load();
+    } catch (e) {
+      onAction(e instanceof Error ? e.message.slice(0, 150) : "Could not sync freight", "warn");
+    } finally { setBusyKey(""); }
+  };
+
   const openLrDialog = (order: any) => {
     setLrDialogOrder(order);
     setLrNumberMode("auto");
@@ -1599,7 +1616,10 @@ function TripCockpitPanel({ trip, onAction, onOrderChanged }: { trip: any; onAct
         method: "POST",
         body: JSON.stringify({ preview: false, ...(recalcBasis ? { basis: recalcBasis } : {}) }),
       });
-      onAction(`Freight recalculated · ${rupees(payload.total_before)} → ${rupees(payload.total_after)}`);
+      const lrNote = payload.lorry_receipts_synced?.length
+        ? ` · lorry receipt(s) ${payload.lorry_receipts_synced.join(", ")} updated to match`
+        : "";
+      onAction(`Freight recalculated · ${rupees(payload.total_before)} → ${rupees(payload.total_after)}${lrNote}`);
       setRecalcPreview(null);
       load();
       onOrderChanged();
@@ -1663,7 +1683,13 @@ function TripCockpitPanel({ trip, onAction, onOrderChanged }: { trip: any; onAct
           <td><strong>{row.number}</strong><small>{row.customer}</small></td>
           <td><span className={"status " + row.status}>{row.status}</span></td>
           <td>{row.lorry_receipt
-            ? <button className="row-action" onClick={() => downloadPdf(`lorry-receipts/${row.lorry_receipt.id}/pdf/`, `${row.lorry_receipt.number}.pdf`)}>{row.lorry_receipt.number}</button>
+            ? <>
+                <button className="row-action" onClick={() => downloadPdf(`lorry-receipts/${row.lorry_receipt.id}/pdf/`, `${row.lorry_receipt.number}.pdf`)}>{row.lorry_receipt.number}</button>
+                <button className="row-action" title="Refresh this LR's freight from the order"
+                       disabled={busyKey === `lr-sync-${row.id}`} onClick={() => syncLrFreight(row)}>
+                  {busyKey === `lr-sync-${row.id}` ? "Syncing…" : "Sync freight"}
+                </button>
+              </>
             : <button className="row-action" disabled={busyKey === `lr-${row.id}`}
                      onClick={() => openLrDialog(row)}>Generate</button>}</td>
           <td>{row.pod.verified ? "✓ verified"
