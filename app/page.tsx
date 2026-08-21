@@ -1853,18 +1853,66 @@ function FleetOpsView({ name, onAction, reloadKey, openAction, openTripId, onTri
     "in_transit>closed": trip => tripAction(trip, "close"),
   }, onAction, (trip, status) => setTripStatus(trip, status));
   if (name === "Dispatch") return <div className="module-page"><div className="module-title"><div><p className="eyebrow">FLEET-OPS DISPATCH</p><h2>Dispatch command board</h2><p>Drag a trip between columns to progress it, or click one to open the trip sheet.</p></div><button className="primary module-action" onClick={() => openAction("trip")}>＋ Create trip</button></div>
-    <div className="dispatch-board">{["planned","dispatched","in_transit","closed"].map(status => <section {...board.columnProps(status)} key={status}>
+    <div className="dispatch-board trip-board">{["planned","dispatched","in_transit","closed"].map(status => <section {...board.columnProps(status)} key={status}>
       <header key="header"><strong>{status.replaceAll("_"," ")}</strong><span>{records.filter(r => r.status === status).length}</span></header>
-      {records.filter(r => r.status === status).map(trip => <article key={trip.id} {...board.cardProps(trip, openTripDetail)}>
-        <b>{trip.number}</b><p>{trip.origin} → {trip.destination}</p>
-        <small>{trip.vehicle_number} · {trip.driver_name}</small>
-        {(trip.linked_orders || []).length > 0 && <small style={{ color: "var(--brand)" }}>{(trip.linked_orders || []).length} order{(trip.linked_orders || []).length > 1 ? "s" : ""} linked</small>}
-        <div onClick={event => event.stopPropagation()}>
-          {status === "planned" && <button onClick={() => tripAction(trip,"dispatch")}>Dispatch</button>}
-          {status === "dispatched" && <button onClick={() => setTripStatus(trip,"in_transit")}>In transit</button>}
-          {status !== "closed" && status !== "planned" && <button onClick={() => tripAction(trip,"close")}>Close trip</button>}
-        </div>
-      </article>)}
+      {records.filter(r => r.status === status).map(trip => {
+        const linkedOrders = trip.linked_orders || [];
+        const orderCount = trip.order_count ?? linkedOrders.length;
+        const lrCount = trip.lorry_receipt_count ?? (trip.lorry_receipts || []).length;
+        const customerNames: string[] = trip.customer_names || Array.from(new Set(
+          linkedOrders.map((order: any) => order.customer_name).filter(Boolean),
+        ));
+        const visibleCustomers = customerNames.slice(0, 2).join(", ");
+        const otherCustomerCount = Math.max(0, customerNames.length - 2);
+        return <article key={trip.id} {...board.cardProps(trip, openTripDetail, "trip-kanban-card")}>
+          <header className="trip-card-head">
+            <span className="trip-card-reference"><small>TRIP</small><b>{trip.number}</b></span>
+            <span className="trip-card-grip" aria-hidden="true"><i/><i/><i/><i/><i/><i/></span>
+          </header>
+
+          <div className="trip-card-route">
+            <DispatchCardIcon name="route" />
+            <p><span>{trip.origin || "Origin"}</span><em>→</em><span>{trip.destination || "Destination"}</span></p>
+          </div>
+
+          <div className="trip-card-vehicle">
+            <span className="trip-card-icon-box"><DispatchCardIcon name="truck" /></span>
+            <span><small>VEHICLE NUMBER</small><strong>{trip.vehicle_number || "Not assigned"}</strong></span>
+          </div>
+
+          <div className="trip-card-detail-grid">
+            <span className="trip-card-detail">
+              <DispatchCardIcon name="calendar" />
+              <span><small>START DATE</small><strong>{cardStamp(trip.planned_departure)}</strong></span>
+            </span>
+            <span className="trip-card-detail">
+              <DispatchCardIcon name="driver" />
+              <span><small>DRIVER</small><strong>{trip.driver_name || "Not assigned"}</strong></span>
+            </span>
+          </div>
+
+          <div className="trip-card-customer">
+            <DispatchCardIcon name="customer" />
+            <span><small>{customerNames.length === 1 ? "CUSTOMER" : "CUSTOMERS"}</small>
+              <strong title={customerNames.join(", ") || "No customer linked"}>
+                {visibleCustomers || "No customer linked"}{otherCustomerCount ? ` +${otherCustomerCount}` : ""}
+              </strong>
+            </span>
+          </div>
+
+          <div className="trip-card-counts" aria-label={`${lrCount} lorry receipts and ${orderCount} orders`}>
+            <span><DispatchCardIcon name="document" /><strong>{lrCount}</strong> LR{lrCount === 1 ? "" : "s"}</span>
+            <span><DispatchCardIcon name="order" /><strong>{orderCount}</strong> Order{orderCount === 1 ? "" : "s"}</span>
+          </div>
+
+          <div className="trip-card-actions" onClick={event => event.stopPropagation()}>
+            {status === "planned" && <button onClick={() => tripAction(trip,"dispatch")}>Dispatch <span>→</span></button>}
+            {status === "dispatched" && <button onClick={() => setTripStatus(trip,"in_transit")}>Start transit <span>→</span></button>}
+            {status !== "closed" && status !== "planned" && <button onClick={() => tripAction(trip,"close")}>Close trip <span>→</span></button>}
+            {status === "closed" && <span className="trip-card-complete">✓ Trip completed</span>}
+          </div>
+        </article>;
+      })}
       {!loading && !records.some(r => r.status === status) && <div key="empty" className="empty-column">Drop a card here</div>}
     </section>)}</div>
     {tripDetail && <DetailDrawer eyebrow="TRIP SHEET" title={tripDetail.number} status={tripDetail.status} onClose={() => setTripDetail(null)}
@@ -1947,6 +1995,26 @@ const asCount = (payload: any, records: any[]): number => (typeof payload?.count
 const wholeSet = (endpoint: string) => endpoint + (endpoint.includes("?") ? "&" : "?") + "page_size=500";
 const rupees = (value: any) => "₹" + Number(value || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 });
 const stamp = (value: any) => (value ? new Date(value).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : "—");
+const cardStamp = (value: any) => (value ? new Date(value).toLocaleString("en-IN", {
+  day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
+}) : "Not scheduled");
+
+type DispatchCardIconName = "route" | "truck" | "calendar" | "driver" | "customer" | "document" | "order";
+
+function DispatchCardIcon({ name }: { name: DispatchCardIconName }) {
+  const paths: Record<DispatchCardIconName, React.ReactNode> = {
+    route: <><circle cx="5" cy="6" r="2"/><circle cx="19" cy="18" r="2"/><path d="M7 6h5a3 3 0 0 1 3 3v6a3 3 0 0 0 3 3"/></>,
+    truck: <><path d="M3 6h11v10H3zM14 10h4l3 3v3h-7z"/><circle cx="7" cy="18" r="2"/><circle cx="18" cy="18" r="2"/></>,
+    calendar: <><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4M17 3v4M3 10h18"/></>,
+    driver: <><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></>,
+    customer: <><path d="M4 21V7l8-4 8 4v14M8 10h2M14 10h2M8 14h2M14 14h2M10 21v-3h4v3"/></>,
+    document: <><path d="M6 3h8l4 4v14H6zM14 3v5h5M9 12h6M9 16h6"/></>,
+    order: <><path d="m4 7 8-4 8 4-8 4zM4 7v10l8 4 8-4V7M12 11v10"/></>,
+  };
+  return <svg className="trip-card-icon" viewBox="0 0 24 24" aria-hidden="true">
+    {paths[name]}
+  </svg>;
+}
 const orderColumns: [string, string][] = [["created", "Booked"], ["assigned", "Allocated"], ["dispatched", "Dispatched"], ["in_transit", "In transit"], ["completed", "Delivered"]];
 
 // --- Kanban plumbing ------------------------------------------------------
@@ -2010,13 +2078,13 @@ function useDragBoard(moves: Record<string, CardMove>, onRefuse: Notify, fallbac
     window.addEventListener("pointercancel", onUp);
   };
 
-  const cardProps = (card: any, onOpen?: (card: any) => void) => ({
+  const cardProps = (card: any, onOpen?: (card: any) => void, extraClass = "") => ({
     onPointerDown: (event: React.PointerEvent) => startDrag(card, event),
     onClick: () => {
       if (suppressClick.current) { suppressClick.current = false; return; }   // this click ended a drag
       if (onOpen) onOpen(card);
     },
-    className: "dispatch-card" + (dragging && dragging.id === card.id ? " is-dragging" : ""),
+    className: "dispatch-card" + (dragging && dragging.id === card.id ? " is-dragging" : "") + (extraClass ? ` ${extraClass}` : ""),
   });
 
   const columnProps = (status: string) => ({

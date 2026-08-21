@@ -205,6 +205,46 @@ h1 { margin:0; font-size:24px; letter-spacing:-.7px; }
 body.dragging-card{cursor:grabbing}
 body.dragging-card .dispatch-card{cursor:grabbing}
 .empty-column{border:1px dashed #cfd8d2;border-radius:10px;background:#fbfcfa}
+
+/* Dispatch board trip cards: dense enough for operations, but grouped so the
+   vehicle, schedule, customer and consignment load scan as separate ideas. */
+.dispatch-board.trip-board{grid-template-columns:repeat(4,minmax(220px,1fr))}
+.trip-kanban-card{padding:0;overflow:hidden;border-radius:14px;border-color:#dce3de;background:#fff;box-shadow:0 4px 14px rgba(20,40,30,.055);transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease}
+.trip-kanban-card>div{display:flex;margin-top:0}
+.trip-kanban-card .trip-card-icon{width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.trip-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 14px 11px;background:linear-gradient(180deg,#fbfcfa,#f7f9f7);border-bottom:1px solid #edf0ed}
+.trip-card-reference{display:flex;flex-direction:column;gap:2px;min-width:0}
+.trip-card-reference small{font-size:7.5px;line-height:1;letter-spacing:1.35px;color:#93a099;font-weight:800}
+.trip-card-reference b{font-size:12px;line-height:1.25;color:#1c2923;letter-spacing:.1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trip-card-grip{display:grid;grid-template-columns:repeat(2,3px);gap:3px;padding:4px;color:#aab2ad;flex:none}
+.trip-card-grip i{width:3px;height:3px;border-radius:50%;background:currentColor}
+.trip-card-route{align-items:center;gap:8px;padding:10px 14px;color:#607068;border-bottom:1px solid #f0f2f0}
+.trip-card-route p{display:flex;align-items:center;min-width:0;gap:6px;margin:0;font-size:9.5px;font-weight:700;color:#526059;line-height:1.35}
+.trip-card-route p span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trip-card-route p em{font-style:normal;color:#9aa39e;flex:none}
+.trip-card-vehicle{align-items:center;gap:10px;padding:13px 14px;background:#f2f7f3}
+.trip-card-icon-box{width:32px;height:32px;display:grid;place-items:center;flex:none;border-radius:9px;background:#dcece2;color:#185c43}
+.trip-card-icon-box .trip-card-icon{width:17px;height:17px}
+.trip-card-vehicle>span:last-child,.trip-card-customer>span:last-child,.trip-card-detail>span{display:flex;flex-direction:column;gap:3px;min-width:0}
+.trip-card-vehicle small,.trip-card-customer small,.trip-card-detail small{font-size:7.5px;line-height:1;letter-spacing:.8px;color:#89958f;font-weight:800}
+.trip-card-vehicle strong{font-size:13px;line-height:1.2;color:#153f31;letter-spacing:.25px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trip-card-detail-grid{display:grid!important;grid-template-columns:1fr 1fr;gap:0;border-bottom:1px solid #edf0ed}
+.trip-card-detail{display:flex;align-items:flex-start;gap:7px;min-width:0;padding:12px 10px;color:#728078}
+.trip-card-detail:first-child{padding-left:14px;border-right:1px solid #edf0ed}
+.trip-card-detail:last-child{padding-right:14px}
+.trip-card-detail strong{font-size:8.5px;line-height:1.35;color:#3f4d46;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trip-card-customer{align-items:center;gap:9px;padding:12px 14px;color:#66766e}
+.trip-card-customer strong{font-size:9.5px;line-height:1.35;color:#34423b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trip-card-counts{gap:7px;padding:0 14px 12px}
+.trip-card-counts>span{display:inline-flex;align-items:center;gap:5px;border:1px solid #dfe7e1;border-radius:999px;background:#f8faf8;color:#617068;padding:6px 8px;font-size:8.5px;font-weight:700;line-height:1}
+.trip-card-counts>span strong{font-size:10px;color:#274d3d}
+.trip-card-counts .trip-card-icon{width:12px;height:12px;color:#4e7a67}
+.trip-kanban-card .trip-card-actions{align-items:center;padding:10px 14px;border-top:1px solid #edf0ed;background:#fbfcfa}
+.trip-kanban-card .trip-card-actions button{display:flex;align-items:center;justify-content:space-between;width:100%;border:1px solid #cfe2a2;background:#e5f5b2;color:#284737;border-radius:8px;padding:8px 10px;font-size:9px;font-weight:800;transition:background .15s ease,border-color .15s ease}
+.trip-kanban-card .trip-card-actions button:hover{background:#d9ef9d;border-color:#bad17e}
+.trip-card-complete{display:inline-flex;align-items:center;gap:5px;color:#347257;font-size:9px;font-weight:800}
+@media(max-width:1100px){.dispatch-board.trip-board{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:760px){.dispatch-board.trip-board{grid-template-columns:1fr}.trip-card-detail strong{font-size:9.5px}}
 .toast.warn{background:#7a3325}
 .sign-out{border:1px solid #2c3a33;background:#1a2721;color:#9fb0a7;border-radius:8px;width:30px;height:30px;font-size:13px;cursor:pointer;flex:none}
 .sign-out:hover{background:#dff77d;color:#152019;border-color:#dff77d}

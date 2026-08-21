@@ -2258,6 +2258,9 @@ class TripViewSetTest(BaseFleetOpsTest):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(len(r.data["linked_orders"]), 1)
         self.assertEqual(r.data["linked_orders"][0]["number"], "ORD-MLK-06")
+        self.assertEqual(r.data["order_count"], 1)
+        self.assertEqual(r.data["lorry_receipt_count"], 0)
+        self.assertEqual(r.data["customer_names"], [self.customer.name])
 
 
 class OrderViewSetTest(BaseFleetOpsTest):

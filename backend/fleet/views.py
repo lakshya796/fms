@@ -181,7 +181,7 @@ class TripViewSet(viewsets.ModelViewSet):
     permission_classes = [HasModulePermission]
     required_permission = "operations.view"; required_write_permission = "operations.manage"
     queryset = Trip.objects.select_related("vehicle", "driver").prefetch_related(
-        "lorry_receipts", "tracking_events",
+        "lorry_receipts", "lorry_receipts__customer", "tracking_events",
         "orders", "orders__customer", "orders__pickup", "orders__dropoff",
     ).all().order_by("-created_at")
     serializer_class = TripSerializer
